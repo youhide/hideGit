@@ -509,6 +509,9 @@ pub(crate) fn diff(repo: &gix::Repository, target: &DiffTarget) -> Result<Diff, 
 
     let mut files = Vec::with_capacity(changes.len());
     for change in changes {
+        if is_directory(&change) {
+            continue;
+        }
         files.push(to_file_diff(repo, change)?);
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -519,6 +522,30 @@ pub(crate) fn diff(repo: &gix::Repository, target: &DiffTarget) -> Result<Diff, 
 
 fn path_from(location: &gix::bstr::BStr) -> PathBuf {
     PathBuf::from(location.to_str_lossy().into_owned())
+}
+
+/// Does this change describe a directory rather than a file?
+///
+/// A tree diff reports the directories along a changed file's path as changes
+/// in their own right: a commit touching `a/b/c.rs` also reports `a` and
+/// `a/b`. Git reports only the file, and so does this — a directory has no
+/// text to show, so it would otherwise render as a binary file and inflate the
+/// changed-file count.
+fn is_directory(change: &gix::diff::tree_with_rewrites::Change) -> bool {
+    use gix::diff::tree_with_rewrites::Change as C;
+
+    match change {
+        C::Addition { entry_mode, .. } | C::Deletion { entry_mode, .. } => entry_mode.is_tree(),
+        // A directory replaced by a file of the same name is a real change and
+        // stays; only tree-to-tree is the path-component noise above.
+        C::Modification {
+            previous_entry_mode,
+            entry_mode,
+            ..
+        } => previous_entry_mode.is_tree() && entry_mode.is_tree(),
+        // Rewrite tracking pairs blobs; it never reports a tree.
+        C::Rewrite { .. } => false,
+    }
 }
 
 fn to_file_diff(

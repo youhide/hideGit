@@ -110,9 +110,17 @@ impl Fixture {
         self.record(name)
     }
 
-    /// Adds a commit that changes an existing file, for diff tests.
+    /// Adds a commit that changes a file, for diff tests.
+    ///
+    /// `file` may name a path in a subdirectory; the directories are created as
+    /// needed, so a test can exercise a nested path rather than only the
+    /// repository root.
     pub fn edit(self, file: &str, contents: &str, message: &str) -> Self {
-        std::fs::write(self.dir.path().join(file), contents).expect("writing a fixture file");
+        let path = self.dir.path().join(file);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("creating a fixture directory");
+        }
+        std::fs::write(&path, contents).expect("writing a fixture file");
         self.git(["add", "--all"]);
         self.git(["commit", "--message", message]);
         self.record(message)

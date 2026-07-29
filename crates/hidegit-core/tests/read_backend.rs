@@ -330,6 +330,35 @@ fn a_root_commit_diffs_against_nothing_so_every_file_reads_as_added() {
 }
 
 #[test]
+fn a_nested_file_reports_the_file_and_not_the_directories_above_it() {
+    // A tree diff reports every directory along the path as a change of its
+    // own. Reporting them would show `a`, `a/b` and `a/b/c.txt` as three
+    // modified files, each directory rendering as binary because a tree has no
+    // text. Every other fixture commits at the repository root, which is
+    // exactly why this went unnoticed.
+    let repo = fixture()
+        .edit("a/b/c.txt", "first\n", "nest")
+        .edit("a/b/c.txt", "second\n", "change the nested file")
+        .build();
+
+    let diff = repo
+        .backend()
+        .diff(&DiffTarget::Commit(repo.id("change the nested file")))
+        .expect("the commit is diffable");
+
+    let paths: Vec<_> = diff.files.iter().map(|f| f.path.as_path()).collect();
+    assert_eq!(
+        paths,
+        vec![std::path::Path::new("a/b/c.txt")],
+        "only the file changed; `a` and `a/b` are the path to it, not changes"
+    );
+    assert_eq!(
+        diff.stats.files_changed, 1,
+        "a directory must not inflate the changed-file count"
+    );
+}
+
+#[test]
 fn a_modification_produces_hunks_with_line_numbers_on_both_sides() {
     let repo = fixture()
         .commit("A")
