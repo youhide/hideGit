@@ -10,6 +10,8 @@
 
 use std::{env, fs, path::PathBuf};
 
+use embed_resource::CompilationResult;
+
 fn main() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest
@@ -54,9 +56,13 @@ fn main() {
         .join("hidegit.rc");
     fs::write(&generated, script).expect("could not write the generated resource script");
 
-    if let Err(result) =
-        embed_resource::compile(&generated, embed_resource::NONE).manifest_optional()
-    {
-        println!("cargo:warning=could not embed the Windows icon: {result:?}");
+    // Matched explicitly rather than via `manifest_optional()`, which treats
+    // `NotAttempted` — no resource compiler on the machine — as success. That
+    // would drop the icon silently, and silence is indistinguishable from a
+    // build that worked. We are already known to be targeting Windows here, so
+    // anything short of `Ok` is worth saying out loud.
+    match embed_resource::compile(&generated, embed_resource::NONE) {
+        CompilationResult::Ok | CompilationResult::NotWindows => {}
+        other => println!("cargo:warning=the Windows icon was not embedded: {other:?}"),
     }
 }
