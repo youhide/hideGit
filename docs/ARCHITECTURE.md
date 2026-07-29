@@ -3,9 +3,9 @@
 How hideGit is put together, and why. Decisions summarised here are argued in full in the
 [ADRs](./adr/README.md).
 
-**Status:** M1 has landed, so the read half of this document describes code that exists. The write
-half — everything from `stage` onward — is still design: those methods are declared and return
-`NotImplementedYet` with the milestone they arrive in.
+**Status:** M1 and M2 have landed, so the reads and the working-directory writes described here
+are code that exists. Everything that touches a remote or rewrites history is still design: those
+methods are declared and return `NotImplementedYet` with the milestone they arrive in.
 
 ## Contents
 
@@ -83,6 +83,7 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `tracing` | 0.1 | Structured logging | M1 |
 | `thiserror` | 2 | Error types in libraries | M1 |
 | `criterion` | 0.7 | Benchmarks (dev only) | M1 |
+| `notify-debouncer-full` | 0.6 | Filesystem watching behind automatic status refresh | M2 |
 | `octocrab` | 0.54 | GitHub API | M4 |
 | `keyring` | — | OS keychain access for forge tokens | M4 |
 | `notify-rust` | — | Native desktop notifications | M4 |
@@ -117,16 +118,16 @@ pub trait GitBackend: Send + Sync + Debug {
     fn commit(&self, id: ObjectId) -> Result<CommitDetail, GitError>;
     fn diff(&self, target: &DiffTarget) -> Result<Diff, GitError>;
     fn read_blob(&self, id: ObjectId) -> Result<Blob, GitError>;
-    fn status(&self) -> Result<WorktreeStatus, GitError>;          // M2
+    fn status(&self) -> Result<WorktreeStatus, GitError>;
     fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;  // M6
     fn invalidate(&self);
 
     // ---- write: git CLI -----------------------------------------------
-    fn stage(&self, paths: &[&Path]) -> Result<(), GitError>;                        // M2
-    fn stage_patch(&self, patch: &Patch) -> Result<(), GitError>;                    // M2
-    fn unstage(&self, paths: &[&Path]) -> Result<(), GitError>;                      // M2
-    fn discard(&self, paths: &[&Path]) -> Result<(), GitError>;                      // M2
-    fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;  // M2
+    fn stage(&self, paths: &[&Path]) -> Result<(), GitError>;
+    fn stage_patch(&self, patch: &Patch) -> Result<(), GitError>;
+    fn unstage(&self, paths: &[&Path]) -> Result<(), GitError>;
+    fn discard(&self, paths: &[&Path]) -> Result<(), GitError>;
+    fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;
     fn checkout(&self, target: &CheckoutTarget) -> Result<(), GitError>;             // M3
     fn fetch(&self, remote: &str, p: &dyn ProgressSink) -> Result<FetchOutcome, GitError>;   // M3
     fn push(&self, remote: &str, spec: &PushSpec, p: &dyn ProgressSink) -> Result<(), GitError>;  // M3
@@ -139,7 +140,12 @@ pub trait GitBackend: Send + Sync + Debug {
 
 The whole surface is declared from M1 so the read/write split is visible in one file, and a method
 whose milestone has not landed returns `GitError::NotImplementedYet { operation, milestone }`
-rather than being absent. The types the write half takes are provisional: each is designed
+rather than being absent.
+
+Every write goes through one helper that does the two things a write owes the rest of the
+application: it refuses to start while `index.lock` exists — reported, never deleted, because
+whatever holds it may still be working — and it drops the memoised walk so the next read sees what
+just happened. The types the write half takes are provisional: each is designed
 properly in the milestone that implements it.
 
 `log` is paged rather than limited because the graph only lays out the rows around the viewport. A
@@ -245,6 +251,37 @@ pub struct Diff {
 
 `RepoState` is not cosmetic. A repository mid-rebase must not offer "commit" as though nothing is
 happening — the UI reads this to decide which actions are even available.
+
+`DiffTarget::Staged` and `DiffTarget::Unstaged` take their set of changed paths from `status`
+rather than from a traversal of their own, so the staging view's file list and the diff it shows
+for a file cannot disagree about what changed.
+
+### Building a patch
+
+Staging part of a file means handing `git apply --cached` a patch, so a diff has to be able to
+become patch text again. `hidegit_core::patch::serialize` does that, over a `Selection` of hunks
+or of individual lines. Applying it in reverse is how unstaging and hunk-level discard are
+expressed — one code path for all four.
+
+Two things there are easy to get wrong and invisible when you do. A file whose last line has no
+newline needs the `\ No newline at end of file` marker, or every partial stage silently appends
+one; `DiffLine::no_newline` exists to carry that through the model. And the `@@` counts are
+recomputed rather than copied, because a partial selection changes them: an unselected removal
+becomes a context line, an unselected addition disappears, and a skipped hunk moves the new-side
+start of every hunk after it. `tests/staging.rs` applies each case with the real `git apply` and
+checks the index afterwards, because a patch that reads correctly but does not apply is worth
+nothing.
+
+`staged` and `unstaged` are two different diffs, not two halves of one list: `staged` is `HEAD`
+against the index — what a commit would contain — and `unstaged` is the index against the working
+tree. A file modified, staged, and then edited again appears in **both**, which is correct rather
+than double-counted, because the staging view offers a different action for each. `change_count()`
+adds all four lists for the sidebar badge and will therefore count such a file twice, the same way
+a file listed under two headings in `git status` is read twice.
+
+Both lists are sorted by path. gitoxide computes the two halves in parallel and emits them
+interleaved, so the arrival order is "whichever thread finished first" — not something a list the
+user reads should inherit.
 
 ## Commit graph
 

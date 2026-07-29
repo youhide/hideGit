@@ -14,7 +14,9 @@ pub mod error;
 pub mod graph;
 pub mod model;
 pub mod ops;
+pub mod patch;
 pub mod process;
+pub mod watch;
 
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;

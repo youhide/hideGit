@@ -5,15 +5,17 @@
 //! the start, because multi-repository tabs are M6 and retrofitting them into a
 //! single-repository shape would be a rewrite rather than an addition.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
-use hidegit_core::model::{Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState};
+use hidegit_core::model::{
+    Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState, WorktreeStatus,
+};
 use hidegit_core::{GitBackend, LogPage};
 
-use crate::message::UiError;
+use crate::message::{Message, UiError};
 use crate::theme::Theme;
 
 /// How many commits one background load fetches.
@@ -75,7 +77,7 @@ impl Pane {
 /// What the detail pane is showing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
-    /// The staging view. M2 fills it in; M1 shows what is coming.
+    /// The staging view: what is staged, changed and untracked right now.
     WorkingDirectory,
     Commit(ObjectId),
 }
@@ -109,7 +111,53 @@ pub enum DetailPane {
         /// Which file's diff is expanded.
         file: usize,
     },
+    /// The staging view. Both diffs are held at once because the pane shows
+    /// both lists, and a file can legitimately appear in each.
+    WorkingDirectory {
+        staged: Box<Diff>,
+        unstaged: Box<Diff>,
+        /// Which row of the combined list is open, if any.
+        selected: Option<StagingRow>,
+        /// Changed lines picked out of the open file's diff, as `(hunk, line)`
+        /// indices. Cleared whenever the open row changes, because the indices
+        /// mean nothing against a different diff.
+        lines: BTreeSet<(usize, usize)>,
+    },
     Failed(UiError),
+}
+
+/// A row in the staging view, identifying which list it came from.
+///
+/// The list matters as much as the path: the same file can sit in `staged` and
+/// in `unstaged` at once, showing a different diff and offering a different
+/// action in each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StagingRow {
+    pub section: Section,
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Staged,
+    Unstaged,
+    Untracked,
+    Conflicted,
+}
+
+/// A destructive action, waiting to be confirmed.
+///
+/// `UI_SPEC` is explicit that these name what will be lost rather than asking
+/// a generic "are you sure?", so the body is built by whoever raises it and
+/// carries the count and the paths.
+#[derive(Debug, Clone)]
+pub struct Confirmation {
+    pub title: String,
+    pub body: String,
+    /// The verb on the button that goes ahead — "Discard", never "OK".
+    pub confirm_label: String,
+    /// Dispatched if the user accepts. Nothing happens until then.
+    pub action: Box<Message>,
 }
 
 /// A transient message.
@@ -239,6 +287,8 @@ pub struct OpenRepo {
     /// Consulted before rendering any action: a repository mid-rebase does not
     /// offer "commit" as though nothing is happening.
     pub state: RepoState,
+    /// The working directory as the staging view shows it.
+    pub status: WorktreeStatus,
     pub graph: GraphView,
     pub selection: Option<Selection>,
     pub detail: DetailPane,
@@ -246,6 +296,47 @@ pub struct OpenRepo {
     pub diff_mode: DiffMode,
     /// Which hunk `J`/`K` last stepped to, so the diff view can scroll to it.
     pub hunk: usize,
+    /// The commit message being written, and whether it is being amended.
+    pub draft: Draft,
+}
+
+/// The commit message in progress.
+///
+/// Kept on the repository rather than in the widget so it survives a refresh:
+/// staging another hunk halfway through writing a message must not throw the
+/// message away.
+#[derive(Debug, Default, Clone)]
+pub struct Draft {
+    pub subject: String,
+    pub body: String,
+    pub amend: bool,
+    pub sign_off: bool,
+    /// A text field has keyboard focus, so bare-letter shortcuts must not fire.
+    ///
+    /// Without this, typing "jk" into a commit message steps through hunks:
+    /// `keyboard::listen()` is global and `j`/`k` are bound unmodified.
+    pub editing: bool,
+}
+
+impl Draft {
+    /// The message as Git stores it: subject, blank line, body.
+    pub fn message(&self) -> String {
+        let subject = self.subject.trim();
+        let body = self.body.trim();
+        if body.is_empty() {
+            subject.to_owned()
+        } else {
+            format!("{subject}\n\n{body}\n")
+        }
+    }
+
+    /// Is there enough here to commit?
+    ///
+    /// A subject is the one part Git will not invent: an empty message aborts
+    /// the commit, which reads as nothing happening.
+    pub fn is_ready(&self) -> bool {
+        !self.subject.trim().is_empty()
+    }
 }
 
 impl OpenRepo {
@@ -277,6 +368,8 @@ pub struct App {
     pub recents: Vec<PathBuf>,
     pub theme: Theme,
     pub toasts: Vec<Toast>,
+    /// The confirmation currently on screen, if any.
+    pub confirming: Option<Confirmation>,
     next_toast_id: u64,
 }
 
@@ -289,6 +382,7 @@ impl Default for App {
             recents: Vec::new(),
             theme: Theme::default(),
             toasts: Vec::new(),
+            confirming: None,
             next_toast_id: 0,
         }
     }

@@ -26,6 +26,9 @@ hidegit-ui = { path = "crates/hidegit-ui", version = "0.1.0" }
 # every network operation shells out to `git`. See ADR-0002.
 gix = "0.86"
 iced = "0.14"
+# The filesystem watcher behind automatic status refresh. Debounced: an editor
+# save is several events, and a `git` command is hundreds.
+notify-debouncer-full = "0.6"
 thiserror = "2"
 time = "0.3"
 tracing = "0.1"

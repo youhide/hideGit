@@ -21,6 +21,7 @@ use crate::ops::{
     Blame, CheckoutTarget, CommitOpts, FetchOutcome, MergeOpts, MergeOutcome, Patch, ProgressSink,
     PushSpec, RebasePlan, SequenceOutcome, StashOp, StashOutcome,
 };
+use crate::process::GitCommand;
 
 /// A repository, opened once and shared.
 ///
@@ -47,6 +48,32 @@ impl HybridBackend {
     /// `Sync`; the thread-safe handle hands out a local one per call.
     fn repo(&self) -> gix::Repository {
         self.repo.to_thread_local()
+    }
+
+    /// Refuses to write while another Git process holds the index.
+    ///
+    /// Checked rather than discovered: `git` would fail with a message about a
+    /// lock file, which is true but reads as a crash. `IndexLocked` names the
+    /// file so the UI can say which process to look for — and hideGit never
+    /// deletes a lock it did not create, because the process holding it may
+    /// still be working.
+    fn guard_index(&self) -> Result<(), GitError> {
+        match crate::process::index_lock(&self.git_dir) {
+            Some(lock) => Err(GitError::IndexLocked(lock)),
+            None => Ok(()),
+        }
+    }
+
+    /// Runs a command that changes the repository, then drops stale reads.
+    ///
+    /// Everything that writes goes through here, so the two things every write
+    /// owes the rest of the application happen in one place: the index lock is
+    /// taken honestly, and the memoised walk is invalidated so the next read
+    /// sees what just happened.
+    fn write(&self, command: GitCommand) -> Result<(), GitError> {
+        command.cwd(&self.workdir).takes_locks().run()?;
+        self.invalidate();
+        Ok(())
     }
 
     /// Returns the memoised walk for `spec`, computing it if needed.
@@ -139,10 +166,7 @@ impl GitBackend for HybridBackend {
     }
 
     fn status(&self) -> Result<WorktreeStatus, GitError> {
-        // Reporting an empty status here would be a lie, and the UI is built
-        // on never lying about repository state. M2 implements it properly,
-        // with rename detection and `.gitignore` handling.
-        Err(not_implemented("status", "M2"))
+        gix_read::status(&self.repo())
     }
 
     fn blame(&self, _path: &Path, _at: ObjectId) -> Result<Blame, GitError> {
@@ -158,28 +182,139 @@ impl GitBackend for HybridBackend {
 
     // ---- write: git CLI ----------------------------------------------
     //
-    // M1 is read-only on purpose. Each of these lands in the milestone named
-    // in its error, and each will be implemented through `crate::process`,
-    // never by building a command as a shell string.
+    // Every one of these goes through `crate::process`, never by building a
+    // command as a shell string: a branch name or a path from an untrusted
+    // repository must never reach a shell. Arguments go in a vector and paths
+    // go after `--`.
 
-    fn stage(&self, _paths: &[&Path]) -> Result<(), GitError> {
-        Err(not_implemented("stage", "M2"))
+    fn stage(&self, paths: &[&Path]) -> Result<(), GitError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        self.guard_index()?;
+
+        // `--all` so a path that names a deleted file records the deletion
+        // rather than being skipped for not existing.
+        self.write(GitCommand::new("add").arg("--all").operands(paths))
     }
 
-    fn stage_patch(&self, _patch: &Patch) -> Result<(), GitError> {
-        Err(not_implemented("hunk staging", "M2"))
+    fn stage_patch(&self, patch: &Patch) -> Result<(), GitError> {
+        self.guard_index()?;
+
+        // The patch arrives on stdin rather than through a temporary file:
+        // nothing to name, nothing to clean up, and no window in which a path
+        // built from repository content reaches the filesystem.
+        let mut command = GitCommand::new("apply").arg("--cached");
+        if patch.reverse {
+            command = command.arg("--reverse");
+        }
+        // `-` is the operand meaning stdin, and it goes after `--` like any
+        // other so a patch can never be mistaken for a flag.
+        command = command.operands(["-"]);
+
+        command
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run_with_stdin(Some(patch.text.as_bytes()))?;
+        self.invalidate();
+        Ok(())
     }
 
-    fn unstage(&self, _paths: &[&Path]) -> Result<(), GitError> {
-        Err(not_implemented("unstage", "M2"))
+    fn unstage(&self, paths: &[&Path]) -> Result<(), GitError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        self.guard_index()?;
+
+        // `git restore --staged` needs something to restore *from*, and an
+        // unborn HEAD has no commit to name. `git rm --cached` is the only way
+        // to take a path back out of a first commit that does not exist yet.
+        if matches!(gix_read::head(&self.repo())?, Head::Unborn { .. }) {
+            return self.write(
+                GitCommand::new("rm")
+                    .args(["--cached", "--quiet", "-r"])
+                    .operands(paths),
+            );
+        }
+
+        self.write(
+            GitCommand::new("restore")
+                .args(["--staged", "--source=HEAD"])
+                .operands(paths),
+        )
     }
 
-    fn discard(&self, _paths: &[&Path]) -> Result<(), GitError> {
-        Err(not_implemented("discard", "M2"))
+    fn discard(&self, paths: &[&Path]) -> Result<(), GitError> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        self.guard_index()?;
+
+        // Two different operations wear one name. A tracked file is restored
+        // from the index; an untracked one has no index entry to restore from
+        // and has to be deleted outright. `git restore` fails on the latter,
+        // so they are separated first rather than discovered by failure.
+        let status = gix_read::status(&self.repo())?;
+        let (untracked, tracked): (Vec<&Path>, Vec<&Path>) = paths
+            .iter()
+            .partition(|p| status.untracked.iter().any(|u| u == *p));
+
+        if !tracked.is_empty() {
+            self.write(
+                GitCommand::new("restore")
+                    .arg("--worktree")
+                    .operands(&tracked),
+            )?;
+        }
+        if !untracked.is_empty() {
+            // `-d` because an untracked entry may be a whole directory: the
+            // status walk collapses one into a single row.
+            self.write(
+                GitCommand::new("clean")
+                    .args(["--force", "-d", "--quiet"])
+                    .operands(&untracked),
+            )?;
+        }
+
+        Ok(())
     }
 
-    fn create_commit(&self, _message: &str, _opts: CommitOpts) -> Result<ObjectId, GitError> {
-        Err(not_implemented("commit", "M2"))
+    fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError> {
+        self.guard_index()?;
+
+        // `--file -` rather than `-m`: a commit message is arbitrary text from
+        // the user, and passing it on stdin means no length limit, no encoding
+        // surprises, and no argument that could begin with a `-`.
+        let mut command = GitCommand::new("commit").args(["--file", "-"]);
+        if opts.amend {
+            command = command.arg("--amend");
+        }
+        if opts.sign_off {
+            command = command.arg("--signoff");
+        }
+        if opts.allow_empty {
+            command = command.arg("--allow-empty");
+        }
+        // Git strips comment lines and trailing whitespace from a message it
+        // reads from a file. hideGit's editor is not Git's, so a line the user
+        // typed starting with `#` is theirs to keep.
+        command = command.arg("--cleanup=whitespace");
+
+        command
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run_with_stdin(Some(message.as_bytes()))?;
+        self.invalidate();
+
+        // Hooks and GPG signing are the user's `git` doing its job, which is
+        // half the reason writes shell out at all — so the new commit's id is
+        // read back rather than assumed.
+        let head = GitCommand::new("rev-parse")
+            .arg("HEAD")
+            .cwd(&self.workdir)
+            .run()?;
+        ObjectId::from_hex(head.trimmed_stdout().trim())
+            .ok_or_else(|| GitError::RefNotFound("HEAD".to_owned()))
     }
 
     fn checkout(&self, _target: &CheckoutTarget) -> Result<(), GitError> {

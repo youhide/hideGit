@@ -49,6 +49,7 @@ pub struct FakeBackend {
     refs: Refs,
     commits: Vec<Commit>,
     state: RepoState,
+    status: WorktreeStatus,
     failure: Option<Failure>,
     /// How many times [`GitBackend::invalidate`] has been called, so a test can
     /// assert that a mutation actually triggered a refresh.
@@ -69,6 +70,7 @@ impl Default for FakeBackend {
             refs: Refs::default(),
             commits: Vec::new(),
             state: RepoState::Clean,
+            status: WorktreeStatus::default(),
             failure: None,
             invalidations: AtomicUsize::new(0),
         }
@@ -108,6 +110,17 @@ impl FakeBackend {
 
     pub fn with_state(mut self, state: RepoState) -> Self {
         self.state = state;
+        self
+    }
+
+    /// Scripts the working directory, so a staging view can be driven without a
+    /// repository on disk.
+    ///
+    /// `state` on the status is overwritten by [`Self::with_state`], which
+    /// remains the single place a fixture declares what the repository is in
+    /// the middle of.
+    pub fn with_status(mut self, status: WorktreeStatus) -> Self {
+        self.status = status;
         self
     }
 
@@ -202,7 +215,7 @@ impl GitBackend for FakeBackend {
         self.check()?;
         Ok(WorktreeStatus {
             state: self.state,
-            ..WorktreeStatus::default()
+            ..self.status.clone()
         })
     }
 

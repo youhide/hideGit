@@ -30,6 +30,9 @@ pub struct CommitOpts {
 pub struct Patch {
     pub file: PathBuf,
     /// The patch text, in unified diff format.
+    ///
+    /// Built by [`crate::patch::serialize`] from the diff the staging view is
+    /// already showing, so what is applied is what was on screen.
     pub text: String,
     /// Apply in reverse — how unstaging is expressed.
     pub reverse: bool,

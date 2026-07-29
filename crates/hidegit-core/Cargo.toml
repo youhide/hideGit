@@ -13,6 +13,7 @@ authors.workspace = true
 # window and without a token. See docs/ARCHITECTURE.md#crate-layout.
 [dependencies]
 gix.workspace = true
+notify-debouncer-full.workspace = true
 tempfile = { version = "3", optional = true }
 thiserror.workspace = true
 time.workspace = true

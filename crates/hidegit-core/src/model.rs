@@ -279,6 +279,8 @@ pub enum ConflictKind {
     DeletedByThem,
     AddedByUs,
     AddedByThem,
+    /// Both sides deleted the path, but left different states behind it.
+    BothDeleted,
 }
 
 /// What operation, if any, the repository is in the middle of.
@@ -390,6 +392,12 @@ pub struct DiffLine {
     /// The line's content, without its leading `+`/`-`/space marker and
     /// without a trailing newline.
     pub text: String,
+    /// This line ends the file and the file does not end with a newline.
+    ///
+    /// Kept because a patch has to say so — the `\ No newline at end of file`
+    /// marker. Dropping it means a patch built from this diff silently appends
+    /// a newline to the file it is applied to.
+    pub no_newline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -37,6 +37,7 @@ Layout sketches are structural, not visual design.
 |---|---|---|
 | Welcome | Open, clone, recent repositories | M1 |
 | Main window | Graph, sidebar, detail — where all work happens | M1 |
+| Staging view | Staged / changed / untracked / conflicted, and the selected file's diff | M2 |
 | Diff view | Unified / side-by-side, hunk staging | M1 / M2 |
 | Commit composer | Message, amend, sign-off | M2 |
 | Conflict resolver | Three-pane resolution | M5 |
@@ -89,12 +90,13 @@ enum RepoMessage {
     // user intent
     Selected(Selection),
     GraphScrolled(Viewport),
+    StagingRowSelected(StagingRow),     // which section, and where in it
     StageRequested(StageTarget),        // File | Files | Hunk | Lines
     CommitRequested(CommitDraft),
     CheckoutRequested(CheckoutTarget),
     PushRequested(PushSpec),
     // async results
-    StatusLoaded(Result<WorktreeStatus, GitError>),
+    StatusLoaded(Result<StatusLoad, GitError>),   // status plus both diffs, in one unit
     CommitsLoaded(Result<Vec<Commit>, GitError>),
     DiffLoaded(Result<Diff, GitError>),
     OperationProgress(OperationId, Progress),
@@ -155,6 +157,86 @@ cancel affordance.
 — 3 of 7 commits"* with Continue / Skip / Abort. It cannot be dismissed, because the repository
 genuinely is in that state and hiding it is how people lose work.
 
+## Staging view
+
+Fills the detail pane when the sidebar's working-directory row is selected. Four sections down the
+left, the selected file's diff on the right.
+
+```
+┌──────────────────────────────┬──────────────────────────────────┐
+│ CONFLICTED                 1 │ M tracked.txt            +1 −1   │
+│ ! shared.txt  both modified  ├──────────────────────────────────┤
+│ STAGED                     3 │ @@ -1,3 +1,3 @@                  │
+│ A .gitignore                 │   1   1   one                    │
+│ R before.txt → after.txt     │   2     − two                    │
+│ M tracked.txt                │       2 + TWO                    │
+│ CHANGED                    2 │   3   3   three                  │
+│ D doomed.txt                 │                                  │
+│ M tracked.txt                │                                  │
+│ UNTRACKED                  1 │                                  │
+│ ? untracked.txt              │                                  │
+└──────────────────────────────┴──────────────────────────────────┘
+```
+
+- **Conflicts sit at the top**, because nothing else in the working directory can be finished
+  until they are resolved. Each names why it conflicts in Git's own words — "both modified",
+  "deleted by them".
+- **A file can appear in two sections at once.** Staged and then edited again, it is in both
+  `STAGED` and `CHANGED`, and the two rows show *different diffs*: `HEAD` against the index, and
+  the index against the working tree. Selecting a row therefore carries which section it came
+  from, not just its path.
+- **A rename is one row**, `before → after`, rather than a deletion and an addition that the
+  reader has to pair up themselves.
+- Status is carried by a glyph (`A`/`M`/`D`/`R`/`C`/`T`/`?`/`!`) as well as by colour, so the list
+  reads without hue.
+- Untracked files have no diff to show — nothing in the repository has ever seen them — so the
+  pane says so rather than rendering every line as an addition against nothing.
+- A clean working directory says *"Nothing to commit"* and what that means, per the empty-state
+  rule below.
+
+The sidebar badge counts every entry across all four sections, so a file that is both staged and
+changed counts twice — the same way `git status` lists it under two headings.
+
+Each row carries its own actions: `+` to stage, `−` to unstage, `✕` to discard. `Cmd+Backspace`
+discards the open row. Discarding a *staged* change does nothing by keyboard — unstaging and then
+destroying is two decisions, and one key must not stand for both.
+
+**`Space` is not bound.** The spec's table lists it as stage/unstage, and it is deliberately absent
+until M6's keyboard-navigation work. iced 0.14 keeps text-input focus inside the widget: it is
+neither observable nor settable from the application, and wrapping a field in a `mouse_area` to
+catch the click that grants focus swallows that click so the field never focuses at all. So a
+global key binding cannot know whether the commit message field is being typed into until its
+first keystroke has already been delivered — and `Space` is the one bare key whose leak would
+stage a file. `j`/`k` remain bound because their leak only moves a highlight.
+
+## Commit composer
+
+Sits under the file lists, because it is about the whole commit rather than about whichever file is
+open. Subject and description are separate fields; `Enter` in the subject commits, as does
+`Cmd+Enter` from either.
+
+- **Amend** starts from the message it is replacing, the way `git commit --amend` opens an editor
+  already holding it, and stays available with nothing staged — rewording the last commit is a
+  real thing to want.
+- **Sign off** appends the trailer Git itself would.
+- The Commit button says why it is unavailable rather than leaving it to be guessed: *"A summary is
+  required"*, *"Nothing staged"*, *"A rebase in progress"*.
+- A failed commit keeps the message. A rejected hook must not cost the user what they wrote.
+
+## Confirmations and toasts
+
+Both sit in a layer over the screen.
+
+A **confirmation** is modal and names what will be lost — *"Changes to doomed.txt will be lost.
+This cannot be undone."* — never a generic "are you sure?". Its accept button carries the verb
+("Discard"), not "OK". Cancel comes first and unemphasised, because the safe choice should not be
+the one that takes aim. While it is up it owns the keyboard: `Esc` cancels, `Enter` accepts, and
+nothing else reaches the screen behind it.
+
+A **toast** reports a failure and keeps Git's own stderr verbatim rather than paraphrasing it,
+because that text is the most useful thing hideGit has to say when a command fails. Success is
+silent: the refresh that follows an operation is its result, and a toast per click is noise.
+
 ## Diff view
 
 Two modes, toggleable and remembered per user: **unified** and **side-by-side**.
@@ -171,8 +253,14 @@ Two modes, toggleable and remembered per user: **unified** and **side-by-side**.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- Hunk headers carry a stage/unstage action (M2)
-- Line selection allows staging a subset of a hunk (M2)
+- Hunk headers carry a stage/unstage action; the file header carries one for the whole file
+- Clicking a changed line picks it out; the file header then offers those lines instead, because
+  acting on the whole hunk would silently include what was left out
+- A chosen line is marked twice: a bar in the margin and a brighter background. The background is
+  *brightened*, not tinted toward the accent — the accent is a bright blue and the line backgrounds
+  are very dark, so blending turns a removal purple and an addition teal, trading the added/removed
+  reading away rather than adding to it
+- `J`/`K` step between hunks, highlighting the one they land on
 - Word-level intra-line highlighting on modified lines
 - Whitespace-change toggle; large-file and binary-file placeholders rather than a hang
 - Syntax highlighting deferred past M1 — correct diffing first

@@ -10,6 +10,7 @@ pub mod format;
 pub mod message;
 pub mod state;
 pub mod theme;
+pub mod watcher;
 
 pub mod screen {
     pub mod repository;
@@ -20,7 +21,9 @@ pub mod widget {
     pub mod detail;
     pub mod diff;
     pub mod graph;
+    pub mod overlay;
     pub mod sidebar;
+    pub mod staging;
 }
 
 pub use app::Hidegit;

@@ -18,6 +18,23 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
         DetailPane::Commit { detail, diff, file } => {
             commit(detail, diff, *file, repo.diff_mode, palette)
         }
+        DetailPane::WorkingDirectory {
+            staged,
+            unstaged,
+            selected,
+            lines,
+        } => crate::widget::staging::view(
+            &repo.status,
+            staged,
+            unstaged,
+            *selected,
+            lines,
+            repo.hunk,
+            repo.diff_mode,
+            &repo.draft,
+            repo.state,
+            palette,
+        ),
     };
 
     let surface = palette.surface;
@@ -204,7 +221,9 @@ fn commit<'a>(
                 diff,
                 selected_file,
                 mode,
-                palette
+                palette,
+                // A commit's diff is history: there is nothing to stage in it.
+                None
             ))
             .width(Fill)
             .height(Fill),
