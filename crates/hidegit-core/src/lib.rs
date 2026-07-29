@@ -29,4 +29,4 @@ pub use model::*;
 pub use process::{MINIMUM_GIT_VERSION, git_preflight};
 
 #[cfg(any(test, feature = "fake"))]
-pub use backend::FakeBackend;
+pub use backend::{FakeBackend, WriteCall};

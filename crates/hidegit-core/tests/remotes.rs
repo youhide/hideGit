@@ -556,3 +556,51 @@ fn two_remotes_on_one_repository_stay_separate() {
         "a commit pushed to one remote did not reach the other"
     );
 }
+
+#[test]
+fn a_rename_does_not_lose_the_branchs_upstream() {
+    // Renaming rewrites `branch.*` in `.git/config`. gitoxide loads config when
+    // the repository is opened and caches it, so a backend that does not refresh
+    // that snapshot keeps answering from the old file — and the renamed branch
+    // silently appears to track nothing.
+    let repo = fixture().commit("A").with_remote("origin").build();
+    let backend = repo.backend();
+
+    assert!(
+        backend
+            .divergence()
+            .expect("readable")
+            .contains_key("refs/heads/main"),
+        "main tracks origin/main to begin with"
+    );
+
+    backend
+        .rename_branch("main", "trunk")
+        .expect("renaming a branch");
+
+    assert_eq!(
+        repo.git(["rev-parse", "--abbrev-ref", "trunk@{upstream}"]),
+        "origin/main",
+        "git itself still knows the upstream"
+    );
+
+    let refs = backend.refs().expect("refs are readable");
+    let trunk = refs
+        .locals
+        .iter()
+        .find(|b| b.name.short == "trunk")
+        .expect("the renamed branch");
+    assert_eq!(
+        trunk.upstream.as_deref(),
+        Some("refs/remotes/origin/main"),
+        "and so must hideGit, without being reopened"
+    );
+
+    assert!(
+        backend
+            .divergence()
+            .expect("readable")
+            .contains_key("refs/heads/trunk"),
+        "so ahead/behind survives the rename"
+    );
+}

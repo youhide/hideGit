@@ -5,14 +5,15 @@
 //! the start, because multi-repository tabs are M6 and retrofitting them into a
 //! single-repository shape would be a rewrite rather than an addition.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
 use hidegit_core::model::{
-    Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState, WorktreeStatus,
+    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, WorktreeStatus,
 };
+use hidegit_core::ops::StartPoint;
 use hidegit_core::{GitBackend, LogPage};
 
 use crate::message::{Message, UiError};
@@ -160,6 +161,144 @@ pub struct Confirmation {
     pub action: Box<Message>,
 }
 
+/// A list of things that can be done to one item.
+///
+/// Deliberately a **centred card, not a positioned context menu.** iced 0.14
+/// gives a `button`'s `on_press` no cursor coordinates and has no popover widget,
+/// so anchoring a menu where the click happened would mean writing a custom
+/// widget with its own overlay layer. A sheet titled with the item it acts on —
+/// `feat/graph` — says the same thing, works from the keyboard, and is the one
+/// mechanism behind per-item actions for branches, tags, remotes and stashes.
+#[derive(Debug, Clone)]
+pub struct ActionSheet {
+    /// The item being acted on, e.g. `feat/graph`.
+    pub title: String,
+    pub items: Vec<SheetItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SheetItem {
+    pub label: String,
+    /// Dispatched when it is chosen. The sheet closes first, so an action that
+    /// raises a confirmation of its own is not fighting for the same layer.
+    pub message: Message,
+    /// Rendered distinctly, per `UI_SPEC.md`: destructive actions must not look
+    /// like the rest.
+    pub destructive: bool,
+}
+
+impl ActionSheet {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            items: Vec::new(),
+        }
+    }
+
+    pub fn item(mut self, label: impl Into<String>, message: Message) -> Self {
+        self.items.push(SheetItem {
+            label: label.into(),
+            message,
+            destructive: false,
+        });
+        self
+    }
+
+    pub fn destructive(mut self, label: impl Into<String>, message: Message) -> Self {
+        self.items.push(SheetItem {
+            label: label.into(),
+            message,
+            destructive: true,
+        });
+        self
+    }
+}
+
+/// A modal that collects text before acting.
+///
+/// A sibling of [`Confirmation`] rather than an extension of it:
+/// `Confirmation::action` is a fixed [`Message`], and an action that depends on
+/// what the user types cannot be one. So the *kind* is stored instead, and
+/// `update` builds the real message from the kind plus the current field values
+/// when it is accepted. That keeps `Message` cloneable and keeps closures out of
+/// application state.
+#[derive(Debug, Clone)]
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub title: String,
+    /// The verb on the button that goes ahead — "Create", never "OK".
+    pub confirm_label: String,
+    pub fields: Vec<PromptField>,
+}
+
+/// One field, and the widget id that lets it be focused.
+///
+/// A correction to what M2 concluded: focus in iced 0.14 is not *observable*, but
+/// it is *settable*, through a widget operation. So raising a prompt can put the
+/// cursor in the first field, and the user does not have to click the thing they
+/// just asked for.
+#[derive(Debug, Clone)]
+pub struct PromptField {
+    pub label: String,
+    pub placeholder: String,
+    pub value: String,
+}
+
+impl PromptField {
+    pub fn new(label: impl Into<String>, placeholder: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            placeholder: placeholder.into(),
+            value: String::new(),
+        }
+    }
+
+    /// A field that starts from an existing value — renaming opens holding the
+    /// current name, the way `git commit --amend` opens holding the old message.
+    pub fn prefilled(label: impl Into<String>, value: impl Into<String>) -> Self {
+        let value = value.into();
+        Self {
+            label: label.into(),
+            placeholder: value.clone(),
+            value,
+        }
+    }
+}
+
+/// Widget ids for the prompt's fields, so they can be focused.
+///
+/// Static because a prompt never has more than two: naming them is simpler than
+/// carrying a generated id through application state.
+pub const PROMPT_FIELD_IDS: [&str; 2] = ["hidegit-prompt-field-0", "hidegit-prompt-field-1"];
+
+/// What a [`Prompt`] is collecting text for.
+///
+/// The prompt is always about the active repository — it is modal, so nothing can
+/// change which one that is while it is up — so the index is not carried here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptKind {
+    /// One field: the new branch's name.
+    NewBranch { from: StartPoint, checkout: bool },
+    /// One field: the new name.
+    RenameBranch { from: String },
+}
+
+impl Prompt {
+    /// The first field's value, trimmed. `None` when it is empty.
+    ///
+    /// Trimmed because a branch name with a trailing space is a name Git will
+    /// refuse, and the refusal would be about whitespace the user cannot see.
+    pub fn first(&self) -> Option<&str> {
+        let value = self.fields.first()?.value.trim();
+        (!value.is_empty()).then_some(value)
+    }
+
+    /// Is there enough here to act on?
+    pub fn is_ready(&self) -> bool {
+        self.first().is_some()
+    }
+}
+
 /// A transient message.
 #[derive(Debug, Clone)]
 pub struct Toast {
@@ -289,6 +428,13 @@ pub struct OpenRepo {
     pub state: RepoState,
     /// The working directory as the staging view shows it.
     pub status: WorktreeStatus,
+    /// Ahead/behind per local branch, keyed by full ref name.
+    ///
+    /// Loaded by its own task rather than as part of a refresh: it costs a commit
+    /// walk per tracking branch, and a refresh runs on every file save through
+    /// the watcher. A branch that tracks nothing is absent, which is different
+    /// from being level with a remote and has to render differently.
+    pub divergence: HashMap<String, Divergence>,
     pub graph: GraphView,
     pub selection: Option<Selection>,
     pub detail: DetailPane,
@@ -349,6 +495,25 @@ impl OpenRepo {
         }
     }
 
+    /// May `HEAD` be moved right now?
+    ///
+    /// A merge or rebase in progress owns `HEAD` until it is finished or aborted,
+    /// so switching branches mid-operation is not something to offer. Read both by
+    /// `update`, before acting, and by the view, to say why a control is disabled —
+    /// `UI_SPEC.md` requires those two answers to be the same one.
+    pub fn can_switch_branches(&self) -> bool {
+        !self.state.is_in_progress()
+    }
+
+    /// Ahead/behind for a branch, or `None` when it tracks nothing.
+    ///
+    /// `None` and `Some(0, 0)` mean different things and must render differently:
+    /// one is "there is no remote to compare with", the other is "level with the
+    /// remote".
+    pub fn divergence_of(&self, full_ref: &str) -> Option<Divergence> {
+        self.divergence.get(full_ref).copied()
+    }
+
     /// The repository's own name, for a window title or a tab.
     pub fn name(&self) -> String {
         self.path
@@ -370,6 +535,10 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// The confirmation currently on screen, if any.
     pub confirming: Option<Confirmation>,
+    /// The action sheet currently on screen, if any.
+    pub sheet: Option<ActionSheet>,
+    /// The prompt currently on screen, if any.
+    pub prompt: Option<Prompt>,
     next_toast_id: u64,
 }
 
@@ -383,6 +552,8 @@ impl Default for App {
             theme: Theme::default(),
             toasts: Vec::new(),
             confirming: None,
+            sheet: None,
+            prompt: None,
             next_toast_id: 0,
         }
     }
@@ -398,6 +569,15 @@ impl App {
             Some(i) => self.repos.get_mut(i),
             None => None,
         }
+    }
+
+    /// Is a modal layer up?
+    ///
+    /// While one is, it owns the keyboard: letting a bare key reach the screen
+    /// behind a question the user has to answer is the worst possible moment to
+    /// act on a stray press.
+    pub fn is_modal(&self) -> bool {
+        self.confirming.is_some() || self.sheet.is_some() || self.prompt.is_some()
     }
 
     /// Raises a toast carrying the error's details for copying.

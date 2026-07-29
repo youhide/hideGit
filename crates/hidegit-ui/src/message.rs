@@ -5,16 +5,18 @@
 //! blocks: a message returns a `Task`, the work happens off the UI thread, and
 //! its result comes back as another message.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{
-    Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState, WorktreeStatus,
+    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, WorktreeStatus,
 };
+use hidegit_core::ops::{CheckoutTarget, StartPoint};
 use hidegit_core::{GitBackend, GitError};
 
-use crate::state::{Pane, Selection, StagingRow};
+use crate::state::{ActionSheet, Pane, Prompt, Selection, StagingRow};
 
 /// A failure, in the shape the UI shows it.
 ///
@@ -78,6 +80,23 @@ pub enum Message {
     /// The confirmation dialog was accepted, dismissed, or never raised.
     ConfirmationAccepted,
     ConfirmationDismissed,
+    /// Raises the list of things that can be done to one item.
+    SheetRequested(Box<ActionSheet>),
+    /// An item was chosen: the sheet closes and its message is dispatched.
+    ///
+    /// Wrapped rather than dispatched directly so closing the sheet happens in
+    /// one place. Without it, choosing an action leaves the sheet sitting over
+    /// whatever the action produced — including a toast reporting that it failed.
+    SheetChosen(Box<Message>),
+    SheetDismissed,
+    /// Raises a modal that collects text before acting.
+    PromptRequested(Box<Prompt>),
+    /// A prompt field changed, by index.
+    PromptChanged(usize, String),
+    /// `Enter`, or the prompt's own button. `update` turns the prompt's kind and
+    /// its current values into the message that does the work.
+    PromptAccepted,
+    PromptDismissed,
     OpenRepository(PathBuf),
     RepositoryOpened(Box<Result<OpenedRepository, UiError>>),
     CloseRepository(usize),
@@ -139,6 +158,30 @@ pub enum RepoMessage {
     /// The graph canvas learned how tall it is, in rows.
     ViewportChanged(usize),
 
+    // ---- branches ----
+    /// Switch to a branch, a commit, or a new branch. Fails rather than
+    /// discarding anything when local changes are in the way.
+    CheckoutRequested(CheckoutTarget),
+    /// Create a branch without switching to it.
+    BranchCreateRequested {
+        name: String,
+        from: StartPoint,
+    },
+    BranchRenameRequested {
+        from: String,
+        to: String,
+    },
+    /// Asks to delete, which confirms rather than acting.
+    BranchDeleteRequested {
+        name: String,
+    },
+    /// The confirmation was accepted. `force` is only ever true because the user
+    /// chose it after the safe form was refused.
+    BranchDeleteConfirmed {
+        name: String,
+        force: bool,
+    },
+
     // ---- async results ----
     CommitsLoaded(Box<Result<Page, UiError>>),
     /// The O(n) pass that makes scrolling to an arbitrary row cheap.
@@ -150,6 +193,9 @@ pub enum RepoMessage {
     /// A write finished. Carries only its failure: on success the refresh that
     /// follows is the whole result, and a toast per click would be noise.
     WriteFinished(Box<Result<(), UiError>>),
+    /// Ahead/behind, loaded separately from a refresh because it costs a commit
+    /// walk per tracking branch and a refresh runs on every file save.
+    DivergenceLoaded(Box<Result<HashMap<String, Divergence>, UiError>>),
     /// Something changed the repository: reload refs, state and history.
     ///
     /// One code path for "something changed", rather than each operation

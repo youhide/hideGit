@@ -5,36 +5,44 @@ use iced::widget::{Space, column, container, responsive, row, text};
 use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
-use crate::message::RepoMessage;
+use crate::message::{Message, RepoMessage};
 use crate::state::{OpenRepo, Pane, ROW_HEIGHT};
 use crate::theme::Palette;
 use crate::widget::{detail, graph, sidebar};
 
+/// The main window.
+///
+/// Emits top-level `Message` rather than `RepoMessage`, because the sidebar's row
+/// actions raise application-level state — an action sheet, a prompt — as well as
+/// addressing one repository. `index` is what lets a row wrap its own
+/// `RepoMessage` up for later dispatch.
 pub fn view<'a>(
     repo: &'a OpenRepo,
+    index: usize,
     palette: &'a Palette,
     cache: &'a iced::widget::canvas::Cache,
-) -> Element<'a, RepoMessage> {
+) -> Element<'a, Message> {
     let border = palette.border;
+    let repo_message = move |m: RepoMessage| Message::Repo(index, m);
 
-    let mut stack = column![toolbar(repo, palette)];
+    let mut stack = column![toolbar(repo, palette).map(repo_message)];
 
     // A repository mid-operation says so, permanently and undismissably: the
     // repository genuinely is in that state, and hiding it is how people lose
     // work.
     if repo.state.is_in_progress() {
-        stack = stack.push(operation_banner(repo.state, palette));
+        stack = stack.push(operation_banner(repo.state, palette).map(repo_message));
     }
 
-    stack = stack.push(divider(border));
+    stack = stack.push(divider(border).map(repo_message));
     stack = stack.push(
         row![
-            sidebar::view(repo, palette),
-            vertical_rule(border),
+            sidebar::view(repo, index, palette),
+            vertical_rule(border).map(repo_message),
             column![
-                graph_pane(repo, palette, cache),
-                divider(border),
-                container(detail::view(repo, palette))
+                graph_pane(repo, palette, cache).map(repo_message),
+                divider(border).map(repo_message),
+                container(detail::view(repo, palette).map(repo_message))
                     .height(Length::FillPortion(4))
                     .width(Fill),
             ]

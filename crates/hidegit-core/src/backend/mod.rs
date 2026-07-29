@@ -25,7 +25,7 @@ mod fake;
 pub use hybrid::HybridBackend;
 
 #[cfg(any(test, feature = "fake"))]
-pub use fake::FakeBackend;
+pub use fake::{Failure, FakeBackend, WriteCall};
 
 use std::collections::HashMap;
 use std::path::Path;

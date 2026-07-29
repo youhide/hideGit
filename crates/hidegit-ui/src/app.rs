@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RevSpec};
-use hidegit_core::ops::{CommitOpts, Patch};
+use hidegit_core::ops::{CheckoutTarget, CommitOpts, Patch};
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
 use iced::widget::canvas;
@@ -22,7 +22,7 @@ use crate::message::{
 };
 use crate::state::{
     App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo, PAGE_SIZE,
-    Pane, ROW_HEIGHT, Screen, Section, Selection,
+    PROMPT_FIELD_IDS, Pane, Prompt, PromptKind, ROW_HEIGHT, Screen, Section, Selection,
 };
 use crate::{screen, watcher, widget};
 
@@ -142,8 +142,110 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::SheetRequested(sheet) => {
+                self.app.sheet = Some(*sheet);
+                Task::none()
+            }
+
+            // The sheet closes as the action goes out. Anything else leaves it
+            // sitting over whatever the action produced — including a toast saying
+            // the action failed, which is the one thing the user needs to read.
+            Message::SheetChosen(action) => {
+                self.app.sheet = None;
+                Task::done(*action)
+            }
+
+            Message::SheetDismissed => {
+                self.app.sheet = None;
+                Task::none()
+            }
+
+            Message::PromptRequested(prompt) => {
+                self.app.prompt = Some(*prompt);
+
+                // Focus is not observable in iced 0.14 but it is settable, so the
+                // cursor lands in the first field without the user having to click
+                // the thing they just asked for.
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::focus(
+                        iced::advanced::widget::Id::new(PROMPT_FIELD_IDS[0]),
+                    ),
+                )
+            }
+
+            Message::PromptChanged(field, value) => {
+                if let Some(prompt) = &mut self.app.prompt
+                    && let Some(field) = prompt.fields.get_mut(field)
+                {
+                    field.value = value;
+                }
+                Task::none()
+            }
+
+            Message::PromptAccepted => {
+                // Taken rather than borrowed: the prompt closes whether or not it
+                // produced an action, and leaving it up after `Enter` would invite
+                // the same branch being created twice.
+                let Some(prompt) = self.app.prompt.take() else {
+                    return Task::none();
+                };
+                match self.prompt_action(&prompt) {
+                    Some(message) => Task::done(message),
+                    None => Task::none(),
+                }
+            }
+
+            Message::PromptDismissed => {
+                self.app.prompt = None;
+                Task::none()
+            }
+
             Message::Repo(index, message) => self.update_repo(index, message),
         }
+    }
+
+    /// Turns a prompt's kind and its typed values into the message that acts.
+    ///
+    /// This is what `Confirmation` cannot do: its action is a fixed `Message`, and
+    /// an action that depends on what was typed has to be built after the typing.
+    ///
+    /// Always about the active repository — a prompt is modal, so nothing can
+    /// change which one that is while it is up.
+    fn prompt_action(&self, prompt: &Prompt) -> Option<Message> {
+        let index = self.app.active?;
+        let value = prompt.first()?.to_owned();
+
+        let message = match &prompt.kind {
+            PromptKind::NewBranch { from, checkout } => {
+                if *checkout {
+                    // One command rather than create-then-switch: `git switch
+                    // --create` is atomic, and two writes would show an
+                    // intermediate state and could half-fail.
+                    RepoMessage::CheckoutRequested(CheckoutTarget::NewBranch {
+                        name: value,
+                        from: from.clone(),
+                    })
+                } else {
+                    RepoMessage::BranchCreateRequested {
+                        name: value,
+                        from: from.clone(),
+                    }
+                }
+            }
+            PromptKind::RenameBranch { from } => {
+                // Renaming to the name it already has is not a failure to report,
+                // it is nothing to do.
+                if value == *from {
+                    return None;
+                }
+                RepoMessage::BranchRenameRequested {
+                    from: from.clone(),
+                    to: value,
+                }
+            }
+        };
+
+        Some(Message::Repo(index, message))
     }
 
     fn insert_repository(&mut self, opened: OpenedRepository) -> Task<Message> {
@@ -167,6 +269,7 @@ impl Hidegit {
             refs: opened.refs,
             state: opened.state,
             status: opened.status,
+            divergence: HashMap::new(),
             graph,
             selection: selection.clone(),
             detail: DetailPane::Empty,
@@ -179,7 +282,11 @@ impl Hidegit {
         self.app.active = Some(index);
         self.app.screen = Screen::Repository;
 
-        let mut tasks = vec![self.checkpoint_task(index), self.load_more_task(index)];
+        let mut tasks = vec![
+            self.checkpoint_task(index),
+            self.load_more_task(index),
+            self.divergence_task(index),
+        ];
         if let Some(selection) = selection {
             tasks.push(
                 Task::done(RepoMessage::Selected(selection)).map(move |m| Message::Repo(index, m)),
@@ -187,6 +294,23 @@ impl Hidegit {
         }
 
         Task::batch(tasks)
+    }
+
+    /// Loads ahead/behind for every tracking branch.
+    ///
+    /// Its own task rather than part of `reread`, because it costs a commit walk
+    /// per tracking branch and `reread` runs on every file save through the
+    /// watcher. Ahead/behind only changes when a ref moves, and the sidebar can
+    /// render perfectly well for the moment before it arrives.
+    fn divergence_task(&self, index: usize) -> Task<Message> {
+        let Some(repo) = self.app.repos.get(index) else {
+            return Task::none();
+        };
+        let backend = Arc::clone(&repo.backend);
+
+        blocking(move || backend.divergence()).map(move |result| {
+            Message::Repo(index, RepoMessage::DivergenceLoaded(Box::new(result)))
+        })
     }
 
     /// Turns a selection into a patch and applies it to the index.
@@ -514,6 +638,74 @@ impl Hidegit {
                 }
             }
 
+            RepoMessage::CheckoutRequested(target) => {
+                // A repository mid-rebase must not be asked to switch branches:
+                // the operation owns HEAD until it is finished or aborted.
+                if !repo.can_switch_branches() {
+                    return Task::none();
+                }
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.checkout(&target))
+            }
+
+            RepoMessage::BranchCreateRequested { name, from } => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.create_branch(&name, &from))
+            }
+
+            RepoMessage::BranchRenameRequested { from, to } => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.rename_branch(&from, &to))
+            }
+
+            // Deleting does not act. It asks, and it says what is at stake —
+            // which for an unmerged branch is commits nothing else points at.
+            RepoMessage::BranchDeleteRequested { name } => {
+                let unmerged = repo
+                    .divergence_of(&format!("refs/heads/{name}"))
+                    .is_none_or(|drift| drift.ahead > 0);
+
+                self.app.confirming = Some(Confirmation {
+                    title: format!("Delete {name}?"),
+                    body: if unmerged {
+                        format!(
+                            "{name} may have commits that no other branch points at. \
+                             Deleting it makes them unreachable."
+                        )
+                    } else {
+                        format!("{name} is level with its upstream, so nothing is lost.")
+                    },
+                    confirm_label: "Delete".to_owned(),
+                    action: Box::new(Message::Repo(
+                        index,
+                        // Never forced from here: the safe form runs first, and
+                        // Git's own refusal is what offers the choice.
+                        RepoMessage::BranchDeleteConfirmed { name, force: false },
+                    )),
+                });
+                Task::none()
+            }
+
+            RepoMessage::BranchDeleteConfirmed { name, force } => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.delete_branch(&name, force))
+            }
+
+            RepoMessage::DivergenceLoaded(result) => {
+                match *result {
+                    Ok(divergence) => repo.divergence = divergence,
+                    // A failure here costs an indicator, not a feature. Saying so
+                    // in a toast would be a dialog about an arrow.
+                    Err(error) => {
+                        tracing::warn!(
+                            summary = %error.summary,
+                            "could not compute ahead/behind"
+                        );
+                    }
+                }
+                Task::none()
+            }
+
             RepoMessage::StagingRowSelected(row) => {
                 if let DetailPane::WorkingDirectory {
                     selected, lines, ..
@@ -689,7 +881,13 @@ impl Hidegit {
                 }
                 cache.clear();
 
-                let mut tasks = vec![self.checkpoint_task(index)];
+                let mut tasks = vec![
+                    self.checkpoint_task(index),
+                    // Refs may have moved, so ahead/behind may have changed. It
+                    // rides along here rather than inside `reread` so a slow
+                    // count never delays the branch list and the graph.
+                    self.divergence_task(index),
+                ];
                 // The staging view holds diffs, which the write just changed.
                 // Reselecting reloads them through the one path that knows how.
                 if matches!(
@@ -712,13 +910,17 @@ impl Hidegit {
         let base = self.screen();
         widget::overlay::wrap(
             base,
-            self.app.confirming.as_ref(),
-            &self.app.toasts,
+            widget::overlay::Layers {
+                confirming: self.app.confirming.as_ref(),
+                sheet: self.app.sheet.as_ref(),
+                prompt: self.app.prompt.as_ref(),
+                toasts: &self.app.toasts,
+            },
             palette,
         )
     }
 
-    /// The screen itself, without the confirmation and toast layers.
+    /// The screen itself, without the modal and toast layers.
     fn screen(&self) -> IcedElement<'_, Message> {
         let palette = &self.app.theme.palette;
 
@@ -730,7 +932,7 @@ impl Hidegit {
                     .get(&index)
                     .expect("every open repository has a canvas cache");
 
-                screen::repository::view(repo, palette, cache).map(move |m| Message::Repo(index, m))
+                screen::repository::view(repo, index, palette, cache)
             }
             _ => screen::welcome::view(&self.app.recents, palette),
         }
@@ -739,27 +941,26 @@ impl Hidegit {
     pub fn subscription(&self) -> Subscription<Message> {
         let context = (
             self.app.active,
-            self.app.confirming.is_some(),
+            self.modal_keys(),
             self.app
                 .active_repo()
                 .is_some_and(|repo| repo.draft.editing),
         );
 
-        let keys =
-            keyboard::listen()
-                .with(context)
-                .map(|((active, confirming, editing), event)| {
-                    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-                        return Message::ToastDismissed(u64::MAX);
-                    };
-                    // A modal question owns the keyboard while it is up. Letting
-                    // `Space` stage something behind a "discard?" dialog would be
-                    // the worst possible moment to act on a stray key.
-                    if confirming {
-                        return modal_shortcut(&key);
-                    }
-                    shortcut(&key, modifiers, active, editing)
-                });
+        let keys = keyboard::listen()
+            .with(context)
+            .map(|((active, modal, editing), event)| {
+                let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                    return Message::ToastDismissed(u64::MAX);
+                };
+                // A modal owns the keyboard while it is up. Letting `Space` stage
+                // something behind a "discard?" dialog would be the worst
+                // possible moment to act on a stray key.
+                if let Some(modal) = modal {
+                    return modal_shortcut(&key, modal);
+                }
+                shortcut(&key, modifiers, active, editing)
+            });
 
         // One watch per open repository, so a change made in an editor or by a
         // `git` command in a terminal refreshes the view on its own.
@@ -773,6 +974,31 @@ impl Hidegit {
 
         Subscription::batch(std::iter::once(keys).chain(watches))
     }
+
+    /// Which modal, if any, currently owns the keyboard.
+    ///
+    /// Topmost first, matching the order `overlay::wrap` stacks them: a
+    /// confirmation raised from a sheet sits over that sheet, so `Esc` has to
+    /// dismiss the confirmation rather than the thing underneath it.
+    fn modal_keys(&self) -> Option<Modal> {
+        if self.app.confirming.is_some() {
+            Some(Modal::Confirmation)
+        } else if self.app.prompt.is_some() {
+            Some(Modal::Prompt)
+        } else if self.app.sheet.is_some() {
+            Some(Modal::Sheet)
+        } else {
+            None
+        }
+    }
+}
+
+/// Which modal layer is on top, for deciding what a key means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Modal {
+    Confirmation,
+    Prompt,
+    Sheet,
 }
 
 /// Maps a key press to a message. `Cmd` on macOS, `Ctrl` elsewhere.
@@ -821,13 +1047,26 @@ fn shortcut(
     }
 }
 
-/// The only keys a confirmation dialog answers to.
-fn modal_shortcut(key: &keyboard::Key) -> Message {
+/// The only keys a modal layer answers to: `Esc` backs out, `Enter` goes ahead.
+///
+/// Everything else becomes the no-op, which is what keeps a bare `j` from
+/// stepping through hunks behind a dialog. A prompt's text still reaches its
+/// field: `keyboard::listen()` observes events, it does not consume them, so
+/// returning the no-op here leaves the focused widget's own handling intact.
+fn modal_shortcut(key: &keyboard::Key, modal: Modal) -> Message {
     use keyboard::key::{Key, Named};
 
-    match key {
-        Key::Named(Named::Escape) => Message::ConfirmationDismissed,
-        Key::Named(Named::Enter) => Message::ConfirmationAccepted,
+    match (key, modal) {
+        (Key::Named(Named::Escape), Modal::Confirmation) => Message::ConfirmationDismissed,
+        (Key::Named(Named::Enter), Modal::Confirmation) => Message::ConfirmationAccepted,
+        (Key::Named(Named::Escape), Modal::Prompt) => Message::PromptDismissed,
+        // `Enter` in the field also submits, through `on_submit`. Both routes
+        // land on the same message and `PromptAccepted` takes the prompt, so the
+        // second arrival finds nothing and does nothing.
+        (Key::Named(Named::Enter), Modal::Prompt) => Message::PromptAccepted,
+        (Key::Named(Named::Escape), Modal::Sheet) => Message::SheetDismissed,
+        // A sheet has no default action. `Enter` on a list of things one of which
+        // may be "Delete" must not pick anything.
         _ => Message::ToastDismissed(u64::MAX),
     }
 }
@@ -1620,22 +1859,360 @@ mod tests {
         assert!(app.app.confirming.is_none());
     }
 
+    // ---- action sheets and prompts ----
+    //
+    // These assert what the UI *asked the backend for*, which is all the UI is
+    // responsible for. Whether the argument vector is right is `HybridBackend`'s
+    // job and is tested against a real repository in `hidegit-core`.
+
+    #[test]
+    fn a_sheet_and_a_prompt_are_raised_and_dismissed_by_state_alone() {
+        let mut app = app_with(1);
+
+        let _ = app.update(Message::SheetRequested(Box::new(
+            crate::state::ActionSheet::new("feat/graph")
+                .item("Checkout", Message::ToastDismissed(0)),
+        )));
+        assert!(app.app.sheet.is_some());
+        assert!(app.app.is_modal());
+
+        let _ = app.update(Message::SheetDismissed);
+        assert!(app.app.sheet.is_none());
+        assert!(!app.app.is_modal());
+    }
+
+    #[test]
+    fn choosing_an_item_closes_the_sheet_before_the_action_runs() {
+        // Found by eye: without this the sheet sat over the toast reporting that
+        // the checkout it had just started was refused — which is the one thing
+        // the user needed to read.
+        let mut app = app_with(1);
+        app.app.sheet = Some(crate::state::ActionSheet::new("feat/graph"));
+
+        let _ = app.update(Message::SheetChosen(Box::new(Message::Repo(
+            0,
+            RepoMessage::CheckoutRequested(CheckoutTarget::Branch("main".to_owned())),
+        ))));
+
+        assert!(app.app.sheet.is_none());
+    }
+
+    #[test]
+    fn a_prompt_raised_from_a_sheet_leaves_no_layer_behind() {
+        // Two answers to the same question. Stacking them would leave a dead
+        // layer over whatever the user does next.
+        let mut app = app_with(1);
+        app.app.sheet = Some(crate::state::ActionSheet::new("feat/graph"));
+
+        // The route a sheet item actually takes.
+        let _ = app.update(Message::SheetChosen(Box::new(Message::PromptRequested(
+            Box::new(rename_prompt("old")),
+        ))));
+        let _ = app.update(Message::PromptRequested(Box::new(rename_prompt("old"))));
+
+        assert!(app.app.sheet.is_none());
+        assert!(app.app.prompt.is_some());
+    }
+
+    fn rename_prompt(from: &str) -> Prompt {
+        Prompt {
+            kind: PromptKind::RenameBranch {
+                from: from.to_owned(),
+            },
+            title: format!("Rename {from}"),
+            confirm_label: "Rename".to_owned(),
+            fields: vec![crate::state::PromptField::prefilled("New name", from)],
+        }
+    }
+
+    /// The action a prompt would produce, without running the task that does it.
+    ///
+    /// A `Task` is interpreted by the iced runtime, which a unit test does not
+    /// have, so the assertion is on the pure function that decides *what* to ask
+    /// for. Whether the backend then builds the right argument vector is
+    /// `HybridBackend`'s job, tested against a real repository in `hidegit-core`.
+    fn action_of(app: &Hidegit) -> Option<RepoMessage> {
+        let prompt = app.app.prompt.clone()?;
+        match app.prompt_action(&prompt)? {
+            Message::Repo(_, message) => Some(message),
+            other => {
+                panic!("a prompt produced something other than a repository action: {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn a_prompt_builds_its_action_from_what_was_typed() {
+        // The whole reason `Prompt` is not a `Confirmation`: the action cannot be
+        // known until the typing is done.
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(rename_prompt("old"))));
+        let _ = app.update(Message::PromptChanged(0, "new".to_owned()));
+
+        match action_of(&app) {
+            Some(RepoMessage::BranchRenameRequested { from, to }) => {
+                assert_eq!((from.as_str(), to.as_str()), ("old", "new"));
+            }
+            other => panic!("expected a rename, got {other:?}"),
+        }
+
+        let _ = app.update(Message::PromptAccepted);
+        assert!(app.app.prompt.is_none(), "accepting closes the prompt");
+    }
+
+    /// A "new branch" prompt, as the sidebar raises it.
+    fn new_branch_prompt(checkout: bool) -> Prompt {
+        Prompt {
+            kind: PromptKind::NewBranch {
+                from: hidegit_core::ops::StartPoint::Head,
+                checkout,
+            },
+            title: "New branch".to_owned(),
+            confirm_label: "Create".to_owned(),
+            fields: vec![crate::state::PromptField::new("Name", "feat/something")],
+        }
+    }
+
+    #[test]
+    fn a_prompt_accepted_empty_does_nothing_at_all() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(new_branch_prompt(true))));
+
+        assert!(
+            !app.app.prompt.as_ref().unwrap().is_ready(),
+            "the button is unavailable, and Enter must not act either"
+        );
+        assert!(action_of(&app).is_none(), "nothing to attempt");
+
+        let _ = app.update(Message::PromptAccepted);
+        assert!(app.app.prompt.is_none(), "it still closes");
+    }
+
+    #[test]
+    fn a_name_typed_with_stray_whitespace_is_trimmed_before_it_reaches_git() {
+        // Git refuses a ref name with a trailing space, and the refusal would be
+        // about whitespace the user cannot see.
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(new_branch_prompt(false))));
+        let _ = app.update(Message::PromptChanged(0, "  feat/spaced  ".to_owned()));
+
+        match action_of(&app) {
+            Some(RepoMessage::BranchCreateRequested { name, from }) => {
+                assert_eq!(name, "feat/spaced");
+                assert_eq!(from, hidegit_core::ops::StartPoint::Head);
+            }
+            other => panic!("expected a create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_only_whitespace_is_not_a_name() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(new_branch_prompt(true))));
+        let _ = app.update(Message::PromptChanged(0, "   ".to_owned()));
+
+        assert!(!app.app.prompt.as_ref().unwrap().is_ready());
+        assert!(action_of(&app).is_none());
+    }
+
+    #[test]
+    fn renaming_a_branch_to_the_name_it_already_has_is_nothing_to_do() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(rename_prompt("main"))));
+
+        // The field opens prefilled, so accepting without typing means "no
+        // change" — not a failure to report, just nothing.
+        assert!(
+            app.app.prompt.as_ref().unwrap().is_ready(),
+            "prefilled, so the button is available"
+        );
+        assert!(action_of(&app).is_none());
+    }
+
+    #[test]
+    fn a_new_branch_that_is_checked_out_is_one_command_not_two() {
+        // `git switch --create` is atomic. Creating and then switching would show
+        // an intermediate state and could half-fail.
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(new_branch_prompt(true))));
+        let _ = app.update(Message::PromptChanged(0, "feat/graph".to_owned()));
+
+        match action_of(&app) {
+            Some(RepoMessage::CheckoutRequested(CheckoutTarget::NewBranch { name, from })) => {
+                assert_eq!(name, "feat/graph");
+                assert_eq!(from, hidegit_core::ops::StartPoint::Head);
+            }
+            other => panic!("expected one atomic checkout, got {other:?}"),
+        }
+    }
+
+    // ---- branches ----
+
+    #[test]
+    fn deleting_a_branch_asks_before_it_acts_and_never_forces() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BranchDeleteRequested {
+                name: "feat/graph".to_owned(),
+            },
+        ));
+
+        let confirmation = app
+            .app
+            .confirming
+            .as_ref()
+            .expect("deleting a branch confirms");
+        assert!(
+            confirmation.title.contains("feat/graph"),
+            "names the branch"
+        );
+        assert_eq!(confirmation.confirm_label, "Delete");
+
+        match confirmation.action.as_ref() {
+            Message::Repo(0, RepoMessage::BranchDeleteConfirmed { name, force }) => {
+                assert_eq!(name, "feat/graph");
+                // The safe form runs first; Git's own refusal is what offers the
+                // choice to force.
+                assert!(!force, "the confirmation must never pre-select --force");
+            }
+            other => panic!("expected a guarded delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_repository_mid_operation_does_not_switch_branches() {
+        // A rebase owns HEAD until it is finished or aborted, and the rule the
+        // view reads to disable a control is the same one `update` reads before
+        // acting on one.
+        let mut app = app_with(1);
+        assert!(app.app.repos[0].can_switch_branches());
+
+        for state in [
+            RepoState::Rebasing,
+            RepoState::Merging,
+            RepoState::CherryPicking,
+        ] {
+            app.app.repos[0].state = state;
+            assert!(
+                !app.app.repos[0].can_switch_branches(),
+                "{state:?} owns HEAD"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_ahead_behind_count_costs_an_indicator_not_a_dialog() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::DivergenceLoaded(Box::new(Err(UiError {
+                summary: "counting failed".to_owned(),
+                details: String::new(),
+            }))),
+        ));
+
+        assert!(
+            app.app.toasts.is_empty(),
+            "a dialog about an arrow would be worse than no arrow"
+        );
+        assert!(app.app.repos[0].divergence.is_empty());
+    }
+
+    #[test]
+    fn ahead_and_behind_arrive_and_are_kept_per_branch() {
+        let mut app = app_with(1);
+        let mut counts = HashMap::new();
+        counts.insert(
+            "refs/heads/main".to_owned(),
+            hidegit_core::model::Divergence {
+                ahead: 2,
+                behind: 1,
+            },
+        );
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::DivergenceLoaded(Box::new(Ok(counts))),
+        ));
+
+        let repo = &app.app.repos[0];
+        assert_eq!(
+            repo.divergence_of("refs/heads/main"),
+            Some(hidegit_core::model::Divergence {
+                ahead: 2,
+                behind: 1
+            })
+        );
+        assert_eq!(
+            repo.divergence_of("refs/heads/never-pushed"),
+            None,
+            "absent is not the same as level with a remote"
+        );
+    }
+
     #[test]
     fn a_modal_dialog_owns_the_keyboard() {
         // Staging something behind an unanswered "discard?" would be the worst
         // possible moment to act on a stray key.
+        let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+        let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
+        let space = keyboard::Key::Named(keyboard::key::Named::Space);
+
         assert!(matches!(
-            modal_shortcut(&keyboard::Key::Named(keyboard::key::Named::Escape)),
+            modal_shortcut(&escape, Modal::Confirmation),
             Message::ConfirmationDismissed
         ));
         assert!(matches!(
-            modal_shortcut(&keyboard::Key::Named(keyboard::key::Named::Enter)),
+            modal_shortcut(&enter, Modal::Confirmation),
             Message::ConfirmationAccepted
         ));
         assert!(matches!(
-            modal_shortcut(&keyboard::Key::Named(keyboard::key::Named::Space)),
+            modal_shortcut(&space, Modal::Confirmation),
             Message::ToastDismissed(_)
         ));
+    }
+
+    #[test]
+    fn each_modal_layer_answers_escape_and_enter_for_itself() {
+        let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+        let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
+
+        assert!(matches!(
+            modal_shortcut(&escape, Modal::Prompt),
+            Message::PromptDismissed
+        ));
+        assert!(matches!(
+            modal_shortcut(&enter, Modal::Prompt),
+            Message::PromptAccepted
+        ));
+        assert!(matches!(
+            modal_shortcut(&escape, Modal::Sheet),
+            Message::SheetDismissed
+        ));
+        // A sheet has no default action: `Enter` on a list one of whose items may
+        // be "Delete" must not pick anything at all.
+        assert!(matches!(
+            modal_shortcut(&enter, Modal::Sheet),
+            Message::ToastDismissed(_)
+        ));
+    }
+
+    #[test]
+    fn the_topmost_modal_is_the_one_that_owns_the_keyboard() {
+        // A destructive sheet item raises a confirmation *over* the sheet, so
+        // `Esc` has to back out of the question rather than the list behind it.
+        let mut app = app_with(1);
+        app.app.sheet = Some(crate::state::ActionSheet::new("feat/graph"));
+        assert_eq!(app.modal_keys(), Some(Modal::Sheet));
+
+        app.app.confirming = Some(Confirmation {
+            title: "Delete feat/graph?".to_owned(),
+            body: String::new(),
+            confirm_label: "Delete".to_owned(),
+            action: Box::new(Message::ToastDismissed(0)),
+        });
+        assert_eq!(app.modal_keys(), Some(Modal::Confirmation));
     }
 
     #[test]

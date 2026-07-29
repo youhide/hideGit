@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use super::{GitBackend, gix_read, not_implemented};
 use crate::error::GitError;
@@ -30,7 +30,15 @@ use crate::process::GitCommand;
 /// the UI never holds a lock across an await.
 #[derive(Debug)]
 pub struct HybridBackend {
-    repo: gix::ThreadSafeRepository,
+    /// The gitoxide handle, behind a lock because it is *replaced* on
+    /// invalidation, not just consulted.
+    ///
+    /// gitoxide reads `.git/config` when a repository is opened and caches the
+    /// result. A `git` command that rewrites config — renaming a branch, adding a
+    /// remote, `push --set-upstream` — therefore leaves this handle answering from
+    /// the old file, and the symptom is subtle: the renamed branch silently
+    /// appears to track nothing. Reopening is what keeps the read side honest.
+    repo: RwLock<gix::ThreadSafeRepository>,
     workdir: PathBuf,
     git_dir: PathBuf,
     /// Memoised traversals, keyed by what was walked.
@@ -48,7 +56,10 @@ impl HybridBackend {
     /// `gix::Repository` carries per-thread caches and is deliberately not
     /// `Sync`; the thread-safe handle hands out a local one per call.
     fn repo(&self) -> gix::Repository {
-        self.repo.to_thread_local()
+        self.repo
+            .read()
+            .expect("the repository lock is never poisoned across a panic-free path")
+            .to_thread_local()
     }
 
     /// Refuses to write while another Git process holds the index.
@@ -125,7 +136,7 @@ impl GitBackend for HybridBackend {
             .unwrap_or_else(|| git_dir.clone());
 
         Ok(Self {
-            repo,
+            repo: RwLock::new(repo),
             workdir,
             git_dir,
             walks: Mutex::new(HashMap::new()),
@@ -205,6 +216,29 @@ impl GitBackend for HybridBackend {
             .lock()
             .expect("the walk cache mutex is never poisoned across a panic-free path")
             .clear();
+
+        // Reopened, not just cleared. gitoxide caches `.git/config` from the
+        // moment a repository is opened, so a rename or a remote change would
+        // otherwise be invisible to every subsequent read.
+        match gix_read::open(&self.workdir) {
+            Ok(reopened) => {
+                *self
+                    .repo
+                    .write()
+                    .expect("the repository lock is never poisoned across a panic-free path") =
+                    reopened;
+            }
+            // Keeping the old handle is strictly better than having none: the
+            // repository may be mid-operation, and a stale read beats a panic
+            // in a method that cannot report an error.
+            Err(error) => {
+                tracing::warn!(
+                    path = %self.workdir.display(),
+                    %error,
+                    "could not reopen the repository after a write; reads may be stale"
+                );
+            }
+        }
     }
 
     // ---- write: git CLI ----------------------------------------------
