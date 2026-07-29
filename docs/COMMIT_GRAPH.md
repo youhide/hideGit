@@ -39,10 +39,11 @@ pub struct GraphLayout {
 }
 
 pub struct GraphRow {
-    pub commit: ObjectId,
-    pub lane:   usize,            // column this commit's node sits in
-    pub kind:   NodeKind,         // Normal | Merge | Root | Boundary
-    pub edges:  Vec<Edge>,        // everything drawn in this row's vertical band
+    pub commit:   ObjectId,
+    pub lane:     usize,          // column this commit's node sits in
+    pub kind:     NodeKind,       // Normal | Merge | Root | Boundary
+    pub incoming: bool,           // a lane was already descending into this commit
+    pub edges:    Vec<Edge>,      // everything drawn in this row's vertical band
 }
 
 pub struct Edge {
@@ -58,6 +59,10 @@ pub enum EdgeRole {
     Close,      // a lane terminating here (its awaited commit arrived)
 }
 ```
+
+`incoming` exists because edges describe what *leaves* a node. Without it the top half of a node's
+own lane has nothing describing it, and a renderer would leave a gap above every commit that is not
+a branch tip.
 
 `Boundary` marks a commit whose parents are outside the loaded window — it is drawn with a fade
 rather than a line into nothing, so a partially loaded history does not look like a truncated one.

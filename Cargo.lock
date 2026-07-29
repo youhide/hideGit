@@ -2435,7 +2435,10 @@ dependencies = [
  "directories",
  "hidegit-core",
  "hidegit-ui",
+ "iced",
+ "rfd",
  "serde",
+ "tempfile",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -2471,6 +2474,7 @@ dependencies = [
  "iced",
  "rfd",
  "time",
+ "tokio",
  "tracing",
 ]
 

@@ -140,7 +140,17 @@ pub(crate) fn refs(repo: &gix::Repository) -> Result<Refs, GitError> {
         };
 
         let name = to_ref_name(reference.name());
-        let unpeeled = reference.target().id().to_owned();
+
+        // `origin/HEAD` is symbolic: a pointer at another ref, not a branch of
+        // its own. Listing it would duplicate whatever it points at under a
+        // name nobody checks out.
+        let unpeeled = match reference.target() {
+            gix::refs::TargetRef::Object(id) => id.to_owned(),
+            gix::refs::TargetRef::Symbolic(target) => {
+                tracing::debug!(ref_name = %name.full, target = %target.as_bstr(), "skipping symbolic reference");
+                continue;
+            }
+        };
 
         let peeled = match reference.peel_to_id() {
             Ok(id) => to_id(&id),

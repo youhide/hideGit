@@ -176,6 +176,20 @@ impl Fixture {
         self.record(&message)
     }
 
+    /// Points one ref at another, the way `origin/HEAD` points at a remote's
+    /// default branch. A symbolic ref is a pointer, not a branch.
+    pub fn symbolic_ref(self, name: &str, target: &str) -> Self {
+        self.git(["symbolic-ref", name, target]);
+        self
+    }
+
+    /// Creates a remote-tracking ref without needing an actual remote.
+    pub fn remote_ref(self, name: &str) -> Self {
+        let head = self.git(["rev-parse", "HEAD"]);
+        self.git(["update-ref", name, &head]);
+        self
+    }
+
     /// Adds a lightweight tag at `HEAD`.
     pub fn tag(self, name: &str) -> Self {
         self.git(["tag", name]);

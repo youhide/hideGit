@@ -29,6 +29,12 @@ pub struct GraphRow {
     /// The column this commit's node sits in.
     pub lane: usize,
     pub kind: NodeKind,
+    /// Whether a lane was already descending into this commit.
+    ///
+    /// Edges describe what leaves a node, so without this the top half of a
+    /// node's own lane has nothing describing it and a renderer would leave a
+    /// gap above every commit that is not a branch tip.
+    pub incoming: bool,
     pub edges: Vec<Edge>,
 }
 
@@ -185,6 +191,7 @@ fn layout_row(commit: &Commit, known: &HashSet<ObjectId>, state: &mut LaneState)
     // 1. Claim a lane. Every lane waiting for this commit converges here; the
     //    leftmost becomes the commit's own and the rest close into it.
     let waiting: Vec<usize> = state.awaiting(commit.id).collect();
+    let incoming = !waiting.is_empty();
     let lane = match waiting.split_first() {
         Some((&first, rest)) => {
             for &other in rest {
@@ -271,6 +278,7 @@ fn layout_row(commit: &Commit, known: &HashSet<ObjectId>, state: &mut LaneState)
         commit: commit.id,
         lane,
         kind,
+        incoming,
         edges,
     }
 }
@@ -293,6 +301,25 @@ impl Checkpoints {
             interval,
             saved: Vec::new(),
         }
+    }
+
+    /// Walks a whole history for its checkpoints, discarding the rows.
+    ///
+    /// This is the pass that makes scrolling to an arbitrary position cheap:
+    /// afterwards, laying out a screenful costs a replay of at most `interval`
+    /// rows instead of a replay from `HEAD`. It is O(n) and belongs off the UI
+    /// thread.
+    pub fn build(commits: &[Commit], interval: usize) -> Self {
+        let known: HashSet<ObjectId> = commits.iter().map(|c| c.id).collect();
+        let mut state = LaneState::new();
+        let mut checkpoints = Self::new(interval);
+
+        for (i, commit) in commits.iter().enumerate() {
+            checkpoints.record(i, &state);
+            let _ = layout_row(commit, &known, &mut state);
+        }
+
+        checkpoints
     }
 
     /// Records the state that precedes `row`, if `row` falls on the interval.
@@ -430,6 +457,16 @@ mod tests {
             "both lanes await E, so the right one closes into the left"
         );
         assert_eq!(layout.rows[4].kind, NodeKind::Root);
+    }
+
+    #[test]
+    fn a_tip_has_no_incoming_lane_and_everything_else_does() {
+        let history = [commit('A', &['B']), commit('B', &[]), commit('X', &[])];
+        let layout = layout(&history);
+
+        assert!(!layout.rows[0].incoming, "A is a branch tip");
+        assert!(layout.rows[1].incoming, "B is descended into from A");
+        assert!(!layout.rows[2].incoming, "X is an unrelated tip");
     }
 
     #[test]
@@ -656,6 +693,29 @@ mod tests {
             let mut sorted = roles.clone();
             sorted.sort();
             assert_eq!(roles, sorted, "edges come out in drawing order");
+        }
+    }
+
+    #[test]
+    fn building_checkpoints_separately_matches_building_them_inline() {
+        let history = [
+            commit('A', &['B']),
+            commit('B', &['C', 'D']),
+            commit('C', &['E']),
+            commit('D', &['E']),
+            commit('E', &[]),
+        ];
+
+        let (_, inline) = layout_with_checkpoints(&history, 2);
+        let standalone = Checkpoints::build(&history, 2);
+
+        for row in 0..history.len() {
+            assert_eq!(
+                inline.resume_at(row).0,
+                standalone.resume_at(row).0,
+                "the row a resume starts from must not depend on how it was built"
+            );
+            assert_eq!(inline.resume_at(row).1, standalone.resume_at(row).1);
         }
     }
 

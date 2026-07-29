@@ -542,3 +542,23 @@ fn the_graph_lays_out_a_real_repository_the_way_git_describes_it() {
     assert_eq!(root_row.kind, hidegit_core::graph::NodeKind::Root);
     assert_eq!(root_row.commit, repo.id("A"));
 }
+
+#[test]
+fn a_symbolic_ref_is_a_pointer_and_is_not_listed_as_a_branch() {
+    // Every clone has `origin/HEAD`, which points at another ref rather than
+    // holding an object id of its own.
+    let repo = fixture()
+        .commit("A")
+        .remote_ref("refs/remotes/origin/main")
+        .symbolic_ref("refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        .build();
+
+    let refs = repo.backend().refs().expect("references are readable");
+
+    let remotes: Vec<&str> = refs.remotes.iter().map(|b| b.name.short.as_str()).collect();
+    assert_eq!(
+        remotes,
+        vec!["origin/main"],
+        "origin/HEAD duplicates whatever it points at and is not a branch"
+    );
+}

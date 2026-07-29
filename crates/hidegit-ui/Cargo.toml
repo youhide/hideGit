@@ -13,7 +13,8 @@ hidegit-core = { workspace = true, features = ["fake"] }
 hidegit-forge.workspace = true
 iced = { workspace = true, features = ["canvas", "tokio", "advanced"] }
 rfd = "0.15"
-time = { workspace = true, features = ["formatting", "local-offset"] }
+tokio = { version = "1", features = ["rt"] }
+time = { workspace = true, features = ["formatting", "local-offset", "macros"] }
 tracing.workspace = true
 
 [lints]
