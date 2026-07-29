@@ -107,10 +107,6 @@ pub enum RepoMessage {
     /// is. Which one it means is decided from the row's section.
     StageRequested(Vec<PathBuf>),
     UnstageRequested(Vec<PathBuf>),
-    /// `Space`: stage the selected row if it is not staged, unstage it if it
-    /// is. Which one it means depends on the selection, which only `update`
-    /// can see, so the key press carries no payload.
-    StageToggleRequested,
     /// `Cmd+Backspace`: discard whatever row is selected. Confirms, like every
     /// other route to discarding does.
     DiscardSelectedRequested,
@@ -123,6 +119,19 @@ pub enum RepoMessage {
     FileStageRequested,
     /// Acts on exactly the lines picked out so far.
     SelectedLinesStageRequested,
+    // ---- the commit composer ----
+    SubjectChanged(String),
+    BodyChanged(String),
+    AmendToggled(bool),
+    SignOffToggled(bool),
+    /// A text field gained or lost focus. Bare-letter shortcuts are suppressed
+    /// while it holds it.
+    EditingChanged(bool),
+    /// `Cmd+Enter`, or the Commit button.
+    CommitRequested,
+    /// The commit landed; its id is read back rather than assumed, because a
+    /// hook or a signature can change what was actually recorded.
+    Committed(Box<Result<ObjectId, UiError>>),
     /// Asks to discard, which raises a confirmation rather than acting.
     DiscardRequested(Vec<PathBuf>),
     /// The confirmation was accepted. Only ever sent by the dialog.

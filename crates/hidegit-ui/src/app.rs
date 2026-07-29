@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RevSpec};
-use hidegit_core::ops::Patch;
+use hidegit_core::ops::{CommitOpts, Patch};
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
 use iced::widget::canvas;
@@ -21,8 +21,8 @@ use crate::message::{
     CommitLoad, Message, OpenedRepository, Page, Refreshed, RepoMessage, StatusLoad, UiError,
 };
 use crate::state::{
-    App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, GraphView, OpenRepo, PAGE_SIZE, Pane,
-    ROW_HEIGHT, Screen, Section, Selection,
+    App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo, PAGE_SIZE,
+    Pane, ROW_HEIGHT, Screen, Section, Selection,
 };
 use crate::{screen, widget};
 
@@ -173,6 +173,7 @@ impl Hidegit {
             focus: Pane::Graph,
             diff_mode: crate::state::DiffMode::default(),
             hunk: 0,
+            draft: Draft::default(),
         });
         self.caches.insert(index, canvas::Cache::new());
         self.app.active = Some(index);
@@ -457,20 +458,6 @@ impl Hidegit {
                 Task::none()
             }
 
-            // `Space` on a row. Which direction it means depends on which list
-            // the row is in, which the key press could not know.
-            RepoMessage::StageToggleRequested => {
-                let Some((section, path)) = selected_path(repo) else {
-                    return Task::none();
-                };
-                let message = match section {
-                    Section::Staged => RepoMessage::UnstageRequested(vec![path]),
-                    Section::Conflicted => return Task::none(),
-                    _ => RepoMessage::StageRequested(vec![path]),
-                };
-                Task::done(Message::Repo(index, message))
-            }
-
             RepoMessage::DiscardSelectedRequested => {
                 let Some((section, path)) = selected_path(repo) else {
                     return Task::none();
@@ -542,6 +529,89 @@ impl Hidegit {
                 }
                 Task::none()
             }
+
+            RepoMessage::SubjectChanged(text) => {
+                repo.draft.editing = true;
+                // Newlines are how a subject stops being a subject. Pasting a
+                // whole message into the field folds the rest into the body
+                // rather than silently producing a one-line commit.
+                match text.split_once('\n') {
+                    Some((subject, rest)) => {
+                        repo.draft.subject = subject.to_owned();
+                        if !rest.trim().is_empty() {
+                            if !repo.draft.body.is_empty() {
+                                repo.draft.body.push('\n');
+                            }
+                            repo.draft.body.push_str(rest.trim_start_matches('\n'));
+                        }
+                    }
+                    None => repo.draft.subject = text,
+                }
+                Task::none()
+            }
+
+            RepoMessage::BodyChanged(text) => {
+                repo.draft.editing = true;
+                repo.draft.body = text;
+                Task::none()
+            }
+
+            RepoMessage::AmendToggled(on) => {
+                repo.draft.amend = on;
+                // Amending starts from the message being replaced, the way
+                // `git commit --amend` opens an editor already holding it.
+                if on && repo.draft.subject.trim().is_empty() {
+                    if let Some(head) = repo.graph.commits.first() {
+                        repo.draft.subject = head.summary.clone();
+                        repo.draft.body = head.body.clone().unwrap_or_default();
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::SignOffToggled(on) => {
+                repo.draft.sign_off = on;
+                Task::none()
+            }
+
+            RepoMessage::EditingChanged(editing) => {
+                repo.draft.editing = editing;
+                Task::none()
+            }
+
+            RepoMessage::CommitRequested => {
+                // A repository mid-rebase does not offer to commit, and an
+                // empty subject is not a message Git will accept.
+                if repo.state.is_in_progress() || !repo.draft.is_ready() {
+                    return Task::none();
+                }
+
+                let message = repo.draft.message();
+                let opts = CommitOpts {
+                    amend: repo.draft.amend,
+                    sign_off: repo.draft.sign_off,
+                    allow_empty: false,
+                };
+                let backend = Arc::clone(&repo.backend);
+
+                blocking(move || backend.create_commit(&message, opts)).map(move |result| {
+                    Message::Repo(index, RepoMessage::Committed(Box::new(result)))
+                })
+            }
+
+            RepoMessage::Committed(result) => match *result {
+                Ok(_) => {
+                    // The draft is only cleared once the commit actually
+                    // landed. A failed hook must not cost the user the message
+                    // they wrote.
+                    repo.draft = Draft::default();
+                    Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                }
+                Err(error) => {
+                    self.app.toast(&error);
+                    Task::none()
+                }
+            },
 
             RepoMessage::LineToggled(hunk, line) => {
                 if let DetailPane::WorkingDirectory { lines, .. } = &mut repo.detail
@@ -667,11 +737,17 @@ impl Hidegit {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let context = (self.app.active, self.app.confirming.is_some());
+        let context = (
+            self.app.active,
+            self.app.confirming.is_some(),
+            self.app
+                .active_repo()
+                .is_some_and(|repo| repo.draft.editing),
+        );
 
         keyboard::listen()
             .with(context)
-            .map(|((active, confirming), event)| {
+            .map(|((active, confirming, editing), event)| {
                 let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
                     return Message::ToastDismissed(u64::MAX);
                 };
@@ -681,17 +757,29 @@ impl Hidegit {
                 if confirming {
                     return modal_shortcut(&key);
                 }
-                shortcut(&key, modifiers, active)
+                shortcut(&key, modifiers, active, editing)
             })
     }
 }
 
 /// Maps a key press to a message. `Cmd` on macOS, `Ctrl` elsewhere.
-fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, active: Option<usize>) -> Message {
+fn shortcut(
+    key: &keyboard::Key,
+    modifiers: keyboard::Modifiers,
+    active: Option<usize>,
+    editing: bool,
+) -> Message {
     use keyboard::key::{Key, Named};
 
     let nothing = Message::ToastDismissed(u64::MAX);
     let command = modifiers.command();
+
+    // While a text field has focus, every unmodified key belongs to it.
+    // `keyboard::listen()` is global and `j`, `k` and `Space` are all bound, so
+    // without this, typing a commit message navigates hunks and stages files.
+    if editing && !command {
+        return nothing;
+    }
 
     let repo = |m: RepoMessage| match active {
         Some(index) => Message::Repo(index, m),
@@ -699,7 +787,7 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, active: Option<
     };
 
     match key {
-        Key::Named(Named::Space) if !command => repo(RepoMessage::StageToggleRequested),
+        Key::Named(Named::Enter) if command => repo(RepoMessage::CommitRequested),
         Key::Named(Named::Backspace) if command => repo(RepoMessage::DiscardSelectedRequested),
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
         Key::Character(c) if command && c.as_str() == "d" => repo(RepoMessage::DiffModeToggled),
@@ -1144,6 +1232,128 @@ mod tests {
     }
 
     #[test]
+    fn a_focused_text_field_swallows_the_bare_letter_shortcuts() {
+        // `keyboard::listen()` is global and `j`/`k` are bound unmodified, so
+        // without this, typing a commit message steps through hunks.
+        let j = keyboard::Key::Character("j".into());
+        let space = keyboard::Key::Named(keyboard::key::Named::Space);
+        let mods = keyboard::Modifiers::default();
+
+        assert!(matches!(
+            shortcut(&j, mods, Some(0), false),
+            Message::Repo(0, RepoMessage::HunkStepped(1))
+        ));
+        assert!(matches!(
+            shortcut(&j, mods, Some(0), true),
+            Message::ToastDismissed(_)
+        ));
+
+        // `Space` is not a global shortcut at all. It is the one bare key whose
+        // leak would be destructive, and iced 0.14 offers no way to know a text
+        // field holds focus until its first keystroke has already arrived.
+        assert!(matches!(
+            shortcut(&space, mods, Some(0), false),
+            Message::ToastDismissed(_)
+        ));
+    }
+
+    #[test]
+    fn a_command_shortcut_still_works_while_typing() {
+        // `Cmd+Enter` has to commit from inside the message field, which is
+        // where the user's hands already are.
+        let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
+        let command = keyboard::Modifiers::COMMAND;
+
+        assert!(matches!(
+            shortcut(&enter, command, Some(0), true),
+            Message::Repo(0, RepoMessage::CommitRequested)
+        ));
+    }
+
+    #[test]
+    fn a_draft_becomes_the_message_git_stores() {
+        let mut draft = Draft {
+            subject: "  The subject  ".into(),
+            body: "  The body.  ".into(),
+            ..Draft::default()
+        };
+        assert_eq!(draft.message(), "The subject\n\nThe body.\n");
+
+        draft.body = String::new();
+        assert_eq!(
+            draft.message(),
+            "The subject",
+            "no trailing blank line when there is no body"
+        );
+    }
+
+    #[test]
+    fn committing_needs_a_subject_and_a_repository_that_is_not_mid_operation() {
+        let mut app = app_with(3);
+
+        // No subject yet.
+        let _ = app.update(Message::Repo(0, RepoMessage::CommitRequested));
+        assert!(app.app.toasts.is_empty(), "nothing was attempted");
+
+        app.app.repos[0].draft.subject = "Subject".into();
+        app.app.repos[0].state = RepoState::Rebasing;
+        let _ = app.update(Message::Repo(0, RepoMessage::CommitRequested));
+        assert!(
+            app.app.toasts.is_empty(),
+            "a repository mid-rebase does not offer to commit"
+        );
+    }
+
+    #[test]
+    fn a_failed_commit_keeps_the_message_the_user_wrote() {
+        // A rejected hook must not cost them the text.
+        let mut app = app_with(3);
+        app.app.repos[0].draft.subject = "Subject".into();
+        app.app.repos[0].draft.body = "Body".into();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Committed(Box::new(Err(UiError {
+                summary: "the pre-commit hook failed".into(),
+                details: String::new(),
+            }))),
+        ));
+
+        let draft = &app.app.active_repo().unwrap().draft;
+        assert_eq!(draft.subject, "Subject");
+        assert_eq!(draft.body, "Body");
+        assert_eq!(app.app.toasts.len(), 1);
+    }
+
+    #[test]
+    fn a_successful_commit_clears_the_draft() {
+        let mut app = app_with(3);
+        app.app.repos[0].draft.subject = "Subject".into();
+        app.app.repos[0].draft.amend = true;
+
+        let id = ObjectId::from_hex(&format!("{:040x}", 7)).unwrap();
+        let _ = app.update(Message::Repo(0, RepoMessage::Committed(Box::new(Ok(id)))));
+
+        let draft = &app.app.active_repo().unwrap().draft;
+        assert!(draft.subject.is_empty());
+        assert!(!draft.amend, "and stops amending");
+    }
+
+    #[test]
+    fn a_pasted_message_folds_its_extra_lines_into_the_body() {
+        // Newlines are how a subject stops being a subject.
+        let mut app = app_with(3);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SubjectChanged("Subject line\nand the rest".into()),
+        ));
+
+        let draft = &app.app.active_repo().unwrap().draft;
+        assert_eq!(draft.subject, "Subject line");
+        assert_eq!(draft.body, "and the rest");
+    }
+
+    #[test]
     fn toggling_a_line_adds_it_and_toggling_again_takes_it_back_out() {
         let mut app = staging(crate::state::Section::Unstaged, 0);
 
@@ -1366,8 +1576,9 @@ mod tests {
     }
 
     #[test]
-    fn space_on_a_changed_row_stages_and_on_a_staged_row_unstages() {
-        // The key press carries no direction; the row's section decides.
+    fn the_selected_row_is_resolved_from_the_section_it_sits_in() {
+        // `Cmd+Backspace` and the row buttons both need the path behind the
+        // open row, and the same path can sit in two sections at once.
         let app = staging(crate::state::Section::Unstaged, 0);
         let repo = app.app.active_repo().unwrap();
         assert_eq!(
@@ -1482,7 +1693,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&key, mods, None),
+            shortcut(&key, mods, None, false),
             Message::OpenDialogRequested
         ));
     }
@@ -1492,7 +1703,7 @@ mod tests {
         let key = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
 
         assert!(matches!(
-            shortcut(&key, keyboard::Modifiers::default(), None),
+            shortcut(&key, keyboard::Modifiers::default(), None, false),
             Message::ToastDismissed(_)
         ));
     }

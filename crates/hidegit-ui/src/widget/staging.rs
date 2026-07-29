@@ -9,14 +9,16 @@
 //! discard. Discard always asks first, because it is the one with nothing
 //! behind it — the change it destroys was never committed anywhere.
 
-use iced::widget::{Space, button, column, container, row, scrollable, text, tooltip};
+use iced::widget::{
+    Space, button, column, container, mouse_area, row, scrollable, text, text_input, tooltip,
+};
 use iced::{Center, Fill, Font, Length, Padding};
 
-use hidegit_core::model::{ChangeStatus, Conflict, Diff, FileChange, WorktreeStatus};
+use hidegit_core::model::{ChangeStatus, Conflict, Diff, FileChange, RepoState, WorktreeStatus};
 
 use crate::Element;
 use crate::message::RepoMessage;
-use crate::state::{DiffMode, Section, StagingRow};
+use crate::state::{DiffMode, Draft, Section, StagingRow};
 use crate::theme::Palette;
 use crate::widget::diff;
 use crate::widget::sidebar::{heading, item_style};
@@ -33,10 +35,19 @@ pub fn view<'a>(
     lines: &'a std::collections::BTreeSet<(usize, usize)>,
     focused_hunk: usize,
     mode: DiffMode,
+    draft: &'a Draft,
+    state: RepoState,
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
-    if status.is_clean() {
-        return clean(palette);
+    // Even a clean tree gets the composer: amending the last commit is a real
+    // thing to want, and it needs nothing staged.
+    if status.is_clean() && !draft.amend {
+        return column![
+            container(clean(palette)).height(Fill),
+            horizontal_rule(palette.border),
+            container(composer(status, draft, state, palette)).width(Length::Fixed(LIST_WIDTH)),
+        ]
+        .into();
     }
 
     let mut list = column![].spacing(0);
@@ -83,18 +94,27 @@ pub fn view<'a>(
     }
 
     row![
-        container(scrollable(list).height(Fill)).width(Length::Fixed(LIST_WIDTH)),
+        column![
+            mouse_area(container(scrollable(list).height(Fill)).width(Length::Fixed(LIST_WIDTH)))
+                .on_press(RepoMessage::EditingChanged(false)),
+            horizontal_rule(palette.border),
+            composer(status, draft, state, palette),
+        ]
+        .width(Length::Fixed(LIST_WIDTH)),
         vertical_rule(palette.border),
-        container(pane(
-            staged,
-            unstaged,
-            selected,
-            lines,
-            focused_hunk,
-            mode,
-            palette,
-        ))
-        .width(Fill),
+        mouse_area(
+            container(pane(
+                staged,
+                unstaged,
+                selected,
+                lines,
+                focused_hunk,
+                mode,
+                palette,
+            ))
+            .width(Fill),
+        )
+        .on_press(RepoMessage::EditingChanged(false)),
     ]
     .height(Fill)
     .into()
@@ -374,6 +394,176 @@ fn vertical_rule<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
     container(Space::new())
         .width(Length::Fixed(1.0))
         .height(Fill)
+        .style(move |_| container::Style {
+            background: Some(colour.into()),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The commit message editor, and the button that acts on it.
+///
+/// Sits under the file lists rather than in the diff pane, because it is about
+/// the whole commit rather than about whichever file is open.
+fn composer<'a>(
+    status: &'a WorktreeStatus,
+    draft: &'a Draft,
+    state: RepoState,
+    palette: &'a Palette,
+) -> Element<'a, RepoMessage> {
+    let palette_copy = *palette;
+
+    // `on_input` is the only focus signal iced 0.14 offers: focus lives inside
+    // the widget and is neither observable nor settable from here. Wrapping the
+    // field in a `mouse_area` to catch the click that grants focus does not
+    // work — the `mouse_area` swallows it and the field never focuses at all.
+    let subject = text_input("Summary", &draft.subject)
+        .on_input(RepoMessage::SubjectChanged)
+        // `Enter` in the subject commits, the way it does in every other
+        // one-line message field.
+        .on_submit(RepoMessage::CommitRequested)
+        .size(13.0)
+        .padding(Padding::from([6, 8]));
+
+    let body = text_input("Description (optional)", &draft.body)
+        .on_input(RepoMessage::BodyChanged)
+        .size(13.0)
+        .padding(Padding::from([6, 8]));
+
+    // Why the button is unavailable is stated rather than left to be guessed.
+    let blocker = if state.is_in_progress() {
+        Some(format!("{} in progress", describe_state(state)))
+    } else if !draft.is_ready() {
+        Some("A summary is required".to_owned())
+    } else if status.staged.is_empty() && !draft.amend {
+        Some("Nothing staged".to_owned())
+    } else {
+        None
+    };
+
+    let label = if draft.amend {
+        "Amend last commit"
+    } else {
+        "Commit"
+    };
+    let mut commit = button(
+        container(text(label).size(13.0))
+            .center_x(Fill)
+            .padding(Padding::from([6, 12])),
+    )
+    .width(Fill)
+    .padding(0)
+    .style(move |_, s| commit_style(palette_copy, s));
+
+    if blocker.is_none() {
+        commit = commit.on_press(RepoMessage::CommitRequested);
+    }
+
+    let mut stack = column![
+        subject,
+        body,
+        row![
+            toggle("Amend", draft.amend, RepoMessage::AmendToggled, palette),
+            toggle(
+                "Sign off",
+                draft.sign_off,
+                RepoMessage::SignOffToggled,
+                palette
+            ),
+        ]
+        .spacing(14),
+        commit,
+    ]
+    .spacing(8);
+
+    if let Some(reason) = blocker {
+        stack = stack.push(container(text(reason).size(11.0).color(palette.muted)).center_x(Fill));
+    }
+
+    // iced 0.14 keeps text-input focus inside the widget and does not report
+    // it, so hideGit tracks it from the click that grants it. Clicking into
+    // this area means the next keystroke is a character, not a shortcut;
+    // clicking the lists or the diff means it is a shortcut again.
+    container(stack)
+        .padding(Padding::from([10, 12]))
+        .width(Fill)
+        .into()
+}
+
+fn describe_state(state: RepoState) -> &'static str {
+    match state {
+        RepoState::Clean => "Nothing",
+        RepoState::Merging => "A merge",
+        RepoState::Rebasing => "A rebase",
+        RepoState::CherryPicking => "A cherry-pick",
+        RepoState::Reverting => "A revert",
+        RepoState::Bisecting => "A bisect",
+    }
+}
+
+fn toggle<'a>(
+    label: &'a str,
+    on: bool,
+    message: impl Fn(bool) -> RepoMessage + 'a,
+    palette: &Palette,
+) -> Element<'a, RepoMessage> {
+    let palette = *palette;
+    // A box glyph as well as a colour, so the state reads without hue.
+    let glyph = if on { "☑" } else { "☐" };
+
+    button(
+        container(
+            row![
+                text(glyph)
+                    .size(ITEM_SIZE)
+                    .color(if on { palette.accent } else { palette.muted }),
+                text(label).size(11.0).color(palette.muted),
+            ]
+            .spacing(5)
+            .align_y(Center),
+        )
+        .padding(Padding::from([2, 4])),
+    )
+    .padding(0)
+    .style(move |_, status| item_style(palette, false, status))
+    .on_press(message(!on))
+    .into()
+}
+
+fn commit_style(palette: Palette, status: button::Status) -> button::Style {
+    let (background, text_color) = match status {
+        button::Status::Disabled => (
+            iced::Color {
+                a: 0.25,
+                ..palette.accent
+            },
+            palette.muted,
+        ),
+        button::Status::Hovered | button::Status::Pressed => (
+            iced::Color {
+                a: 0.85,
+                ..palette.accent
+            },
+            iced::Color::WHITE,
+        ),
+        _ => (palette.accent, iced::Color::WHITE),
+    };
+
+    button::Style {
+        background: Some(background.into()),
+        text_color,
+        border: iced::Border {
+            radius: 6.0.into(),
+            ..iced::Border::default()
+        },
+        ..button::Style::default()
+    }
+}
+
+fn horizontal_rule<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
+    container(Space::new())
+        .width(Fill)
+        .height(Length::Fixed(1.0))
         .style(move |_| container::Style {
             background: Some(colour.into()),
             ..container::Style::default()

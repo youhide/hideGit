@@ -279,8 +279,42 @@ impl GitBackend for HybridBackend {
         Ok(())
     }
 
-    fn create_commit(&self, _message: &str, _opts: CommitOpts) -> Result<ObjectId, GitError> {
-        Err(not_implemented("commit", "M2"))
+    fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError> {
+        self.guard_index()?;
+
+        // `--file -` rather than `-m`: a commit message is arbitrary text from
+        // the user, and passing it on stdin means no length limit, no encoding
+        // surprises, and no argument that could begin with a `-`.
+        let mut command = GitCommand::new("commit").args(["--file", "-"]);
+        if opts.amend {
+            command = command.arg("--amend");
+        }
+        if opts.sign_off {
+            command = command.arg("--signoff");
+        }
+        if opts.allow_empty {
+            command = command.arg("--allow-empty");
+        }
+        // Git strips comment lines and trailing whitespace from a message it
+        // reads from a file. hideGit's editor is not Git's, so a line the user
+        // typed starting with `#` is theirs to keep.
+        command = command.arg("--cleanup=whitespace");
+
+        command
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run_with_stdin(Some(message.as_bytes()))?;
+        self.invalidate();
+
+        // Hooks and GPG signing are the user's `git` doing its job, which is
+        // half the reason writes shell out at all — so the new commit's id is
+        // read back rather than assumed.
+        let head = GitCommand::new("rev-parse")
+            .arg("HEAD")
+            .cwd(&self.workdir)
+            .run()?;
+        ObjectId::from_hex(head.trimmed_stdout().trim())
+            .ok_or_else(|| GitError::RefNotFound("HEAD".to_owned()))
     }
 
     fn checkout(&self, _target: &CheckoutTarget) -> Result<(), GitError> {

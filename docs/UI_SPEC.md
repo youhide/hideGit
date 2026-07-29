@@ -197,12 +197,31 @@ left, the selected file's diff on the right.
 The sidebar badge counts every entry across all four sections, so a file that is both staged and
 changed counts twice — the same way `git status` lists it under two headings.
 
-Each row carries its own actions: `+` to stage, `−` to unstage, `✕` to discard. `Space` does the
-same as the row's primary action, deciding direction from the section the selection is in;
-`Cmd+Backspace` discards it. Discarding a *staged* change does nothing by keyboard — unstaging and
-then destroying is two decisions, and one key must not stand for both.
+Each row carries its own actions: `+` to stage, `−` to unstage, `✕` to discard. `Cmd+Backspace`
+discards the open row. Discarding a *staged* change does nothing by keyboard — unstaging and then
+destroying is two decisions, and one key must not stand for both.
 
-The commit composer sits below these lists.
+**`Space` is not bound.** The spec's table lists it as stage/unstage, and it is deliberately absent
+until M6's keyboard-navigation work. iced 0.14 keeps text-input focus inside the widget: it is
+neither observable nor settable from the application, and wrapping a field in a `mouse_area` to
+catch the click that grants focus swallows that click so the field never focuses at all. So a
+global key binding cannot know whether the commit message field is being typed into until its
+first keystroke has already been delivered — and `Space` is the one bare key whose leak would
+stage a file. `j`/`k` remain bound because their leak only moves a highlight.
+
+## Commit composer
+
+Sits under the file lists, because it is about the whole commit rather than about whichever file is
+open. Subject and description are separate fields; `Enter` in the subject commits, as does
+`Cmd+Enter` from either.
+
+- **Amend** starts from the message it is replacing, the way `git commit --amend` opens an editor
+  already holding it, and stays available with nothing staged — rewording the last commit is a
+  real thing to want.
+- **Sign off** appends the trailer Git itself would.
+- The Commit button says why it is unavailable rather than leaving it to be guessed: *"A summary is
+  required"*, *"Nothing staged"*, *"A rebase in progress"*.
+- A failed commit keeps the message. A rejected hook must not cost the user what they wrote.
 
 ## Confirmations and toasts
 

@@ -648,3 +648,164 @@ fn stage_patch_refuses_while_the_index_is_locked() {
         Err(hidegit_core::GitError::IndexLocked(_))
     ));
 }
+
+// ---- commit ------------------------------------------------------------
+
+use hidegit_core::ops::CommitOpts;
+
+#[test]
+fn committing_records_what_was_staged_and_leaves_the_rest() {
+    let repo = fixture()
+        .edit("kept.txt", "original\n", "base")
+        .stage("staged.txt", "new file\n")
+        .write("kept.txt", "edited but not staged\n")
+        .build();
+    let backend = repo.backend();
+
+    let id = backend
+        .create_commit("Add a file", CommitOpts::default())
+        .expect("committing succeeds");
+
+    let detail = backend.commit(id).expect("the new commit is readable");
+    assert_eq!(detail.commit.summary, "Add a file");
+    assert_eq!(
+        detail.changes.len(),
+        1,
+        "only the staged file is in the commit"
+    );
+
+    let status = backend.status().unwrap();
+    assert!(status.staged.is_empty());
+    assert_eq!(
+        status.unstaged.len(),
+        1,
+        "the unstaged edit survived the commit"
+    );
+}
+
+#[test]
+fn a_subject_and_body_are_separated_by_a_blank_line() {
+    let repo = fixture().stage("f.txt", "x\n").build();
+    let backend = repo.backend();
+
+    let id = backend
+        .create_commit(
+            "The subject\n\nThe body, at length.\n",
+            CommitOpts::default(),
+        )
+        .unwrap();
+
+    let detail = backend.commit(id).unwrap();
+    assert_eq!(detail.commit.summary, "The subject");
+    assert_eq!(
+        detail.commit.body.as_deref(),
+        Some("The body, at length."),
+        "the body is what follows the blank line"
+    );
+}
+
+#[test]
+fn a_message_line_starting_with_a_hash_is_kept() {
+    // Git strips comment lines from a message it reads from a file. hideGit's
+    // editor is not Git's, so a `#` the user typed is theirs.
+    let repo = fixture().stage("f.txt", "x\n").build();
+    let backend = repo.backend();
+
+    let id = backend
+        .create_commit("Fix #42\n\n# not a comment here\n", CommitOpts::default())
+        .unwrap();
+
+    let detail = backend.commit(id).unwrap();
+    assert_eq!(detail.commit.summary, "Fix #42");
+    assert_eq!(detail.commit.body.as_deref(), Some("# not a comment here"));
+}
+
+#[test]
+fn amending_replaces_the_last_commit_rather_than_adding_one() {
+    let repo = fixture()
+        .edit("f.txt", "one\n", "first")
+        .stage("f.txt", "two\n")
+        .build();
+    let backend = repo.backend();
+
+    let before = backend.commit_count(&hidegit_core::RevSpec::All).unwrap();
+    let id = backend
+        .create_commit(
+            "Reworded",
+            CommitOpts {
+                amend: true,
+                ..CommitOpts::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        backend.commit_count(&hidegit_core::RevSpec::All).unwrap(),
+        before,
+        "amending does not lengthen history"
+    );
+    assert_eq!(backend.commit(id).unwrap().commit.summary, "Reworded");
+}
+
+#[test]
+fn signing_off_appends_the_trailer_git_would() {
+    let repo = fixture().stage("f.txt", "x\n").build();
+    let backend = repo.backend();
+
+    let id = backend
+        .create_commit(
+            "Subject",
+            CommitOpts {
+                sign_off: true,
+                ..CommitOpts::default()
+            },
+        )
+        .unwrap();
+
+    let body = backend.commit(id).unwrap().commit.body.unwrap_or_default();
+    assert!(
+        body.contains("Signed-off-by: hideGit Fixture <fixture@hidegit.invalid>"),
+        "the trailer names the committer git itself would use: {body}"
+    );
+}
+
+#[test]
+fn committing_nothing_fails_rather_than_making_an_empty_commit() {
+    let repo = fixture().commit("base").build();
+    let backend = repo.backend();
+
+    match backend.create_commit("nothing here", CommitOpts::default()) {
+        Err(hidegit_core::GitError::Command { .. }) => {}
+        other => panic!("expected git to refuse, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_returned_id_is_read_back_rather_than_assumed() {
+    // Hooks and GPG signing can change what actually lands, which is half the
+    // reason writes shell out at all.
+    let repo = fixture().stage("f.txt", "x\n").build();
+    let backend = repo.backend();
+
+    let id = backend
+        .create_commit("Subject", CommitOpts::default())
+        .unwrap();
+
+    match backend.head().unwrap() {
+        hidegit_core::model::Head::Branch { target, .. } => assert_eq!(target, id),
+        other => panic!("expected an attached HEAD, got {other:?}"),
+    }
+}
+
+#[test]
+fn committing_refuses_while_the_index_is_locked() {
+    let repo = fixture().stage("f.txt", "x\n").build();
+    let backend = repo.backend();
+
+    std::fs::write(backend.git_dir().join("index.lock"), b"").unwrap();
+
+    assert!(matches!(
+        backend.create_commit("Subject", CommitOpts::default()),
+        Err(hidegit_core::GitError::IndexLocked(_))
+    ));
+}

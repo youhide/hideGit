@@ -296,6 +296,47 @@ pub struct OpenRepo {
     pub diff_mode: DiffMode,
     /// Which hunk `J`/`K` last stepped to, so the diff view can scroll to it.
     pub hunk: usize,
+    /// The commit message being written, and whether it is being amended.
+    pub draft: Draft,
+}
+
+/// The commit message in progress.
+///
+/// Kept on the repository rather than in the widget so it survives a refresh:
+/// staging another hunk halfway through writing a message must not throw the
+/// message away.
+#[derive(Debug, Default, Clone)]
+pub struct Draft {
+    pub subject: String,
+    pub body: String,
+    pub amend: bool,
+    pub sign_off: bool,
+    /// A text field has keyboard focus, so bare-letter shortcuts must not fire.
+    ///
+    /// Without this, typing "jk" into a commit message steps through hunks:
+    /// `keyboard::listen()` is global and `j`/`k` are bound unmodified.
+    pub editing: bool,
+}
+
+impl Draft {
+    /// The message as Git stores it: subject, blank line, body.
+    pub fn message(&self) -> String {
+        let subject = self.subject.trim();
+        let body = self.body.trim();
+        if body.is_empty() {
+            subject.to_owned()
+        } else {
+            format!("{subject}\n\n{body}\n")
+        }
+    }
+
+    /// Is there enough here to commit?
+    ///
+    /// A subject is the one part Git will not invent: an empty message aborts
+    /// the commit, which reads as nothing happening.
+    pub fn is_ready(&self) -> bool {
+        !self.subject.trim().is_empty()
+    }
 }
 
 impl OpenRepo {

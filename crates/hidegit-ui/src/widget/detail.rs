@@ -31,6 +31,8 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
             lines,
             repo.hunk,
             repo.diff_mode,
+            &repo.draft,
+            repo.state,
             palette,
         ),
     };
