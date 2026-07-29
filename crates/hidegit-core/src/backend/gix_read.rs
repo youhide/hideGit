@@ -476,12 +476,8 @@ pub(crate) fn diff(repo: &gix::Repository, target: &DiffTarget) -> Result<Diff, 
                 .map_err(|_| GitError::RefNotFound(to.to_hex()))?;
             (Some(from), Some(to))
         }
-        DiffTarget::Staged | DiffTarget::Unstaged => {
-            return Err(super::not_implemented(
-                "diffing the working directory",
-                "M2",
-            ));
-        }
+        DiffTarget::Staged => return worktree_diff(repo, Half::Staged),
+        DiffTarget::Unstaged => return worktree_diff(repo, Half::Unstaged),
     };
 
     let old_tree = match old {
@@ -645,9 +641,22 @@ fn to_file_diff(
         }
     };
 
-    let old = load_side(repo, old_id)?;
-    let new = load_side(repo, new_id)?;
+    assemble(
+        path,
+        status,
+        load_side(repo, old_id)?,
+        load_side(repo, new_id)?,
+    )
+}
 
+/// Turns two loaded sides into a file's diff, or into the placeholder that
+/// stands in for one.
+fn assemble(
+    path: PathBuf,
+    status: ChangeStatus,
+    old: Side,
+    new: Side,
+) -> Result<FileDiff, GitError> {
     let content = match (&old, &new) {
         (Side::TooLarge(bytes), _) | (_, Side::TooLarge(bytes)) => {
             FileDiffContent::TooLarge { bytes: *bytes }
@@ -663,6 +672,120 @@ fn to_file_diff(
         status,
         content,
     })
+}
+
+/// Which of the two working-directory diffs is being asked for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Half {
+    /// `HEAD` against the index — what a commit would contain.
+    Staged,
+    /// The index against the working tree — what a commit would leave behind.
+    Unstaged,
+}
+
+/// Diffs one half of the working directory.
+///
+/// The set of changed paths comes from [`status`] rather than from a second
+/// traversal, so the staging view's file list and the diff it shows for a file
+/// can never disagree about what changed. Content for each side is then loaded
+/// per path: from a tree, from the index, or from disk.
+fn worktree_diff(repo: &gix::Repository, half: Half) -> Result<Diff, GitError> {
+    let status = status(repo)?;
+    let changes = match half {
+        Half::Staged => &status.staged,
+        Half::Unstaged => &status.unstaged,
+    };
+
+    let head_tree = match repo.head_tree_id_or_empty() {
+        Ok(id) => Some(
+            repo.find_tree(id)
+                .map_err(|e| GitError::gix("reading the HEAD tree", e))?,
+        ),
+        // An unborn HEAD has no tree; everything staged reads as an addition.
+        Err(_) => None,
+    };
+    let index = repo
+        .index_or_empty()
+        .map_err(|e| GitError::gix("reading the index", e))?;
+
+    let mut files = Vec::with_capacity(changes.len());
+    for change in changes {
+        // A rename's old content lives under its old path.
+        let old_path = match &change.status {
+            ChangeStatus::Renamed { from } | ChangeStatus::Copied { from } => from.as_path(),
+            _ => change.path.as_path(),
+        };
+
+        let (old, new) = match half {
+            Half::Staged => (
+                tree_side(repo, head_tree.as_ref(), old_path)?,
+                index_side(repo, &index, &change.path)?,
+            ),
+            Half::Unstaged => (
+                index_side(repo, &index, old_path)?,
+                disk_side(repo, &change.path)?,
+            ),
+        };
+
+        files.push(assemble(
+            change.path.clone(),
+            change.status.clone(),
+            old,
+            new,
+        )?);
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let stats = summarise(&files);
+    Ok(Diff { files, stats })
+}
+
+/// The content a path has in a tree, or nothing if it is absent from it.
+fn tree_side(
+    repo: &gix::Repository,
+    tree: Option<&gix::Tree<'_>>,
+    path: &Path,
+) -> Result<Side, GitError> {
+    let Some(tree) = tree else {
+        return Ok(Side::Text(Vec::new()));
+    };
+    let entry = tree
+        .clone()
+        .peel_to_entry_by_path(path)
+        .map_err(|e| GitError::gix("looking a path up in a tree", e))?;
+
+    match entry {
+        Some(entry) => load_side(repo, Some(entry.object_id())),
+        None => Ok(Side::Text(Vec::new())),
+    }
+}
+
+/// The content a path has in the index, or nothing if it is absent from it.
+fn index_side(
+    repo: &gix::Repository,
+    index: &gix::index::File,
+    path: &Path,
+) -> Result<Side, GitError> {
+    let rela = gix::path::to_unix_separators_on_windows(gix::path::into_bstr(path));
+    match index.entry_by_path(rela.as_ref()) {
+        Some(entry) => load_side(repo, Some(entry.id)),
+        None => Ok(Side::Text(Vec::new())),
+    }
+}
+
+/// The content a path has on disk, or nothing if it is no longer there.
+fn disk_side(repo: &gix::Repository, path: &Path) -> Result<Side, GitError> {
+    let absolute = repo
+        .workdir()
+        .ok_or_else(|| GitError::NotARepository(repo.git_dir().to_path_buf()))?
+        .join(path);
+
+    match std::fs::read(&absolute) {
+        Ok(data) => Ok(classify(data)),
+        // A deleted file has no content, which is exactly an empty new side.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Side::Text(Vec::new())),
+        Err(e) => Err(GitError::Io(e)),
+    }
 }
 
 /// One side of a file diff, after the checks that decide whether it can be
@@ -687,17 +810,20 @@ fn load_side(repo: &gix::Repository, id: Option<gix::ObjectId>) -> Result<Side, 
         return Ok(Side::Binary);
     }
 
-    let data = object.into_blob().data.clone();
+    Ok(classify(object.into_blob().data.clone()))
+}
 
+/// Decides whether some bytes can be shown as text, by size and by content.
+fn classify(data: Vec<u8>) -> Side {
     if data.len() as u64 > MAX_DIFF_BYTES {
-        return Ok(Side::TooLarge(data.len() as u64));
+        return Side::TooLarge(data.len() as u64);
     }
     // The same heuristic Git uses: a NUL byte in the first 8000 bytes.
     if data[..data.len().min(8000)].contains(&0) {
-        return Ok(Side::Binary);
+        return Side::Binary;
     }
 
-    Ok(Side::Text(data))
+    Side::Text(data)
 }
 
 /// Collects unified-diff hunks into the domain model.
@@ -719,8 +845,13 @@ impl ConsumeHunk for HunkCollector {
 
         let lines = lines
             .iter()
-            .map(|(kind, text)| {
-                let text = String::from_utf8_lossy(text)
+            .map(|(kind, raw)| {
+                // A line that does not end in a newline is the last line of its
+                // side of a file that has none. That has to survive into the
+                // model: a patch built without the `\ No newline at end of
+                // file` marker silently appends one.
+                let no_newline = !raw.ends_with(b"\n");
+                let text = String::from_utf8_lossy(raw)
                     .trim_end_matches('\n')
                     .to_owned();
                 match kind {
@@ -730,6 +861,7 @@ impl ConsumeHunk for HunkCollector {
                             old_lineno: Some(old_lineno),
                             new_lineno: Some(new_lineno),
                             text,
+                            no_newline,
                         };
                         old_lineno += 1;
                         new_lineno += 1;
@@ -741,6 +873,7 @@ impl ConsumeHunk for HunkCollector {
                             old_lineno: Some(old_lineno),
                             new_lineno: None,
                             text,
+                            no_newline,
                         };
                         old_lineno += 1;
                         line
@@ -751,6 +884,7 @@ impl ConsumeHunk for HunkCollector {
                             old_lineno: None,
                             new_lineno: Some(new_lineno),
                             text,
+                            no_newline,
                         };
                         new_lineno += 1;
                         line

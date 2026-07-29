@@ -683,6 +683,107 @@ fn the_lists_are_sorted_by_path_whatever_order_the_walk_finished_in() {
 }
 
 #[test]
+fn the_staged_diff_shows_the_index_against_head() {
+    let repo = fixture()
+        .edit("f.txt", "one\ntwo\nthree\n", "base")
+        .stage("f.txt", "one\nTWO\nthree\n")
+        .build();
+
+    let diff = repo
+        .backend()
+        .diff(&DiffTarget::Staged)
+        .expect("the index is diffable against HEAD");
+
+    assert_eq!(diff.files.len(), 1);
+    let FileDiffContent::Text { hunks } = &diff.files[0].content else {
+        panic!("a text file must produce text hunks");
+    };
+    let added: Vec<&str> = hunks[0]
+        .lines
+        .iter()
+        .filter(|l| l.kind == LineKind::Added)
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(added, vec!["TWO"]);
+}
+
+#[test]
+fn the_unstaged_diff_shows_the_working_tree_against_the_index() {
+    let repo = fixture()
+        .edit("f.txt", "one\ntwo\n", "base")
+        .write("f.txt", "one\ntwo\nthree\n")
+        .build();
+
+    let diff = repo
+        .backend()
+        .diff(&DiffTarget::Unstaged)
+        .expect("the working tree is diffable against the index");
+
+    let FileDiffContent::Text { hunks } = &diff.files[0].content else {
+        panic!("a text file must produce text hunks");
+    };
+    let added: Vec<&str> = hunks[0]
+        .lines
+        .iter()
+        .filter(|l| l.kind == LineKind::Added)
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(added, vec!["three"]);
+}
+
+#[test]
+fn staging_a_change_moves_it_from_one_half_of_the_diff_to_the_other() {
+    let repo = fixture()
+        .edit("f.txt", "before\n", "base")
+        .stage("f.txt", "after\n")
+        .build();
+    let backend = repo.backend();
+
+    assert_eq!(
+        backend.diff(&DiffTarget::Staged).unwrap().files.len(),
+        1,
+        "the change is in the index"
+    );
+    assert!(
+        backend
+            .diff(&DiffTarget::Unstaged)
+            .unwrap()
+            .files
+            .is_empty(),
+        "and the working tree matches the index, so nothing is left over"
+    );
+}
+
+#[test]
+fn a_file_without_a_trailing_newline_says_so_on_the_line_that_ends_it() {
+    // The marker a patch needs. Losing it means a patch built from this diff
+    // silently appends a newline.
+    let repo = fixture()
+        .edit("f.txt", "has newline\n", "base")
+        .write("f.txt", "no trailing newline")
+        .build();
+
+    let diff = repo.backend().diff(&DiffTarget::Unstaged).unwrap();
+    let FileDiffContent::Text { hunks } = &diff.files[0].content else {
+        panic!("a text file must produce text hunks");
+    };
+
+    let added = hunks[0]
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Added)
+        .expect("the rewritten line is an addition");
+    assert!(added.no_newline, "the new side ends without a newline");
+
+    let removed = hunks[0]
+        .lines
+        .iter()
+        .find(|l| l.kind == LineKind::Removed)
+        .expect("the original line is a removal");
+    assert!(!removed.no_newline, "the old side ended with one");
+}
+
+#[test]
 fn operations_from_later_milestones_say_which_milestone_they_land_in() {
     let repo = fixture().commit("A").build();
     let backend = repo.backend();

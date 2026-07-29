@@ -246,6 +246,26 @@ pub struct Diff {
 `RepoState` is not cosmetic. A repository mid-rebase must not offer "commit" as though nothing is
 happening — the UI reads this to decide which actions are even available.
 
+`DiffTarget::Staged` and `DiffTarget::Unstaged` take their set of changed paths from `status`
+rather than from a traversal of their own, so the staging view's file list and the diff it shows
+for a file cannot disagree about what changed.
+
+### Building a patch
+
+Staging part of a file means handing `git apply --cached` a patch, so a diff has to be able to
+become patch text again. `hidegit_core::patch::serialize` does that, over a `Selection` of hunks
+or of individual lines. Applying it in reverse is how unstaging and hunk-level discard are
+expressed — one code path for all four.
+
+Two things there are easy to get wrong and invisible when you do. A file whose last line has no
+newline needs the `\ No newline at end of file` marker, or every partial stage silently appends
+one; `DiffLine::no_newline` exists to carry that through the model. And the `@@` counts are
+recomputed rather than copied, because a partial selection changes them: an unselected removal
+becomes a context line, an unselected addition disappears, and a skipped hunk moves the new-side
+start of every hunk after it. `tests/staging.rs` applies each case with the real `git apply` and
+checks the index afterwards, because a patch that reads correctly but does not apply is worth
+nothing.
+
 `staged` and `unstaged` are two different diffs, not two halves of one list: `staged` is `HEAD`
 against the index — what a commit would contain — and `unstaged` is the index against the working
 tree. A file modified, staged, and then edited again appears in **both**, which is correct rather
