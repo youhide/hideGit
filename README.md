@@ -5,9 +5,11 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](./docs/ROADMAP.md)
 
-> **Pre-alpha.** There is no application to run yet. The repository currently holds the
-> architecture and roadmap that the implementation will follow. See [ROADMAP](./docs/ROADMAP.md)
-> for what ships when, and [ARCHITECTURE](./docs/ARCHITECTURE.md) for how it is built.
+> **Pre-alpha.** It runs, and it reads. You can open a repository, scroll its history and read any
+> commit's diff. Nothing writes yet — staging and committing arrive in
+> [M2](./docs/ROADMAP.md#m2--working-directory), remotes in
+> [M3](./docs/ROADMAP.md#m3--branches--remotes). See [ROADMAP](./docs/ROADMAP.md) for what ships
+> when, and [ARCHITECTURE](./docs/ARCHITECTURE.md) for how it is built.
 
 ---
 
@@ -30,7 +32,7 @@ resolve conflicts — and tells you when something needs your attention on a pul
 
 | | Feature | Milestone |
 |---|---|---|
-| ⬜ | Commit graph, commit details, file tree, diff viewer | [M1](./docs/ROADMAP.md#m1--scaffold--read-only-viewer) |
+| 🟡 | Commit graph, commit details, file tree, diff viewer | [M1](./docs/ROADMAP.md#m1--scaffold--read-only-viewer) |
 | ⬜ | Stage / unstage by file and by hunk, commit, amend | [M2](./docs/ROADMAP.md#m2--working-directory) |
 | ⬜ | Branches, tags, stash, fetch / pull / push, remotes | [M3](./docs/ROADMAP.md#m3--branches--remotes) |
 | ⬜ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
@@ -69,11 +71,13 @@ Pre-built installers (`.dmg`, `.msi`, AppImage, Flatpak) arrive at
 ```sh
 git clone https://github.com/<owner>/hideGit
 cd hideGit
-cargo run --release
+cargo run --release                      # opens the welcome screen
+cargo run --release -- /path/to/a/repo   # opens a repository straight away
 ```
 
-> The Cargo workspace does not exist yet — it is the first deliverable of
-> [M1](./docs/ROADMAP.md#m1--scaffold--read-only-viewer). These commands will work once it lands.
+No C toolchain is needed — a consequence of choosing gitoxide over libgit2. On Linux you will also
+need the usual windowing and font development packages (`libxkbcommon-dev`, `libwayland-dev`,
+`libfontconfig1-dev`, or your distribution's equivalents).
 
 ## Built with
 
@@ -82,7 +86,7 @@ cargo run --release
 | [iced](https://iced.rs) `0.14` | GUI toolkit — the Elm architecture, GPU-rendered |
 | [gitoxide (`gix`)](https://github.com/GitoxideLabs/gitoxide) `0.86` | Git read operations, in pure Rust |
 | system `git` | Push, merge, rebase — see [ADR-0002](./docs/adr/0002-git-backend-hybrid.md) |
-| [octocrab](https://github.com/XAMPPRocky/octocrab) `0.54` | GitHub API client, for PR alerts |
+| [octocrab](https://github.com/XAMPPRocky/octocrab) `0.54` | GitHub API client, for PR alerts (from [M4](./docs/ROADMAP.md#m4--pull-request-alerts)) |
 
 ## Documentation
 

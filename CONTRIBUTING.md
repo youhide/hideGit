@@ -33,12 +33,13 @@ No C toolchain is required. That is a deliberate consequence of choosing gitoxid
 ```sh
 git clone https://github.com/<owner>/hideGit
 cd hideGit
-cargo run
+cargo run                       # opens the welcome screen
+cargo run -- /path/to/a/repo    # opens a repository straight away
 ```
 
-> **Current status:** the Cargo workspace does not exist yet. It is the first deliverable of
-> [M1](./docs/ROADMAP.md#m1--scaffold--read-only-viewer). Until then the repository is
-> documentation only, and the commands below describe the workflow you will use once code lands.
+Set `HIDEGIT_LOG` to change what is logged — `HIDEGIT_LOG=hidegit=debug,hidegit_core=debug` logs
+every `git` invocation with its full argument vector, which is usually what you want when
+something behaves unexpectedly.
 
 ## Repository layout
 
@@ -71,9 +72,15 @@ cargo test --workspace
 Clippy warnings are errors. If a lint is genuinely wrong for a piece of code, `#[allow(...)]` it
 narrowly with a comment explaining why, rather than loosening the workspace configuration.
 
-> **CI is deliberately not configured yet.** A workflow referencing a nonexistent `Cargo.toml`
-> fails on its first run and trains everyone to ignore a red badge. `.github/workflows/ci.yml`
-> lands together with the workspace in M1.
+Anything touching the commit graph layout or the read backend should also be checked against the
+benchmarks, which build a 100,000-commit repository and time the layout:
+
+```sh
+cargo bench -p hidegit-core
+```
+
+The numbers to beat are recorded in [COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance). CI gains
+a regression gate at M6; until then it is on you to look.
 
 ## Testing expectations
 

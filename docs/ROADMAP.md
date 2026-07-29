@@ -39,6 +39,16 @@ The first runnable application. Reads repositories; cannot modify them. Everythi
 so this milestone also validates the read half of
 [the hybrid backend](./adr/0002-git-backend-hybrid.md).
 
+**Status: built, not yet signed off.** Every item below is implemented and covered by tests, and
+the performance target is [measured](./COMMIT_GRAPH.md#performance) rather than claimed. Two things
+stand between this and a ✅:
+
+- **CI has never run.** The workflow exists but has not executed on Linux or Windows, so the
+  cross-platform claim is untested. The subprocess boundary is exactly where those platforms
+  differ.
+- **The interface has not been reviewed by eye.** Tests assert state transitions, contrast ratios
+  and lane-colour separation; none of them assert that the result looks right.
+
 **Scope**
 
 - Cargo workspace: `hidegit-core`, `hidegit-forge` (stub), `hidegit-ui`, `hidegit`
@@ -56,7 +66,9 @@ so this milestone also validates the read half of
 
 **Done when:** you can open any local repository, scroll its full history, click any commit and
 read its diff — and a 100,000-commit repository scrolls without visible stutter, measured, not
-assumed.
+assumed. Laying out a visible window at row 50,000 measures at **52µs** against a 16.6ms frame
+budget; opening a repository that size costs **1.01s** for the topological ordering pass, which is
+the number to attack next.
 
 ---
 

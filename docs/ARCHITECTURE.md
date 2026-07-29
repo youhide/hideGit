@@ -3,8 +3,9 @@
 How hideGit is put together, and why. Decisions summarised here are argued in full in the
 [ADRs](./adr/README.md).
 
-**Status:** this describes the target design. No code exists yet — the workspace is the first
-deliverable of [M1](./ROADMAP.md#m1--scaffold--read-only-viewer).
+**Status:** M1 has landed, so the read half of this document describes code that exists. The write
+half — everything from `stage` onward — is still design: those methods are declared and return
+`NotImplementedYet` with the milestone they arrive in.
 
 ## Contents
 
@@ -70,23 +71,28 @@ data and let `hidegit-ui` decide, not to reach upward.
 
 ### Third-party crates
 
-| Crate | Version | Used for |
-|---|---|---|
-| `iced` | 0.14 | GUI toolkit |
-| `gix` | 0.86 | All Git read operations |
-| `octocrab` | 0.54 | GitHub API |
-| `tokio` | latest | Async runtime; blocking pool for Git work |
-| `keyring` | latest | OS keychain access for forge tokens |
-| `notify-rust` | latest | Native desktop notifications |
-| `rfd` | latest | Native file/folder pickers |
-| `directories` | latest | Platform config, cache and data paths |
-| `serde` + `toml` | latest | Configuration |
-| `tracing` | latest | Structured logging |
-| `thiserror` | latest | Error types in libraries |
+| Crate | Version | Used for | Since |
+|---|---|---|---|
+| `iced` | 0.14 | GUI toolkit | M1 |
+| `gix` | 0.86 | All Git read operations | M1 |
+| `tokio` | 1 | Blocking pool for Git work | M1 |
+| `rfd` | 0.15 | Native file/folder pickers and startup dialogs | M1 |
+| `directories` | 6 | Platform config, cache and data paths | M1 |
+| `serde` + `toml` | 1 / 0.9 | Configuration | M1 |
+| `time` | 0.3 | Commit timestamps with their recorded offset | M1 |
+| `tracing` | 0.1 | Structured logging | M1 |
+| `thiserror` | 2 | Error types in libraries | M1 |
+| `criterion` | 0.7 | Benchmarks (dev only) | M1 |
+| `octocrab` | 0.54 | GitHub API | M4 |
+| `keyring` | — | OS keychain access for forge tokens | M4 |
+| `notify-rust` | — | Native desktop notifications | M4 |
 
-Only the four load-bearing versions are pinned here. The rest are resolved at `cargo add` time in
-M1 — recording numbers now for crates no code imports yet would only produce documentation that is
-wrong before it is used.
+Versions are pinned in the workspace `Cargo.toml` and inherited by every crate, so a bump happens
+in one place. Crates whose milestone has not arrived carry no version here — recording a number
+for something no code imports produces documentation that is wrong before it is used.
+
+`gix` is taken with its default features and **no network transport**: gitoxide is the read half
+only, and everything that talks to a remote shells out to `git`.
 
 **`git2`/libgit2 is deliberately absent.** It was evaluated and rejected; see
 [ADR-0002](./adr/0002-git-backend-hybrid.md). Adding it back is a decision that needs a superseding ADR.
