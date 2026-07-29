@@ -319,3 +319,216 @@ fn unstaging_is_the_same_patch_applied_in_reverse() {
         "the index is back to HEAD, which is what unstaging means"
     );
 }
+
+// ---- stage / unstage / discard, by file -------------------------------
+
+#[test]
+fn staging_a_file_moves_it_from_changed_to_staged() {
+    let repo = fixture()
+        .edit("f.txt", "before\n", "base")
+        .write("f.txt", "after\n")
+        .build();
+    let backend = repo.backend();
+
+    backend.stage(&[std::path::Path::new("f.txt")]).unwrap();
+
+    let status = backend.status().unwrap();
+    assert_eq!(status.staged.len(), 1);
+    assert!(status.unstaged.is_empty());
+}
+
+#[test]
+fn staging_a_deleted_file_records_the_deletion() {
+    // `git add` on a path that no longer exists is the case that silently does
+    // nothing without `--all`.
+    let repo = fixture()
+        .edit("doomed.txt", "content\n", "base")
+        .delete("doomed.txt")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .stage(&[std::path::Path::new("doomed.txt")])
+        .unwrap();
+
+    let status = backend.status().unwrap();
+    assert_eq!(status.staged.len(), 1, "the deletion is staged");
+    assert_eq!(status.staged[0].status.code(), 'D');
+    assert!(status.unstaged.is_empty());
+}
+
+#[test]
+fn staging_an_untracked_file_tracks_it() {
+    let repo = fixture()
+        .commit("seed")
+        .write("new.txt", "brand new\n")
+        .build();
+    let backend = repo.backend();
+
+    backend.stage(&[std::path::Path::new("new.txt")]).unwrap();
+
+    let status = backend.status().unwrap();
+    assert!(status.untracked.is_empty());
+    assert_eq!(status.staged[0].status.code(), 'A');
+}
+
+#[test]
+fn unstaging_puts_a_change_back_without_touching_the_file() {
+    let repo = fixture()
+        .edit("f.txt", "before\n", "base")
+        .stage("f.txt", "after\n")
+        .build();
+    let backend = repo.backend();
+
+    backend.unstage(&[std::path::Path::new("f.txt")]).unwrap();
+
+    let status = backend.status().unwrap();
+    assert!(status.staged.is_empty(), "nothing is staged any more");
+    assert_eq!(status.unstaged.len(), 1, "but the edit is still there");
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("f.txt")).unwrap(),
+        "after\n",
+        "unstaging is not discarding"
+    );
+}
+
+#[test]
+fn unstaging_the_first_ever_commit_works_without_a_head_to_restore_from() {
+    // `git restore --staged --source=HEAD` has no HEAD to name here, which is
+    // why this path uses `git rm --cached` instead.
+    let repo = fixture().stage("first.txt", "initial\n").build();
+    let backend = repo.backend();
+
+    backend
+        .unstage(&[std::path::Path::new("first.txt")])
+        .unwrap();
+
+    let status = backend.status().unwrap();
+    assert!(status.staged.is_empty());
+    assert_eq!(
+        status.untracked,
+        vec![std::path::PathBuf::from("first.txt")]
+    );
+    assert!(repo.path().join("first.txt").exists(), "the file survives");
+}
+
+#[test]
+fn discarding_a_tracked_file_restores_it_from_the_index() {
+    let repo = fixture()
+        .edit("f.txt", "committed\n", "base")
+        .write("f.txt", "scribbled over\n")
+        .build();
+    let backend = repo.backend();
+
+    backend.discard(&[std::path::Path::new("f.txt")]).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("f.txt")).unwrap(),
+        "committed\n"
+    );
+    assert!(backend.status().unwrap().is_clean());
+}
+
+#[test]
+fn discarding_an_untracked_file_deletes_it() {
+    // A different operation wearing the same name: there is no index entry to
+    // restore from, so `git restore` would fail outright.
+    let repo = fixture()
+        .commit("seed")
+        .write("junk.txt", "unwanted\n")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .discard(&[std::path::Path::new("junk.txt")])
+        .unwrap();
+
+    assert!(!repo.path().join("junk.txt").exists());
+    assert!(backend.status().unwrap().is_clean());
+}
+
+#[test]
+fn discarding_a_mixed_selection_handles_each_kind_correctly() {
+    let repo = fixture()
+        .edit("tracked.txt", "committed\n", "base")
+        .write("tracked.txt", "scribbled\n")
+        .write("junk.txt", "unwanted\n")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .discard(&[
+            std::path::Path::new("tracked.txt"),
+            std::path::Path::new("junk.txt"),
+        ])
+        .unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(),
+        "committed\n",
+        "the tracked file was restored"
+    );
+    assert!(
+        !repo.path().join("junk.txt").exists(),
+        "the untracked one was removed"
+    );
+}
+
+#[test]
+fn a_write_refuses_to_run_while_the_index_is_locked() {
+    let repo = fixture()
+        .edit("f.txt", "before\n", "base")
+        .write("f.txt", "after\n")
+        .build();
+    let backend = repo.backend();
+
+    let lock = backend.git_dir().join("index.lock");
+    std::fs::write(&lock, b"").expect("creating a lock file");
+
+    match backend.stage(&[std::path::Path::new("f.txt")]) {
+        Err(hidegit_core::GitError::IndexLocked(path)) => assert_eq!(path, lock),
+        other => panic!("expected IndexLocked, got {other:?}"),
+    }
+
+    // And hideGit does not remove a lock it did not create: the process
+    // holding it may still be working.
+    assert!(lock.exists(), "the lock is reported, never deleted");
+}
+
+#[test]
+fn a_write_drops_the_memoised_walk_so_the_next_read_sees_it() {
+    let repo = fixture().commit("A").write("new.txt", "x\n").build();
+    let backend = repo.backend();
+
+    assert_eq!(
+        backend.commit_count(&hidegit_core::RevSpec::All).unwrap(),
+        1
+    );
+    backend.stage(&[std::path::Path::new("new.txt")]).unwrap();
+
+    assert_eq!(
+        backend.status().unwrap().staged.len(),
+        1,
+        "the write is visible without an explicit invalidate"
+    );
+}
+
+#[test]
+fn staging_nothing_is_not_an_error_and_does_not_stage_everything() {
+    // The bug this guards: `git add --` with no paths is a no-op, but `git add
+    // --all` with no paths stages the entire working tree.
+    let repo = fixture()
+        .commit("seed")
+        .write("untouched.txt", "should stay untracked\n")
+        .build();
+    let backend = repo.backend();
+
+    backend.stage(&[]).unwrap();
+
+    let status = backend.status().unwrap();
+    assert!(
+        status.staged.is_empty(),
+        "an empty selection stages nothing"
+    );
+    assert_eq!(status.untracked.len(), 1);
+}

@@ -197,7 +197,26 @@ left, the selected file's diff on the right.
 The sidebar badge counts every entry across all four sections, so a file that is both staged and
 changed counts twice — the same way `git status` lists it under two headings.
 
-Stage, unstage and discard actions attach to these rows; the commit composer sits below them.
+Each row carries its own actions: `+` to stage, `−` to unstage, `✕` to discard. `Space` does the
+same as the row's primary action, deciding direction from the section the selection is in;
+`Cmd+Backspace` discards it. Discarding a *staged* change does nothing by keyboard — unstaging and
+then destroying is two decisions, and one key must not stand for both.
+
+The commit composer sits below these lists.
+
+## Confirmations and toasts
+
+Both sit in a layer over the screen.
+
+A **confirmation** is modal and names what will be lost — *"Changes to doomed.txt will be lost.
+This cannot be undone."* — never a generic "are you sure?". Its accept button carries the verb
+("Discard"), not "OK". Cancel comes first and unemphasised, because the safe choice should not be
+the one that takes aim. While it is up it owns the keyboard: `Esc` cancels, `Enter` accepts, and
+nothing else reaches the screen behind it.
+
+A **toast** reports a failure and keeps Git's own stderr verbatim rather than paraphrasing it,
+because that text is the most useful thing hideGit has to say when a command fails. Success is
+silent: the refresh that follows an operation is its result, and a toast per click is noise.
 
 ## Diff view
 

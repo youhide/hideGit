@@ -75,6 +75,9 @@ pub struct Page {
 pub enum Message {
     /// `Cmd+O`: ask for a repository with the platform's own picker.
     OpenDialogRequested,
+    /// The confirmation dialog was accepted, dismissed, or never raised.
+    ConfirmationAccepted,
+    ConfirmationDismissed,
     OpenRepository(PathBuf),
     RepositoryOpened(Box<Result<OpenedRepository, UiError>>),
     CloseRepository(usize),
@@ -100,6 +103,21 @@ pub enum RepoMessage {
     FileSelected(usize),
     /// A row in the staging view: which list it came from, and where in it.
     StagingRowSelected(StagingRow),
+    /// `Space`, or the button on a row: stage what is not staged, unstage what
+    /// is. Which one it means is decided from the row's section.
+    StageRequested(Vec<PathBuf>),
+    UnstageRequested(Vec<PathBuf>),
+    /// `Space`: stage the selected row if it is not staged, unstage it if it
+    /// is. Which one it means depends on the selection, which only `update`
+    /// can see, so the key press carries no payload.
+    StageToggleRequested,
+    /// `Cmd+Backspace`: discard whatever row is selected. Confirms, like every
+    /// other route to discarding does.
+    DiscardSelectedRequested,
+    /// Asks to discard, which raises a confirmation rather than acting.
+    DiscardRequested(Vec<PathBuf>),
+    /// The confirmation was accepted. Only ever sent by the dialog.
+    DiscardConfirmed(Vec<PathBuf>),
     /// The graph canvas learned how tall it is, in rows.
     ViewportChanged(usize),
 
@@ -111,11 +129,16 @@ pub enum RepoMessage {
     /// Both halves of the working-directory diff, loaded together because the
     /// staging view shows both lists at once.
     StatusLoaded(Box<Result<StatusLoad, UiError>>),
+    /// A write finished. Carries only its failure: on success the refresh that
+    /// follows is the whole result, and a toast per click would be noise.
+    WriteFinished(Box<Result<(), UiError>>),
     /// Something changed the repository: reload refs, state and history.
     ///
     /// One code path for "something changed", rather than each operation
     /// remembering which views it invalidated.
     RepositoryChanged,
+    /// The reread that `RepositoryChanged` asked for, applied in place.
+    Refreshed(Box<Result<Refreshed, UiError>>),
 }
 
 /// A commit and its diff, loaded together because the detail pane shows both.
@@ -124,6 +147,21 @@ pub struct CommitLoad {
     pub id: ObjectId,
     pub detail: CommitDetail,
     pub diff: Diff,
+}
+
+/// Everything a refresh rereads.
+///
+/// Deliberately not `OpenedRepository`: opening *creates* a repository entry,
+/// refreshing *updates* one. Conflating them is how a write ends up appending a
+/// second copy of the repository and throwing away the user's scroll position.
+#[derive(Debug, Clone)]
+pub struct Refreshed {
+    pub head: Head,
+    pub refs: Refs,
+    pub state: RepoState,
+    pub status: WorktreeStatus,
+    pub total: usize,
+    pub first_page: Vec<Commit>,
 }
 
 /// The working directory, and both of its diffs.

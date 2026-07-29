@@ -5,10 +5,11 @@
 //! column, because the action each offers is different and the same file can
 //! appear in two of them at once.
 //!
-//! Nothing here writes yet — the buttons arrive with `stage`, `unstage` and
-//! `discard`. This is the surface they attach to.
+//! Every row carries its own actions: `+` to stage, `−` to unstage, `✕` to
+//! discard. Discard always asks first, because it is the one with nothing
+//! behind it — the change it destroys was never committed anywhere.
 
-use iced::widget::{Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, column, container, row, scrollable, text, tooltip};
 use iced::{Center, Fill, Font, Length, Padding};
 
 use hidegit_core::model::{ChangeStatus, Conflict, Diff, FileChange, WorktreeStatus};
@@ -127,6 +128,10 @@ fn file_row<'a>(
     let is_selected = selected == Some(row_id);
     let palette = *palette;
 
+    // A rename's old path is gone from the working tree, so the path to act on
+    // is always the new one.
+    let target = vec![change.path.clone()];
+
     // The glyph carries the status independently of the colour, so the list
     // reads the same without hue.
     let glyph = text(change.status.code().to_string())
@@ -141,18 +146,76 @@ fn file_row<'a>(
         _ => change.path.display().to_string(),
     };
 
-    button(
-        container(
-            row![glyph, text(label).size(ITEM_SIZE).color(palette.text)]
-                .spacing(8)
-                .align_y(Center),
+    let actions = match section {
+        Section::Staged => row![action_button(
+            "−",
+            "Unstage",
+            RepoMessage::UnstageRequested(target),
+            palette,
+        )],
+        _ => row![
+            action_button(
+                "✕",
+                "Discard",
+                RepoMessage::DiscardRequested(target.clone()),
+                palette,
+            ),
+            action_button("+", "Stage", RepoMessage::StageRequested(target), palette),
+        ],
+    };
+
+    row![
+        button(
+            container(
+                row![glyph, text(label).size(ITEM_SIZE).color(palette.text)]
+                    .spacing(8)
+                    .align_y(Center),
+            )
+            .padding(Padding::from([3, 12])),
         )
-        .padding(Padding::from([3, 12])),
+        .width(Fill)
+        .padding(0)
+        .style(move |_, status| item_style(palette, is_selected, status))
+        .on_press(RepoMessage::StagingRowSelected(row_id)),
+        actions,
+    ]
+    .align_y(Center)
+    .into()
+}
+
+/// The stage/unstage control on a row.
+///
+/// A glyph, because the row is narrow — `+` takes a change toward a commit and
+/// `−` takes it back out — with the word behind a tooltip so the meaning is
+/// discoverable rather than guessed.
+fn action_button<'a>(
+    glyph: &'a str,
+    label: &'a str,
+    message: RepoMessage,
+    palette: Palette,
+) -> Element<'a, RepoMessage> {
+    let control = button(
+        container(text(glyph).size(ITEM_SIZE).font(Font::MONOSPACE)).padding(Padding::from([3, 8])),
     )
-    .width(Fill)
     .padding(0)
-    .style(move |_, status| item_style(palette, is_selected, status))
-    .on_press(RepoMessage::StagingRowSelected(row_id))
+    .style(move |_, status| item_style(palette, false, status))
+    .on_press(message);
+
+    tooltip(
+        control,
+        container(text(label).size(11.0).color(palette.text))
+            .padding(Padding::from([3, 6]))
+            .style(move |_| container::Style {
+                background: Some(palette.surface.into()),
+                border: iced::Border {
+                    color: palette.border,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..container::Style::default()
+            }),
+        tooltip::Position::Left,
+    )
     .into()
 }
 
@@ -168,27 +231,40 @@ fn untracked_row<'a>(
     };
     let is_selected = selected == Some(row_id);
     let palette = *palette;
+    let target = vec![path.to_path_buf()];
 
-    button(
-        container(
-            row![
-                text("?")
-                    .size(ITEM_SIZE)
-                    .font(Font::MONOSPACE)
-                    .color(palette.muted),
-                text(path.display().to_string())
-                    .size(ITEM_SIZE)
-                    .color(palette.muted),
-            ]
-            .spacing(8)
-            .align_y(Center),
+    row![
+        button(
+            container(
+                row![
+                    text("?")
+                        .size(ITEM_SIZE)
+                        .font(Font::MONOSPACE)
+                        .color(palette.muted),
+                    text(path.display().to_string())
+                        .size(ITEM_SIZE)
+                        .color(palette.muted),
+                ]
+                .spacing(8)
+                .align_y(Center),
+            )
+            .padding(Padding::from([3, 12])),
         )
-        .padding(Padding::from([3, 12])),
-    )
-    .width(Fill)
-    .padding(0)
-    .style(move |_, status| item_style(palette, is_selected, status))
-    .on_press(RepoMessage::StagingRowSelected(row_id))
+        .width(Fill)
+        .padding(0)
+        .style(move |_, status| item_style(palette, is_selected, status))
+        .on_press(RepoMessage::StagingRowSelected(row_id)),
+        // Discarding an untracked file deletes it outright, so it asks like
+        // any other discard does.
+        action_button(
+            "✕",
+            "Delete",
+            RepoMessage::DiscardRequested(target.clone()),
+            palette,
+        ),
+        action_button("+", "Stage", RepoMessage::StageRequested(target), palette),
+    ]
+    .align_y(Center)
     .into()
 }
 

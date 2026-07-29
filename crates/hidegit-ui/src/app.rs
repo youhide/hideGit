@@ -16,11 +16,11 @@ use iced::widget::canvas;
 use iced::{Element as IcedElement, Subscription, Task, keyboard};
 
 use crate::message::{
-    CommitLoad, Message, OpenedRepository, Page, RepoMessage, StatusLoad, UiError,
+    CommitLoad, Message, OpenedRepository, Page, Refreshed, RepoMessage, StatusLoad, UiError,
 };
 use crate::state::{
-    App, CHECKPOINT_INTERVAL, DetailPane, GraphView, OpenRepo, PAGE_SIZE, Pane, ROW_HEIGHT, Screen,
-    Selection,
+    App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, GraphView, OpenRepo, PAGE_SIZE, Pane,
+    ROW_HEIGHT, Screen, Section, Selection,
 };
 use crate::{screen, widget};
 
@@ -127,6 +127,16 @@ impl Hidegit {
 
             Message::ToastDismissed(id) => {
                 self.app.dismiss_toast(id);
+                Task::none()
+            }
+
+            Message::ConfirmationAccepted => match self.app.confirming.take() {
+                Some(confirmation) => Task::done(*confirmation.action),
+                None => Task::none(),
+            },
+
+            Message::ConfirmationDismissed => {
+                self.app.confirming = None;
                 Task::none()
             }
 
@@ -391,6 +401,76 @@ impl Hidegit {
                 Task::none()
             }
 
+            // `Space` on a row. Which direction it means depends on which list
+            // the row is in, which the key press could not know.
+            RepoMessage::StageToggleRequested => {
+                let Some((section, path)) = selected_path(repo) else {
+                    return Task::none();
+                };
+                let message = match section {
+                    Section::Staged => RepoMessage::UnstageRequested(vec![path]),
+                    Section::Conflicted => return Task::none(),
+                    _ => RepoMessage::StageRequested(vec![path]),
+                };
+                Task::done(Message::Repo(index, message))
+            }
+
+            RepoMessage::DiscardSelectedRequested => {
+                let Some((section, path)) = selected_path(repo) else {
+                    return Task::none();
+                };
+                // Discarding a staged change would mean unstaging and then
+                // throwing it away, which is two decisions wearing one key.
+                if matches!(section, Section::Staged | Section::Conflicted) {
+                    return Task::none();
+                }
+                Task::done(Message::Repo(
+                    index,
+                    RepoMessage::DiscardRequested(vec![path]),
+                ))
+            }
+
+            RepoMessage::StageRequested(paths) => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.stage(&borrowed(&paths)))
+            }
+
+            RepoMessage::UnstageRequested(paths) => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.unstage(&borrowed(&paths)))
+            }
+
+            // Discarding does not act. It asks, naming what will be lost —
+            // there is no undo behind this one, so a generic confirmation
+            // would be the wrong shape.
+            RepoMessage::DiscardRequested(paths) => {
+                self.app.confirming = Some(Confirmation {
+                    title: "Discard changes?".to_owned(),
+                    body: describe_discard(&paths),
+                    confirm_label: "Discard".to_owned(),
+                    action: Box::new(Message::Repo(index, RepoMessage::DiscardConfirmed(paths))),
+                });
+                Task::none()
+            }
+
+            RepoMessage::DiscardConfirmed(paths) => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.discard(&borrowed(&paths)))
+            }
+
+            RepoMessage::WriteFinished(result) => {
+                match *result {
+                    // Success has no message of its own: the refresh that
+                    // follows is the result, and a toast saying "staged" for
+                    // every click would be noise.
+                    Ok(()) => Task::done(Message::Repo(index, RepoMessage::RepositoryChanged)),
+                    Err(error) => {
+                        self.app.toast(&error);
+                        Task::none()
+                    }
+                }
+            }
+
             RepoMessage::StagingRowSelected(row) => {
                 if let DetailPane::WorkingDirectory { selected, .. } = &mut repo.detail {
                     *selected = Some(row);
@@ -399,16 +479,85 @@ impl Hidegit {
                 Task::none()
             }
 
+            // Reread and apply in place. Reopening would push a *second* entry
+            // for the same repository and reset the user's scroll and
+            // selection — every write, and eventually every file save once the
+            // watcher exists.
             RepoMessage::RepositoryChanged => {
                 repo.backend.invalidate();
-                let path = repo.path.clone();
-                blocking(move || open_repository(&path))
-                    .map(|result| Message::RepositoryOpened(Box::new(result)))
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || reread(backend.as_ref())).map(move |result| {
+                    Message::Repo(index, RepoMessage::Refreshed(Box::new(result)))
+                })
+            }
+
+            RepoMessage::Refreshed(result) => {
+                let refreshed = match *result {
+                    Ok(refreshed) => refreshed,
+                    Err(error) => {
+                        self.app.toast(&error);
+                        return Task::none();
+                    }
+                };
+
+                repo.head = refreshed.head;
+                repo.refs = refreshed.refs;
+                repo.state = refreshed.state;
+                repo.status = refreshed.status;
+
+                // Restored by commit id rather than row index: a new commit at
+                // HEAD shifts every row down, and a refresh must not silently
+                // move the user's place.
+                let anchor = repo.graph.anchor();
+                let selected = repo.graph.commits.get(repo.graph.selected).map(|c| c.id);
+
+                repo.graph.commits.clear();
+                repo.graph.known.clear();
+                repo.graph.total = refreshed.total;
+                repo.graph.loading_more = refreshed.first_page.len() < refreshed.total;
+                repo.graph.append(refreshed.first_page);
+
+                if let Some(anchor) = anchor {
+                    repo.graph.restore_anchor(anchor);
+                }
+                if let Some(id) = selected
+                    && let Some(row) = repo.graph.commits.iter().position(|c| c.id == id)
+                {
+                    repo.graph.selected = row;
+                }
+                cache.clear();
+
+                let mut tasks = vec![self.checkpoint_task(index)];
+                // The staging view holds diffs, which the write just changed.
+                // Reselecting reloads them through the one path that knows how.
+                if matches!(
+                    self.app.repos[index].selection,
+                    Some(Selection::WorkingDirectory)
+                ) {
+                    tasks.push(Task::done(Message::Repo(
+                        index,
+                        RepoMessage::Selected(Selection::WorkingDirectory),
+                    )));
+                }
+                Task::batch(tasks)
             }
         }
     }
 
     pub fn view(&self) -> IcedElement<'_, Message> {
+        let palette = &self.app.theme.palette;
+
+        let base = self.screen();
+        widget::overlay::wrap(
+            base,
+            self.app.confirming.as_ref(),
+            &self.app.toasts,
+            palette,
+        )
+    }
+
+    /// The screen itself, without the confirmation and toast layers.
+    fn screen(&self) -> IcedElement<'_, Message> {
         let palette = &self.app.theme.palette;
 
         match (self.app.screen, self.app.active) {
@@ -426,14 +575,22 @@ impl Hidegit {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let active = self.app.active;
+        let context = (self.app.active, self.app.confirming.is_some());
 
-        keyboard::listen().with(active).map(|(active, event)| {
-            let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-                return Message::ToastDismissed(u64::MAX);
-            };
-            shortcut(&key, modifiers, active)
-        })
+        keyboard::listen()
+            .with(context)
+            .map(|((active, confirming), event)| {
+                let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                    return Message::ToastDismissed(u64::MAX);
+                };
+                // A modal question owns the keyboard while it is up. Letting
+                // `Space` stage something behind a "discard?" dialog would be
+                // the worst possible moment to act on a stray key.
+                if confirming {
+                    return modal_shortcut(&key);
+                }
+                shortcut(&key, modifiers, active)
+            })
     }
 }
 
@@ -450,6 +607,8 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, active: Option<
     };
 
     match key {
+        Key::Named(Named::Space) if !command => repo(RepoMessage::StageToggleRequested),
+        Key::Named(Named::Backspace) if command => repo(RepoMessage::DiscardSelectedRequested),
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
         Key::Character(c) if command && c.as_str() == "d" => repo(RepoMessage::DiffModeToggled),
         Key::Character(c) if c.as_str() == "j" && !command => repo(RepoMessage::HunkStepped(1)),
@@ -466,6 +625,17 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, active: Option<
             nothing
         }
         _ => nothing,
+    }
+}
+
+/// The only keys a confirmation dialog answers to.
+fn modal_shortcut(key: &keyboard::Key) -> Message {
+    use keyboard::key::{Key, Named};
+
+    match key {
+        Key::Named(Named::Escape) => Message::ConfirmationDismissed,
+        Key::Named(Named::Enter) => Message::ConfirmationAccepted,
+        _ => Message::ToastDismissed(u64::MAX),
     }
 }
 
@@ -493,6 +663,75 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
         status,
         total,
         first_page,
+    })
+}
+
+/// Runs a repository write off the UI thread.
+///
+/// Every write reports the same way: nothing on success, because the refresh
+/// that follows says more than a toast could, and the error verbatim on
+/// failure — Git's own stderr is better than any paraphrase of it.
+fn write_task<F>(index: usize, f: F) -> Task<Message>
+where
+    F: FnOnce() -> Result<(), GitError> + Send + 'static,
+{
+    blocking(f)
+        .map(move |result| Message::Repo(index, RepoMessage::WriteFinished(Box::new(result))))
+}
+
+/// The path the staging view currently has open, and which list it is in.
+///
+/// Reads the path out of `status` rather than the diff, because an untracked
+/// file has no diff to read it from.
+fn selected_path(repo: &OpenRepo) -> Option<(Section, PathBuf)> {
+    let DetailPane::WorkingDirectory {
+        selected: Some(row),
+        ..
+    } = &repo.detail
+    else {
+        return None;
+    };
+
+    let path = match row.section {
+        Section::Staged => repo.status.staged.get(row.index).map(|c| c.path.clone()),
+        Section::Unstaged => repo.status.unstaged.get(row.index).map(|c| c.path.clone()),
+        Section::Untracked => repo.status.untracked.get(row.index).cloned(),
+        Section::Conflicted => repo
+            .status
+            .conflicted
+            .get(row.index)
+            .map(|c| c.path.clone()),
+    }?;
+
+    Some((row.section, path))
+}
+
+/// Borrows owned paths for the `&[&Path]` the backend takes.
+fn borrowed(paths: &[PathBuf]) -> Vec<&std::path::Path> {
+    paths.iter().map(PathBuf::as_path).collect()
+}
+
+/// Names what a discard will destroy, rather than asking "are you sure?".
+fn describe_discard(paths: &[PathBuf]) -> String {
+    let what = match paths {
+        [one] => format!("Changes to {} will be lost.", one.display()),
+        many => format!("Changes to {} files will be lost.", many.len()),
+    };
+    format!("{what} This cannot be undone.")
+}
+
+/// Rereads everything a change to the repository can affect.
+///
+/// The counterpart to `open_repository`, and deliberately separate from it:
+/// opening creates an entry, refreshing updates one.
+fn reread(backend: &dyn GitBackend) -> Result<Refreshed, GitError> {
+    Ok(Refreshed {
+        head: backend.head()?,
+        refs: backend.refs()?,
+        state: backend.repo_state()?,
+        status: backend.status()?,
+        total: backend.commit_count(&RevSpec::All)?,
+        first_page: backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?,
     })
 }
 
@@ -788,6 +1027,210 @@ mod tests {
             3,
             "the status itself is still worth keeping — the sidebar badge uses it"
         );
+    }
+
+    /// Opens the staging view with `dirty()` loaded and a row selected.
+    fn staging(section: crate::state::Section, index: usize) -> Hidegit {
+        let mut app = app_with(3);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Selected(Selection::WorkingDirectory),
+        ));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StatusLoaded(Box::new(Ok(StatusLoad {
+                status: dirty(),
+                staged: Diff::default(),
+                unstaged: Diff::default(),
+            }))),
+        ));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StagingRowSelected(crate::state::StagingRow { section, index }),
+        ));
+        app
+    }
+
+    #[test]
+    fn a_refresh_updates_the_repository_rather_than_opening_a_second_one() {
+        // The bug this guards: `RepositoryChanged` used to reopen, and opening
+        // pushes a new entry. Every write appended a copy of the repository and
+        // reset the user's place — and the filesystem watcher will fire this on
+        // every file save.
+        // More commits than the viewport is tall, or the scroll position
+        // clamps to zero and there is nothing to preserve.
+        let mut app = app_with(100);
+        let anchor = app.app.active_repo().unwrap().graph.commits[50].id;
+        app.app.repos[0].graph.scroll = 50.0;
+        app.app.repos[0].graph.selected = 50;
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(Refreshed {
+                head: opened(100).head,
+                refs: Refs::default(),
+                state: RepoState::Clean,
+                status: dirty(),
+                total: 100,
+                first_page: commits(100),
+            }))),
+        ));
+
+        assert_eq!(app.app.repos.len(), 1, "one repository, not two");
+        let repo = app.app.active_repo().unwrap();
+        assert_eq!(
+            repo.graph.commits[repo.graph.first_visible()].id,
+            anchor,
+            "the viewport stayed where the user left it"
+        );
+        assert_eq!(repo.graph.selected, 50, "and so did the selection");
+        assert_eq!(repo.status.change_count(), 3, "the new status was applied");
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_users_place_even_when_a_commit_arrived_at_head() {
+        // Row indices all shift by one; the anchor is a commit id for exactly
+        // this reason.
+        let mut app = app_with(100);
+        let anchor = app.app.active_repo().unwrap().graph.commits[50].id;
+        app.app.repos[0].graph.scroll = 50.0;
+
+        // A history one longer, with the same commits pushed down by a new one.
+        let mut grown = vec![Commit {
+            id: ObjectId::from_hex(&format!("{:040x}", 999)).unwrap(),
+            parents: vec![commits(100)[0].id],
+            summary: "brand new".into(),
+            body: None,
+            author: commits(1)[0].author.clone(),
+            committer: commits(1)[0].committer.clone(),
+            time: OffsetDateTime::UNIX_EPOCH,
+            refs: Vec::new(),
+        }];
+        grown.extend(commits(100));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(Refreshed {
+                head: opened(100).head,
+                refs: Refs::default(),
+                state: RepoState::Clean,
+                status: WorktreeStatus::default(),
+                total: 101,
+                first_page: grown,
+            }))),
+        ));
+
+        let repo = app.app.active_repo().unwrap();
+        assert_eq!(
+            repo.graph.commits[repo.graph.first_visible()].id,
+            anchor,
+            "the same commit is at the top, one row further down than before"
+        );
+        assert_eq!(repo.graph.first_visible(), 51);
+    }
+
+    #[test]
+    fn discarding_asks_before_it_acts_and_names_what_is_lost() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::DiscardRequested(vec![PathBuf::from("changed.txt")]),
+        ));
+
+        let confirmation = app
+            .app
+            .confirming
+            .as_ref()
+            .expect("discarding raises a confirmation rather than acting");
+        assert!(
+            confirmation.body.contains("changed.txt"),
+            "it names the file: {}",
+            confirmation.body
+        );
+        assert!(confirmation.body.contains("cannot be undone"));
+        assert_eq!(
+            confirmation.confirm_label, "Discard",
+            "the button says what it does, not OK"
+        );
+    }
+
+    #[test]
+    fn dismissing_a_confirmation_drops_the_action_entirely() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::DiscardRequested(vec![PathBuf::from("changed.txt")]),
+        ));
+        let _ = app.update(Message::ConfirmationDismissed);
+
+        assert!(app.app.confirming.is_none());
+    }
+
+    #[test]
+    fn a_failed_write_becomes_a_toast_carrying_gits_own_words() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::WriteFinished(Box::new(Err(UiError {
+                summary: "git add failed".into(),
+                details: "fatal: pathspec did not match any files".into(),
+            }))),
+        ));
+
+        assert_eq!(app.app.toasts.len(), 1);
+        assert_eq!(
+            app.app.toasts[0].details, "fatal: pathspec did not match any files",
+            "the toast keeps stderr verbatim rather than paraphrasing it"
+        );
+    }
+
+    #[test]
+    fn space_on_a_changed_row_stages_and_on_a_staged_row_unstages() {
+        // The key press carries no direction; the row's section decides.
+        let app = staging(crate::state::Section::Unstaged, 0);
+        let repo = app.app.active_repo().unwrap();
+        assert_eq!(
+            selected_path(repo),
+            Some((
+                crate::state::Section::Unstaged,
+                PathBuf::from("changed.txt")
+            ))
+        );
+
+        let app = staging(crate::state::Section::Staged, 0);
+        let repo = app.app.active_repo().unwrap();
+        assert_eq!(
+            selected_path(repo),
+            Some((crate::state::Section::Staged, PathBuf::from("staged.txt")))
+        );
+    }
+
+    #[test]
+    fn discarding_a_staged_row_by_keyboard_does_nothing() {
+        // Throwing away a staged change is unstage-then-destroy: two decisions,
+        // so one key must not stand for both.
+        let mut app = staging(crate::state::Section::Staged, 0);
+        let _ = app.update(Message::Repo(0, RepoMessage::DiscardSelectedRequested));
+
+        assert!(app.app.confirming.is_none());
+    }
+
+    #[test]
+    fn a_modal_dialog_owns_the_keyboard() {
+        // Staging something behind an unanswered "discard?" would be the worst
+        // possible moment to act on a stray key.
+        assert!(matches!(
+            modal_shortcut(&keyboard::Key::Named(keyboard::key::Named::Escape)),
+            Message::ConfirmationDismissed
+        ));
+        assert!(matches!(
+            modal_shortcut(&keyboard::Key::Named(keyboard::key::Named::Enter)),
+            Message::ConfirmationAccepted
+        ));
+        assert!(matches!(
+            modal_shortcut(&keyboard::Key::Named(keyboard::key::Named::Space)),
+            Message::ToastDismissed(_)
+        ));
     }
 
     #[test]

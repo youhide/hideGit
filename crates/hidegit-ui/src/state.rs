@@ -15,7 +15,7 @@ use hidegit_core::model::{
 };
 use hidegit_core::{GitBackend, LogPage};
 
-use crate::message::UiError;
+use crate::message::{Message, UiError};
 use crate::theme::Theme;
 
 /// How many commits one background load fetches.
@@ -139,6 +139,21 @@ pub enum Section {
     Unstaged,
     Untracked,
     Conflicted,
+}
+
+/// A destructive action, waiting to be confirmed.
+///
+/// `UI_SPEC` is explicit that these name what will be lost rather than asking
+/// a generic "are you sure?", so the body is built by whoever raises it and
+/// carries the count and the paths.
+#[derive(Debug, Clone)]
+pub struct Confirmation {
+    pub title: String,
+    pub body: String,
+    /// The verb on the button that goes ahead — "Discard", never "OK".
+    pub confirm_label: String,
+    /// Dispatched if the user accepts. Nothing happens until then.
+    pub action: Box<Message>,
 }
 
 /// A transient message.
@@ -308,6 +323,8 @@ pub struct App {
     pub recents: Vec<PathBuf>,
     pub theme: Theme,
     pub toasts: Vec<Toast>,
+    /// The confirmation currently on screen, if any.
+    pub confirming: Option<Confirmation>,
     next_toast_id: u64,
 }
 
@@ -320,6 +337,7 @@ impl Default for App {
             recents: Vec::new(),
             theme: Theme::default(),
             toasts: Vec::new(),
+            confirming: None,
             next_toast_id: 0,
         }
     }

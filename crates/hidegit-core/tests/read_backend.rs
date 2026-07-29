@@ -799,8 +799,8 @@ fn operations_from_later_milestones_say_which_milestone_they_land_in() {
         other => panic!("expected NotImplementedYet, got {other:?}"),
     }
 
-    // Writing is still M2 and M3; `status` above it has landed.
-    assert!(backend.stage(&[Path::new("A.txt")]).is_err());
+    // `stage`, `unstage` and `discard` have landed; the rest of M2 and all of
+    // M3 have not.
     assert!(backend.create_commit("nope", Default::default()).is_err());
     assert!(
         backend

@@ -20,6 +20,7 @@ pub mod widget {
     pub mod detail;
     pub mod diff;
     pub mod graph;
+    pub mod overlay;
     pub mod sidebar;
     pub mod staging;
 }
