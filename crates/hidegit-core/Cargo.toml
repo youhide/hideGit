@@ -24,6 +24,7 @@ tracing.workspace = true
 # the fixture builder and the fake backend without `--all-features`.
 hidegit-core = { path = ".", features = ["fake", "fixture"] }
 tempfile = "3"
+criterion = "0.7"
 
 [features]
 # Exposes `FakeBackend` to downstream crates so `hidegit-ui` can be tested
@@ -36,3 +37,7 @@ fixture = ["dep:tempfile"]
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "graph"
+harness = false

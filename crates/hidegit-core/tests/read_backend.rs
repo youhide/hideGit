@@ -562,3 +562,25 @@ fn a_symbolic_ref_is_a_pointer_and_is_not_listed_as_a_branch() {
         "origin/HEAD duplicates whatever it points at and is not a branch"
     );
 }
+
+#[test]
+fn a_generated_history_has_the_shape_the_benchmarks_assume() {
+    // The benchmark's fixture is only useful if it exercises lane allocation,
+    // so this asserts it actually branches and merges rather than being one
+    // straight line.
+    let repo = fixture().generate(200, 50).build();
+    let backend = repo.backend();
+
+    let commits = backend
+        .log(&RevSpec::All, LogPage::first(1_000))
+        .expect("a generated history is readable");
+
+    assert_eq!(commits.len(), 200);
+    assert!(
+        commits.iter().any(|c| c.is_merge()),
+        "a history with no merges would not exercise lane allocation"
+    );
+
+    let layout = hidegit_core::graph::layout(&commits);
+    assert!(layout.width >= 2, "a merged side branch needs a second lane");
+}

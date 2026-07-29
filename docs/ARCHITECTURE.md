@@ -406,5 +406,8 @@ Stated plainly, because a reader should meet these here rather than discover the
    when the second arrives. Expect to revise it.
 4. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
    expected. Isolating iced types to `hidegit-ui` keeps that blast radius to one crate.
-5. **Very large repositories are unproven.** The 60fps-at-100k-commits target is a target, not a
-   measurement. It needs benchmarking as soon as M1 renders a graph, not at M6.
+5. **Opening a very large repository takes about a second.** Ordering 100,000 commits
+   topologically measures at 1.01s, and it happens before the first screen appears. Scrolling is
+   fast once open — laying out a visible window costs 52µs — but the initial pass is real, and
+   nothing yet shows progress during it. Numbers and method in
+   [COMMIT_GRAPH.md](./COMMIT_GRAPH.md#performance).

@@ -177,6 +177,17 @@ impl GitCommand {
     /// Returns [`GitError::Command`] with Git's own stderr on a non-zero exit,
     /// and [`GitError::GitNotFound`] when there is no `git` on `PATH`.
     pub fn run(&self) -> Result<GitOutput, GitError> {
+        self.run_with_stdin(None)
+    }
+
+    /// Runs the command, feeding `input` to its standard input.
+    ///
+    /// How content reaches Git without ever touching a shell or a temporary
+    /// file: patches go to `git apply --cached` this way, which is what makes
+    /// hunk- and line-level staging one code path.
+    pub fn run_with_stdin(&self, input: Option<&[u8]>) -> Result<GitOutput, GitError> {
+        use std::io::Write as _;
+
         let argv = self.argv();
         tracing::debug!(argv = ?argv, cwd = ?self.cwd, "running git");
 
@@ -185,7 +196,11 @@ impl GitCommand {
             .args(&self.args)
             .env_clear()
             .envs(self.environment())
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -193,14 +208,23 @@ impl GitCommand {
             command.current_dir(cwd);
         }
 
-        let output = match command.output() {
-            Ok(output) => output,
+        let mut child = match command.spawn() {
+            Ok(child) => child,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(GitError::GitNotFound);
             }
             Err(e) => return Err(GitError::Io(e)),
         };
 
+        if let Some(input) = input {
+            // Dropping the handle closes the pipe, which is what tells Git the
+            // input is complete. Without it, a command that reads to EOF hangs.
+            let mut stdin = child.stdin.take().expect("stdin was piped");
+            stdin.write_all(input)?;
+            drop(stdin);
+        }
+
+        let output = child.wait_with_output()?;
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
         if !output.status.success() {

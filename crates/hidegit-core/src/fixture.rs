@@ -202,6 +202,71 @@ impl Fixture {
         self
     }
 
+    /// Builds a synthetic history of `count` commits, fast.
+    ///
+    /// Runs `git fast-import` rather than `git commit` in a loop: 100,000
+    /// commits take a couple of seconds instead of hours, which is what makes
+    /// benchmarking against a repository of that size practical at all.
+    ///
+    /// Every `branch_every` commits the history forks and merges back, so the
+    /// result exercises lane allocation rather than being one straight line.
+    pub fn generate(mut self, count: usize, branch_every: usize) -> Self {
+        use std::fmt::Write as _;
+
+        assert!(count > 0, "a generated history needs at least one commit");
+        let who = "hideGit Fixture <fixture@hidegit.invalid>";
+        let mut stream = String::with_capacity(count * 160);
+
+        // One blob, reused by every commit: the benchmark is about history
+        // shape, not about content.
+        stream.push_str("blob\nmark :1\ndata 9\ncontents\n\n");
+
+        // Mark 1 is the blob, so commits number from 2.
+        let mut main_tip: Option<usize> = None;
+        let mut side_tip: Option<usize> = None;
+
+        for (mark, i) in (2..).zip(0..count) {
+            let time = self.clock + i as i64 * 60;
+            let message = format!("commit {i}");
+
+            // Fork a side branch, then merge it back on the next multiple.
+            let forking = branch_every > 0 && i % branch_every == branch_every / 2;
+            let merging = branch_every > 0 && i % branch_every == 0 && side_tip.is_some();
+
+            let _ = writeln!(stream, "commit refs/heads/main\nmark :{mark}");
+            let _ = writeln!(stream, "author {who} {time} +0000");
+            let _ = writeln!(stream, "committer {who} {time} +0000");
+            let _ = writeln!(stream, "data {}\n{message}", message.len());
+
+            if let Some(parent) = main_tip {
+                let _ = writeln!(stream, "from :{parent}");
+            }
+            if merging && let Some(side) = side_tip.take() {
+                let _ = writeln!(stream, "merge :{side}");
+            }
+            let _ = writeln!(stream, "M 100644 :1 file{}.txt\n", i % 32);
+
+            if forking {
+                side_tip = main_tip;
+            }
+            main_tip = Some(mark);
+        }
+
+        stream.push_str("done\n");
+
+        let output = GitCommand::new("fast-import")
+            .arg("--done")
+            .cwd(self.dir.path())
+            .takes_locks()
+            .run_with_stdin(Some(stream.as_bytes()));
+        if let Err(e) = output {
+            panic!("fixture fast-import failed: {e}");
+        }
+
+        self.clock += count as i64 * 60;
+        self
+    }
+
     /// Finishes the repository.
     pub fn build(self) -> Repo {
         Repo {
