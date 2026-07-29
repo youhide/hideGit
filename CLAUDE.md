@@ -2,16 +2,6 @@
 
 Guidance for Claude Code and other AI assistants working in this repository.
 
-## Local notes
-
-If a file named `CLAUDE-Personal.md` exists at the repository root, read it as additional context.
-It is gitignored, maintainer-local, and holds product and design preferences that are not part of
-the public project record.
-
-**It is optional and will be absent for most contributors — that is the normal state, not an
-error.** Never create it, never reference its contents in tracked files, and never assume a rule
-from it applies to anyone but the maintainer running that checkout.
-
 ## What this project is
 
 hideGit is a cross-platform desktop Git client written in Rust with the [iced](https://iced.rs)
