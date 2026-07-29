@@ -172,20 +172,28 @@ fn side_by_side<'a>(
             Pair::Lines { left: l, right: r } => {
                 left = left.push(match l {
                     Some(line) if line.kind == LineKind::Context => {
-                        code_line(line.old_lineno, &line.text, None, palette)
+                        code_line(line.old_lineno, &line.text, " ", None, palette)
                     }
-                    Some(line) => {
-                        code_line(line.old_lineno, &line.text, Some(palette.removed), palette)
-                    }
+                    Some(line) => code_line(
+                        line.old_lineno,
+                        &line.text,
+                        "−",
+                        Some(palette.removed),
+                        palette,
+                    ),
                     None => blank_line(palette),
                 });
                 right = right.push(match r {
                     Some(line) if line.kind == LineKind::Context => {
-                        code_line(line.new_lineno, &line.text, None, palette)
+                        code_line(line.new_lineno, &line.text, " ", None, palette)
                     }
-                    Some(line) => {
-                        code_line(line.new_lineno, &line.text, Some(palette.added), palette)
-                    }
+                    Some(line) => code_line(
+                        line.new_lineno,
+                        &line.text,
+                        "+",
+                        Some(palette.added),
+                        palette,
+                    ),
                     None => blank_line(palette),
                 });
             }
@@ -269,6 +277,7 @@ fn hunk_header<'a>(header: &'a str, palette: &Palette) -> Element<'a, RepoMessag
 fn code_line<'a>(
     lineno: Option<u32>,
     content: &str,
+    marker: &'static str,
     background: Option<iced::Color>,
     palette: &Palette,
 ) -> Element<'a, RepoMessage> {
@@ -278,9 +287,13 @@ fn code_line<'a>(
         palette.muted
     };
 
+    // Side by side, the pane a line sits in already implies its kind, but hue
+    // alone would carry it for anyone who cannot separate the two backgrounds.
+    // The glyph is the same one the unified view uses.
     container(
         row![
             gutter(lineno, palette),
+            text(marker).size(CODE_SIZE).font(mono()).color(colour),
             text(content.to_owned())
                 .size(CODE_SIZE)
                 .font(mono())
