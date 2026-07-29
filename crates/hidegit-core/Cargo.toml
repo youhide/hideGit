@@ -13,15 +13,26 @@ authors.workspace = true
 # window and without a token. See docs/ARCHITECTURE.md#crate-layout.
 [dependencies]
 gix.workspace = true
+tempfile = { version = "3", optional = true }
 thiserror.workspace = true
 time.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# A self dev-dependency, so integration tests and benchmarks — which link the
+# library as an ordinary crate and therefore never see `cfg(test)` — still get
+# the fixture builder and the fake backend without `--all-features`.
+hidegit-core = { path = ".", features = ["fake", "fixture"] }
+tempfile = "3"
 
 [features]
 # Exposes `FakeBackend` to downstream crates so `hidegit-ui` can be tested
 # against scripted repository states, including error states that are painful
 # to produce with a real repository.
 fake = []
+# Exposes the fixture builder, so benchmarks and other crates can construct
+# repositories programmatically.
+fixture = ["dep:tempfile"]
 
 [lints]
 workspace = true
