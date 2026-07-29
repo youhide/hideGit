@@ -77,6 +77,20 @@ impl HybridBackend {
         Ok(())
     }
 
+    /// A start point as the single operand `git` takes for one.
+    ///
+    /// `HEAD` is spelled out rather than omitted so every command that takes a
+    /// start point takes exactly one operand, which keeps the argument vectors
+    /// uniform and leaves no branch where a user-supplied name could land in a
+    /// different position.
+    fn start_point(from: &StartPoint) -> String {
+        match from {
+            StartPoint::Head => "HEAD".to_owned(),
+            StartPoint::Commit(id) => id.to_hex(),
+            StartPoint::Ref(name) => name.clone(),
+        }
+    }
+
     /// Returns the memoised walk for `spec`, computing it if needed.
     fn walk(&self, spec: &RevSpec) -> Result<Arc<Vec<gix_read::WalkEntry>>, GitError> {
         if let Some(cached) = self
@@ -179,7 +193,7 @@ impl GitBackend for HybridBackend {
     }
 
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError> {
-        Err(not_implemented("divergence", "M3"))
+        gix_read::divergence(&self.repo())
     }
 
     fn blame(&self, _path: &Path, _at: ObjectId) -> Result<Blame, GitError> {
@@ -330,20 +344,72 @@ impl GitBackend for HybridBackend {
             .ok_or_else(|| GitError::RefNotFound("HEAD".to_owned()))
     }
 
-    fn checkout(&self, _target: &CheckoutTarget) -> Result<(), GitError> {
-        Err(not_implemented("checkout", "M3"))
+    fn checkout(&self, target: &CheckoutTarget) -> Result<(), GitError> {
+        self.guard_index()?;
+
+        // `git switch`, not `git checkout`. `switch` only ever switches
+        // branches, so a ref named like a path cannot be read as one — the
+        // ambiguity that makes `checkout` dangerous with names that came from a
+        // repository someone else controls. It has been available since 2.23,
+        // well under the 2.30 hideGit already requires.
+        let command = match target {
+            CheckoutTarget::Branch(name) => GitCommand::new("switch").operands([name]),
+
+            CheckoutTarget::Commit(id) => GitCommand::new("switch")
+                // Detaching is stated rather than stumbled into: without
+                // `--detach`, `switch` refuses a commit outright.
+                .arg("--detach")
+                .operands([id.to_hex()]),
+
+            // The new name goes in `--create=<name>` rather than as an operand.
+            // `switch` accepts exactly one reference after `--` — it takes no
+            // paths, so `--` separates nothing else — and passing two makes it
+            // fail with "only one reference expected". Attaching the name to the
+            // option keeps it a single argv element either way, so a name
+            // starting with `-` is still a value and never a flag.
+            CheckoutTarget::NewBranch { name, from } => GitCommand::new("switch")
+                .arg(format!("--create={name}"))
+                .operands([Self::start_point(from)]),
+
+            // `--track` is what makes the new branch's upstream the remote
+            // branch rather than nothing, which is the whole difference from
+            // `NewBranch` at the same commit.
+            CheckoutTarget::TrackRemote { remote_ref, local } => GitCommand::new("switch")
+                .arg(format!("--create={local}"))
+                .arg("--track")
+                .operands([remote_ref]),
+        };
+
+        // Local changes that would be overwritten make this fail, and Git's own
+        // message says which files. hideGit does not stash on the user's behalf:
+        // that moves their work somewhere they never asked for.
+        self.write(command)
     }
 
-    fn create_branch(&self, _name: &str, _from: &StartPoint) -> Result<(), GitError> {
-        Err(not_implemented("create-branch", "M3"))
+    fn create_branch(&self, name: &str, from: &StartPoint) -> Result<(), GitError> {
+        self.guard_index()?;
+        self.write(GitCommand::new("branch").operands([name.to_owned(), Self::start_point(from)]))
     }
 
-    fn rename_branch(&self, _from: &str, _to: &str) -> Result<(), GitError> {
-        Err(not_implemented("rename-branch", "M3"))
+    fn rename_branch(&self, from: &str, to: &str) -> Result<(), GitError> {
+        self.guard_index()?;
+        // Without `--force`, which is deliberate: renaming onto a name that
+        // already exists would destroy that branch, and nothing in the UI asks
+        // for that.
+        self.write(GitCommand::new("branch").arg("--move").operands([from, to]))
     }
 
-    fn delete_branch(&self, _name: &str, _force: bool) -> Result<(), GitError> {
-        Err(not_implemented("delete-branch", "M3"))
+    fn delete_branch(&self, name: &str, force: bool) -> Result<(), GitError> {
+        self.guard_index()?;
+
+        let mut command = GitCommand::new("branch").arg("--delete");
+        if force {
+            command = command.arg("--force");
+        }
+        // When `force` is false and the branch is unmerged, Git refuses and says
+        // so. That refusal is surfaced rather than retried with `--force`:
+        // losing commits has to be something the user chose.
+        self.write(command.operands([name]))
     }
 
     fn create_tag(&self, _spec: &TagSpec) -> Result<(), GitError> {

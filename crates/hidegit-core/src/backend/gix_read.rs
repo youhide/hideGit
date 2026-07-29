@@ -15,8 +15,8 @@ use gix::diff::blob::{Algorithm, InternedInput, UnifiedDiff, sources::byte_lines
 use crate::error::GitError;
 use crate::model::{
     Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
-    DiffStats, DiffTarget, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind, ObjectId,
-    RefKind, RefName, Refs, RepoState, RevSpec, Signature, Tag, WorktreeStatus,
+    DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind,
+    ObjectId, RefKind, RefName, Refs, RepoState, RevSpec, Signature, Tag, WorktreeStatus,
 };
 
 /// Files past this size get a placeholder instead of a diff.
@@ -48,6 +48,14 @@ pub(crate) fn open(path: &Path) -> Result<gix::ThreadSafeRepository, GitError> {
 
 fn to_id(id: &gix::hash::oid) -> ObjectId {
     ObjectId::from_bytes(id.as_bytes()).expect("gix only produces sha-1 and sha-256 hashes")
+}
+
+/// The counterpart to [`to_id`], for handing an id back to gitoxide.
+///
+/// Infallible in practice: a domain [`ObjectId`] only ever holds a length Git
+/// uses, and hex round-trips exactly.
+fn to_gix_id(id: ObjectId) -> gix::ObjectId {
+    gix::ObjectId::from_hex(id.to_hex().as_bytes()).expect("a domain id is always valid hex")
 }
 
 fn to_ref_name(name: &gix::refs::FullNameRef) -> RefName {
@@ -199,6 +207,79 @@ pub(crate) fn refs(repo: &gix::Repository) -> Result<Refs, GitError> {
     out.tags.sort_by(|a, b| a.name.short.cmp(&b.name.short));
 
     Ok(out)
+}
+
+/// Ahead/behind for every local branch that has an upstream.
+///
+/// Two counted walks per branch, each hiding the other side: the commits a
+/// branch has that its upstream does not, and the reverse. Bounded by how far the
+/// two have actually drifted, because they share history up to their merge base —
+/// which is what makes this cheap for the ordinary case of a branch a few commits
+/// ahead, and why it is nonetheless kept out of [`refs`], which the filesystem
+/// watcher rereads on every file save.
+///
+/// A branch whose upstream no longer exists — the remote branch was deleted and
+/// the tracking ref pruned — is skipped rather than reported as infinitely ahead.
+pub(crate) fn divergence(repo: &gix::Repository) -> Result<HashMap<String, Divergence>, GitError> {
+    let refs = refs(repo)?;
+    let mut out = HashMap::new();
+
+    for branch in &refs.locals {
+        let Some(upstream) = &branch.upstream else {
+            continue;
+        };
+        // Resolved through the ref list already in hand rather than with another
+        // `rev_parse`: a configured upstream whose ref is gone is a normal state
+        // after a prune, not an error to propagate.
+        let Some(target) = refs
+            .remotes
+            .iter()
+            .find(|r| &r.name.full == upstream)
+            .map(|r| r.target)
+        else {
+            tracing::debug!(
+                branch = %branch.name.full,
+                %upstream,
+                "skipping ahead/behind for a branch whose upstream ref is gone"
+            );
+            continue;
+        };
+
+        if target == branch.target {
+            out.insert(branch.name.full.clone(), Divergence::default());
+            continue;
+        }
+
+        out.insert(
+            branch.name.full.clone(),
+            Divergence {
+                ahead: count_excluding(repo, branch.target, target)?,
+                behind: count_excluding(repo, target, branch.target)?,
+            },
+        );
+    }
+
+    Ok(out)
+}
+
+/// How many commits `from` reaches that `hidden` does not.
+fn count_excluding(
+    repo: &gix::Repository,
+    from: ObjectId,
+    hidden: ObjectId,
+) -> Result<usize, GitError> {
+    let walk = repo
+        .rev_walk([to_gix_id(from)])
+        .with_hidden([to_gix_id(hidden)])
+        .all()
+        .map_err(|e| GitError::gix("counting ahead/behind", e))?;
+
+    let mut count = 0;
+    for entry in walk {
+        entry.map_err(|e| GitError::gix("counting ahead/behind", e))?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 pub(crate) fn repo_state(repo: &gix::Repository) -> RepoState {
