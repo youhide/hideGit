@@ -11,6 +11,7 @@
 
 pub mod backend;
 pub mod error;
+pub mod graph;
 pub mod model;
 pub mod ops;
 pub mod process;

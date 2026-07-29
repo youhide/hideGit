@@ -513,3 +513,32 @@ fn operations_from_later_milestones_say_which_milestone_they_land_in() {
             .is_err()
     );
 }
+
+#[test]
+fn the_graph_lays_out_a_real_repository_the_way_git_describes_it() {
+    let repo = fixture()
+        .commit("A")
+        .branch("feature")
+        .commit("B")
+        .checkout("main")
+        .commit("C")
+        .merge("feature")
+        .build();
+
+    let commits = repo
+        .backend()
+        .log(&RevSpec::All, LogPage::first(50))
+        .expect("history is readable");
+    let layout = hidegit_core::graph::layout(&commits);
+
+    assert_eq!(layout.rows.len(), commits.len());
+    assert_eq!(layout.width, 2, "one branch off the mainline is two lanes");
+
+    let merge_row = &layout.rows[0];
+    assert_eq!(merge_row.kind, hidegit_core::graph::NodeKind::Merge);
+    assert_eq!(merge_row.lane, 0, "the mainline holds the leftmost lane");
+
+    let root_row = layout.rows.last().unwrap();
+    assert_eq!(root_row.kind, hidegit_core::graph::NodeKind::Root);
+    assert_eq!(root_row.commit, repo.id("A"));
+}
