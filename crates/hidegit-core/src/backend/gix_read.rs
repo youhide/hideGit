@@ -14,9 +14,9 @@ use gix::diff::blob::{Algorithm, InternedInput, UnifiedDiff, sources::byte_lines
 
 use crate::error::GitError;
 use crate::model::{
-    Blob, Branch, ChangeStatus, Commit, CommitDetail, Diff, DiffLine, DiffStats, DiffTarget,
-    FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind, ObjectId, RefKind, RefName, Refs,
-    RepoState, RevSpec, Signature, Tag,
+    Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
+    DiffStats, DiffTarget, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind, ObjectId,
+    RefKind, RefName, Refs, RepoState, RevSpec, Signature, Tag, WorktreeStatus,
 };
 
 /// Files past this size get a placeholder instead of a diff.
@@ -524,6 +524,33 @@ fn path_from(location: &gix::bstr::BStr) -> PathBuf {
     PathBuf::from(location.to_str_lossy().into_owned())
 }
 
+/// What kind of thing a path holds, coarsely enough to answer "did the type
+/// change?".
+///
+/// Git reports `T` for a regular file that became a symlink or a submodule, but
+/// plain `M` for one that merely gained the executable bit — a permission
+/// change is a modification, not a change of type. Comparing gitoxide's entry
+/// kinds directly would conflate the two, because it separates `Blob` from
+/// `BlobExecutable`.
+#[derive(PartialEq, Eq)]
+enum PathKind {
+    File,
+    Link,
+    Submodule,
+    Directory,
+}
+
+fn path_kind(mode: gix::object::tree::EntryMode) -> PathKind {
+    use gix::object::tree::EntryKind as K;
+
+    match mode.kind() {
+        K::Blob | K::BlobExecutable => PathKind::File,
+        K::Link => PathKind::Link,
+        K::Commit => PathKind::Submodule,
+        K::Tree => PathKind::Directory,
+    }
+}
+
 /// Does this change describe a directory rather than a file?
 ///
 /// A tree diff reports the directories along a changed file's path as changes
@@ -583,7 +610,7 @@ fn to_file_diff(
             entry_mode,
             id,
         } => {
-            let status = if previous_entry_mode.kind() == entry_mode.kind() {
+            let status = if path_kind(previous_entry_mode) == path_kind(entry_mode) {
                 ChangeStatus::Modified
             } else {
                 ChangeStatus::TypeChange
@@ -790,6 +817,189 @@ fn summarise(files: &[FileDiff]) -> DiffStats {
     }
 
     stats
+}
+
+/// The working directory, as three lists plus whatever is conflicted.
+///
+/// One traversal produces both halves: `HEAD` against the index — what a commit
+/// would contain — and the index against the working tree, alongside a
+/// directory walk for untracked files. gitoxide runs them in parallel and so
+/// emits them interleaved, which is why each list is sorted at the end: the UI
+/// needs a stable order, and "whichever thread finished first" is not one.
+///
+/// A file modified in the index *and* changed again on disk appears in both
+/// `staged` and `unstaged`. That is not double-counting — those are two
+/// different diffs, and the staging view offers a different action for each.
+pub(crate) fn status(repo: &gix::Repository) -> Result<WorktreeStatus, GitError> {
+    let platform = repo
+        .status(gix::progress::Discard)
+        .map_err(|e| GitError::gix("reading the working tree status", e))?
+        // Whole untracked directories collapse to the directory, the way
+        // `git status` reports them, rather than listing every file beneath an
+        // unopened `target/`.
+        .untracked_files(gix::status::UntrackedFiles::Collapsed)
+        // Rename detection on both halves. Without it a rename reads as a
+        // delete plus an unrelated addition, and the diff for it is the whole
+        // file twice over.
+        .index_worktree_rewrites(Some(gix::diff::Rewrites::default()))
+        .tree_index_track_renames(gix::status::tree_index::TrackRenames::Given(
+            gix::diff::Rewrites::default(),
+        ));
+
+    let iter = platform
+        .into_iter(std::iter::empty())
+        .map_err(|e| GitError::gix("walking the working tree", e))?;
+
+    let mut status = WorktreeStatus {
+        state: repo_state(repo),
+        ..WorktreeStatus::default()
+    };
+
+    for item in iter {
+        let item = item.map_err(|e| GitError::gix("reading a status entry", e))?;
+
+        match item {
+            gix::status::Item::TreeIndex(change) => {
+                status.staged.push(staged_change(&change));
+            }
+            gix::status::Item::IndexWorktree(item) => {
+                worktree_item(item, &mut status);
+            }
+        }
+    }
+
+    status.staged.sort_by(|a, b| a.path.cmp(&b.path));
+    status.unstaged.sort_by(|a, b| a.path.cmp(&b.path));
+    status.untracked.sort();
+    status.conflicted.sort_by(|a, b| a.path.cmp(&b.path));
+
+    Ok(status)
+}
+
+/// A difference between `HEAD` and the index — what a commit would record.
+fn staged_change(change: &gix::diff::index::Change) -> FileChange {
+    use gix::diff::index::Change as C;
+
+    let (path, status) = match change {
+        C::Addition { location, .. } => (location.as_ref(), ChangeStatus::Added),
+        C::Deletion { location, .. } => (location.as_ref(), ChangeStatus::Deleted),
+        C::Modification {
+            location,
+            previous_entry_mode,
+            entry_mode,
+            ..
+        } => {
+            let same_kind = match (
+                previous_entry_mode.to_tree_entry_mode(),
+                entry_mode.to_tree_entry_mode(),
+            ) {
+                (Some(before), Some(after)) => path_kind(before) == path_kind(after),
+                // An index entry with no tree equivalent is a sparse
+                // placeholder; there is no type to have changed.
+                _ => true,
+            };
+            let status = if same_kind {
+                ChangeStatus::Modified
+            } else {
+                ChangeStatus::TypeChange
+            };
+            (location.as_ref(), status)
+        }
+        C::Rewrite {
+            source_location,
+            location,
+            copy,
+            ..
+        } => {
+            let from = path_from(source_location.as_ref());
+            let status = if *copy {
+                ChangeStatus::Copied { from }
+            } else {
+                ChangeStatus::Renamed { from }
+            };
+            (location.as_ref(), status)
+        }
+    };
+
+    FileChange {
+        path: path_from(path),
+        status,
+    }
+}
+
+/// A difference between the index and the working tree, or a file the index has
+/// never heard of.
+fn worktree_item(item: gix::status::index_worktree::Item, status: &mut WorktreeStatus) {
+    use gix::status::index_worktree::Item as I;
+    use gix::status::plumbing::index_as_worktree::{Change, EntryStatus};
+
+    match item {
+        I::Modification {
+            rela_path,
+            status: entry_status,
+            ..
+        } => match entry_status {
+            EntryStatus::Conflict { summary, .. } => status.conflicted.push(Conflict {
+                path: path_from(rela_path.as_ref()),
+                kind: conflict_kind(summary),
+            }),
+            EntryStatus::Change(Change::Removed) => status.unstaged.push(FileChange {
+                path: path_from(rela_path.as_ref()),
+                status: ChangeStatus::Deleted,
+            }),
+            EntryStatus::Change(Change::Type { .. }) => status.unstaged.push(FileChange {
+                path: path_from(rela_path.as_ref()),
+                status: ChangeStatus::TypeChange,
+            }),
+            EntryStatus::Change(Change::Modification { .. })
+            | EntryStatus::Change(Change::SubmoduleModification(_)) => {
+                status.unstaged.push(FileChange {
+                    path: path_from(rela_path.as_ref()),
+                    status: ChangeStatus::Modified,
+                })
+            }
+            // A file staged with `--intent-to-add` has an index entry that
+            // promises content the object database does not have yet. Nothing
+            // has changed relative to that promise, so there is nothing to
+            // report. `NeedsUpdate` is a cache hint, not a change at all.
+            EntryStatus::IntentToAdd | EntryStatus::NeedsUpdate(_) => {}
+        },
+        I::DirectoryContents { entry, .. } => {
+            if entry.status == gix::dir::entry::Status::Untracked {
+                status.untracked.push(path_from(entry.rela_path.as_ref()));
+            }
+        }
+        I::Rewrite {
+            source,
+            dirwalk_entry,
+            copy,
+            ..
+        } => {
+            let from = path_from(source.rela_path());
+            status.unstaged.push(FileChange {
+                path: path_from(dirwalk_entry.rela_path.as_ref()),
+                status: if copy {
+                    ChangeStatus::Copied { from }
+                } else {
+                    ChangeStatus::Renamed { from }
+                },
+            });
+        }
+    }
+}
+
+fn conflict_kind(summary: gix::status::plumbing::index_as_worktree::Conflict) -> ConflictKind {
+    use gix::status::plumbing::index_as_worktree::Conflict as C;
+
+    match summary {
+        C::BothModified => ConflictKind::BothModified,
+        C::BothAdded => ConflictKind::BothAdded,
+        C::BothDeleted => ConflictKind::BothDeleted,
+        C::DeletedByUs => ConflictKind::DeletedByUs,
+        C::DeletedByThem => ConflictKind::DeletedByThem,
+        C::AddedByUs => ConflictKind::AddedByUs,
+        C::AddedByThem => ConflictKind::AddedByThem,
+    }
 }
 
 #[cfg(test)]

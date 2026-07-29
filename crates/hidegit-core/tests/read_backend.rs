@@ -4,12 +4,13 @@
 //! as a description of the history it covers rather than as a reference to an
 //! opaque blob checked into the repository.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use hidegit_core::backend::{GitBackend, HybridBackend};
 use hidegit_core::fixture::fixture;
 use hidegit_core::model::{
-    ChangeStatus, DiffTarget, FileDiffContent, Head, LineKind, LogPage, RefKind, RepoState, RevSpec,
+    ChangeStatus, ConflictKind, DiffTarget, FileDiffContent, Head, LineKind, LogPage, RefKind,
+    RepoState, RevSpec,
 };
 use hidegit_core::{GitError, ObjectId};
 
@@ -518,22 +519,186 @@ fn invalidating_the_cache_picks_up_commits_made_afterwards() {
 }
 
 #[test]
+fn a_freshly_committed_repository_has_a_clean_working_directory() {
+    let repo = fixture().commit("A").build();
+
+    let status = repo.backend().status().expect("status is readable");
+
+    assert!(status.is_clean(), "nothing was touched after the commit");
+    assert_eq!(status.state, RepoState::Clean);
+}
+
+#[test]
+fn a_repository_with_no_commits_still_reports_what_is_staged_for_the_first_one() {
+    // There is no `HEAD` tree to diff the index against, which is the case
+    // most likely to panic rather than answer.
+    let repo = fixture().stage("first.txt", "initial\n").build();
+
+    let status = repo
+        .backend()
+        .status()
+        .expect("an unborn HEAD is not an error");
+
+    assert_eq!(status.staged.len(), 1);
+    assert_eq!(status.staged[0].status.code(), 'A');
+    assert_eq!(status.staged[0].path, PathBuf::from("first.txt"));
+}
+
+#[test]
+fn the_three_lists_separate_staged_from_unstaged_from_untracked() {
+    let repo = fixture()
+        .commit("tracked")
+        .stage("staged.txt", "staged\n")
+        .write("tracked.txt", "changed on disk\n")
+        .write("untracked.txt", "never added\n")
+        .build();
+
+    let status = repo.backend().status().expect("status is readable");
+
+    assert_eq!(
+        status
+            .staged
+            .iter()
+            .map(|c| (c.path.as_path(), c.status.code()))
+            .collect::<Vec<_>>(),
+        vec![(Path::new("staged.txt"), 'A')]
+    );
+    assert_eq!(
+        status
+            .unstaged
+            .iter()
+            .map(|c| (c.path.as_path(), c.status.code()))
+            .collect::<Vec<_>>(),
+        vec![(Path::new("tracked.txt"), 'M')]
+    );
+    assert_eq!(status.untracked, vec![PathBuf::from("untracked.txt")]);
+    assert_eq!(status.change_count(), 3);
+}
+
+#[test]
+fn a_file_changed_in_the_index_and_again_on_disk_appears_in_both_lists() {
+    // Not double-counting: `staged` is what a commit would contain and
+    // `unstaged` is what it would leave behind, and the staging view offers a
+    // different action for each.
+    let repo = fixture()
+        .commit("base")
+        .stage("base.txt", "staged version\n")
+        .write("base.txt", "and then edited again\n")
+        .build();
+
+    let status = repo.backend().status().expect("status is readable");
+
+    assert_eq!(status.staged.len(), 1, "the index differs from HEAD");
+    assert_eq!(status.unstaged.len(), 1, "the disk differs from the index");
+    assert_eq!(status.staged[0].path, PathBuf::from("base.txt"));
+    assert_eq!(status.unstaged[0].path, PathBuf::from("base.txt"));
+}
+
+#[test]
+fn an_ignored_file_is_not_reported_as_untracked() {
+    let repo = fixture()
+        .edit(".gitignore", "*.log\n", "ignore logs")
+        .write("noise.log", "ignored\n")
+        .write("signal.txt", "not ignored\n")
+        .build();
+
+    let status = repo.backend().status().expect("status is readable");
+
+    assert_eq!(
+        status.untracked,
+        vec![PathBuf::from("signal.txt")],
+        "`.gitignore` is respected rather than reimplemented"
+    );
+}
+
+#[test]
+fn a_deleted_file_is_an_unstaged_deletion_rather_than_a_disappearance() {
+    let repo = fixture().commit("doomed").delete("doomed.txt").build();
+
+    let status = repo.backend().status().expect("status is readable");
+
+    assert_eq!(status.unstaged.len(), 1);
+    assert_eq!(status.unstaged[0].status.code(), 'D');
+}
+
+#[test]
+fn a_staged_rename_is_reported_as_one_rename_and_not_a_delete_plus_an_add() {
+    let repo = fixture()
+        .edit("before.txt", "enough content to match on\n", "add")
+        .rename("before.txt", "after.txt")
+        .build();
+
+    let status = repo.backend().status().expect("status is readable");
+
+    assert_eq!(status.staged.len(), 1, "a rename is a single change");
+    assert_eq!(
+        status.staged[0].status,
+        ChangeStatus::Renamed {
+            from: PathBuf::from("before.txt")
+        }
+    );
+    assert_eq!(status.staged[0].path, PathBuf::from("after.txt"));
+}
+
+#[test]
+fn a_conflicted_merge_reports_the_path_and_leaves_the_state_visible() {
+    let repo = fixture()
+        .edit("shared.txt", "original\n", "base")
+        .branch("theirs")
+        .edit("shared.txt", "their version\n", "theirs edit")
+        .checkout("main")
+        .edit("shared.txt", "our version\n", "our edit")
+        .conflict("theirs")
+        .build();
+
+    let status = repo.backend().status().expect("status is readable");
+
+    assert_eq!(
+        status.state,
+        RepoState::Merging,
+        "the repository is mid-merge and must say so"
+    );
+    assert_eq!(status.conflicted.len(), 1);
+    assert_eq!(status.conflicted[0].path, PathBuf::from("shared.txt"));
+    assert_eq!(status.conflicted[0].kind, ConflictKind::BothModified);
+}
+
+#[test]
+fn the_lists_are_sorted_by_path_whatever_order_the_walk_finished_in() {
+    let repo = fixture()
+        .commit("seed")
+        .write("zebra.txt", "z\n")
+        .write("alpha.txt", "a\n")
+        .write("middle.txt", "m\n")
+        .build();
+
+    let status = repo.backend().status().expect("status is readable");
+
+    let mut sorted = status.untracked.clone();
+    sorted.sort();
+    assert_eq!(
+        status.untracked, sorted,
+        "gitoxide emits these interleaved from parallel threads; the UI needs one order"
+    );
+}
+
+#[test]
 fn operations_from_later_milestones_say_which_milestone_they_land_in() {
     let repo = fixture().commit("A").build();
     let backend = repo.backend();
 
-    match backend.status() {
+    match backend.blame(Path::new("A.txt"), repo.id("A")) {
         Err(GitError::NotImplementedYet {
             operation,
             milestone,
         }) => {
-            assert_eq!(operation, "status");
-            assert_eq!(milestone, "M2");
+            assert_eq!(operation, "blame");
+            assert_eq!(milestone, "M6");
         }
         other => panic!("expected NotImplementedYet, got {other:?}"),
     }
 
-    // M1 is read-only on purpose: nothing here may write.
+    // Writing is still M2 and M3; `status` above it has landed.
     assert!(backend.stage(&[Path::new("A.txt")]).is_err());
     assert!(backend.create_commit("nope", Default::default()).is_err());
     assert!(

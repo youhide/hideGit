@@ -275,6 +275,62 @@ impl Fixture {
         self
     }
 
+    // ---- dirty state -----------------------------------------------------
+    //
+    // Everything above commits, which is why nothing above can produce a
+    // working directory to take the status of. The methods below deliberately
+    // stop short of committing, and are the ones `status` is tested against.
+
+    /// Writes a file without staging or committing it.
+    ///
+    /// The file becomes an unstaged modification if it is tracked, and an
+    /// untracked file if it is not. Parent directories are created as needed.
+    pub fn write(self, file: &str, contents: &str) -> Self {
+        let path = self.dir.path().join(file);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("creating a fixture directory");
+        }
+        std::fs::write(&path, contents).expect("writing a fixture file");
+        self
+    }
+
+    /// Writes a file and stages it, without committing.
+    pub fn stage(self, file: &str, contents: &str) -> Self {
+        let this = self.write(file, contents);
+        this.git(["add", "--", file]);
+        this
+    }
+
+    /// Deletes a file from the working tree, leaving the deletion unstaged.
+    pub fn delete(self, file: &str) -> Self {
+        std::fs::remove_file(self.dir.path().join(file)).expect("removing a fixture file");
+        self
+    }
+
+    /// Renames a tracked file and stages the rename.
+    pub fn rename(self, from: &str, to: &str) -> Self {
+        self.git(["mv", from, to]);
+        self
+    }
+
+    /// Leaves the repository mid-merge with a conflicted path.
+    ///
+    /// `branch` must already exist and must have changed the same file as the
+    /// current branch, so the merge cannot resolve it. The merge is expected to
+    /// fail, so its exit status is deliberately not checked.
+    pub fn conflict(self, branch: &str) -> Self {
+        let date = format!("{} +0000", self.clock);
+        let _ = GitCommand::new("--no-pager")
+            .args(["merge", "--no-edit", branch])
+            .cwd(self.dir.path())
+            .takes_locks()
+            .env("GIT_AUTHOR_DATE", &date)
+            .env("GIT_COMMITTER_DATE", &date)
+            .env("GIT_EDITOR", "true")
+            .run();
+        self
+    }
+
     /// Finishes the repository.
     pub fn build(self) -> Repo {
         Repo {

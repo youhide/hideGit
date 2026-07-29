@@ -279,6 +279,8 @@ pub enum ConflictKind {
     DeletedByThem,
     AddedByUs,
     AddedByThem,
+    /// Both sides deleted the path, but left different states behind it.
+    BothDeleted,
 }
 
 /// What operation, if any, the repository is in the middle of.

@@ -139,10 +139,7 @@ impl GitBackend for HybridBackend {
     }
 
     fn status(&self) -> Result<WorktreeStatus, GitError> {
-        // Reporting an empty status here would be a lie, and the UI is built
-        // on never lying about repository state. M2 implements it properly,
-        // with rename detection and `.gitignore` handling.
-        Err(not_implemented("status", "M2"))
+        gix_read::status(&self.repo())
     }
 
     fn blame(&self, _path: &Path, _at: ObjectId) -> Result<Blame, GitError> {

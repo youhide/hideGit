@@ -117,7 +117,7 @@ pub trait GitBackend: Send + Sync + Debug {
     fn commit(&self, id: ObjectId) -> Result<CommitDetail, GitError>;
     fn diff(&self, target: &DiffTarget) -> Result<Diff, GitError>;
     fn read_blob(&self, id: ObjectId) -> Result<Blob, GitError>;
-    fn status(&self) -> Result<WorktreeStatus, GitError>;          // M2
+    fn status(&self) -> Result<WorktreeStatus, GitError>;
     fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;  // M6
     fn invalidate(&self);
 
@@ -245,6 +245,17 @@ pub struct Diff {
 
 `RepoState` is not cosmetic. A repository mid-rebase must not offer "commit" as though nothing is
 happening — the UI reads this to decide which actions are even available.
+
+`staged` and `unstaged` are two different diffs, not two halves of one list: `staged` is `HEAD`
+against the index — what a commit would contain — and `unstaged` is the index against the working
+tree. A file modified, staged, and then edited again appears in **both**, which is correct rather
+than double-counted, because the staging view offers a different action for each. `change_count()`
+adds all four lists for the sidebar badge and will therefore count such a file twice, the same way
+a file listed under two headings in `git status` is read twice.
+
+Both lists are sorted by path. gitoxide computes the two halves in parallel and emits them
+interleaved, so the arrival order is "whichever thread finished first" — not something a list the
+user reads should inherit.
 
 ## Commit graph
 
