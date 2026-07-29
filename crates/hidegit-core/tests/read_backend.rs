@@ -582,5 +582,8 @@ fn a_generated_history_has_the_shape_the_benchmarks_assume() {
     );
 
     let layout = hidegit_core::graph::layout(&commits);
-    assert!(layout.width >= 2, "a merged side branch needs a second lane");
+    assert!(
+        layout.width >= 2,
+        "a merged side branch needs a second lane"
+    );
 }
