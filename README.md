@@ -9,12 +9,19 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](./docs/ROADMAP.md)
 
-> **Pre-alpha.** It runs, it reads, and it commits. You can open a repository, scroll its history,
-> read any commit's diff, stage by file, by hunk or by individual line, discard, and commit —
-> and the file list updates on its own when something changes on disk. Nothing touches a remote
-> yet: branches, fetch, pull and push arrive in
-> [M3](./docs/ROADMAP.md#m3--branches--remotes). See [ROADMAP](./docs/ROADMAP.md) for what ships
-> when, and [ARCHITECTURE](./docs/ARCHITECTURE.md) for how it is built.
+> **Pre-alpha, and now a daily driver for ordinary work.** You can clone a repository or open one,
+> scroll its history, read any commit's diff, stage by file, by hunk or by individual line, commit,
+> branch, stash, and fetch, pull and push — with progress you can watch and cancel. History
+> rewriting is what is missing: merge, rebase, cherry-pick and the conflict resolution UI arrive in
+> [M5](./docs/ROADMAP.md#m5--history-operations), and pull request alerts in
+> [M4](./docs/ROADMAP.md#m4--pull-request-alerts).
+>
+> One caveat worth knowing before you rely on it: pushing over SSH with a passphrase, or over HTTPS
+> with a credential helper, has not been verified. It should work — hideGit hands those operations to
+> your own `git` — but every remote in the test suite is a local path, so nobody has confirmed it.
+>
+> See [ROADMAP](./docs/ROADMAP.md) for what ships when, and
+> [ARCHITECTURE](./docs/ARCHITECTURE.md) for how it is built.
 
 ---
 
@@ -22,6 +29,11 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 
 hideGit visualises a repository's history and lets you work in it — stage, commit, branch, push,
 resolve conflicts — and tells you when something needs your attention on a pull request.
+
+Where it needs to say no, it says so and shows you Git's own words. A checkout that would overwrite
+your changes fails with the list of files rather than stashing them somewhere you did not ask for; a
+rejected push shows the hint that tells you what to do about it; a deletion that Git refuses stays
+refused rather than being retried with `--force`.
 
 - **Commit graph as the primary view.** History is the thing you reason about, so it gets the
   centre of the window. Target: 60fps scrolling on a 100,000-commit repository.
@@ -39,7 +51,7 @@ resolve conflicts — and tells you when something needs your attention on a pul
 |---|---|---|
 | ✅ | Commit graph, commit details, file tree, diff viewer | [M1](./docs/ROADMAP.md#m1--scaffold--read-only-viewer) |
 | ✅ | Stage / unstage by file, hunk and line, discard, commit, amend | [M2](./docs/ROADMAP.md#m2--working-directory) |
-| ⬜ | Branches, tags, stash, fetch / pull / push, remotes | [M3](./docs/ROADMAP.md#m3--branches--remotes) |
+| ✅ | Clone, branches, tags, stash, remotes, fetch / pull / push with progress | [M3](./docs/ROADMAP.md#m3--branches--remotes) |
 | ⬜ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
 | ⬜ | Merge, rebase, cherry-pick, revert, conflict resolution UI | [M5](./docs/ROADMAP.md#m5--history-operations) |
 | ⬜ | Themes, keyboard navigation, multi-repo tabs, installers | [M6](./docs/ROADMAP.md#m6--polish--release) |

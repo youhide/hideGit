@@ -91,7 +91,7 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
 
     fn read_blob(&self, id: ObjectId) -> Result<Blob, GitError>;
 
-    /// Working directory state. Lands in M2.
+    /// Working directory state.
     fn status(&self) -> Result<WorktreeStatus, GitError>;
 
     /// The remotes `git remote` would list, with their URLs.
@@ -120,28 +120,30 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     /// Line-by-line authorship. Lands in M6.
     fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;
 
-    /// Drops any cached traversal, after something changed the repository.
+    /// Drops everything cached about the repository, after something changed it.
     ///
-    /// The history walk is memoised because computing topological order is the
-    /// expensive part of drawing a graph; this is the one call that says the
-    /// memo is stale.
+    /// Two things are cached, and both have to go. The history walk is memoised
+    /// because computing topological order is the expensive part of drawing a
+    /// graph. And gitoxide caches `.git/config` from the moment a repository is
+    /// opened, so a `git` command that rewrites it — a branch rename, a remote
+    /// change, `push --set-upstream` — leaves the read side describing the old
+    /// file. That second one fails quietly: an upstream simply disappears.
     fn invalidate(&self);
 
     // ---- write: git CLI ----------------------------------------------
 
-    /// Lands in M2.
     fn stage(&self, paths: &[&Path]) -> Result<(), GitError>;
 
-    /// Lands in M2.
+    /// Applies a patch to the index, which is how hunk- and line-level staging is
+    /// expressed — and, applied in reverse, how unstaging is.
     fn stage_patch(&self, patch: &Patch) -> Result<(), GitError>;
 
-    /// Lands in M2.
     fn unstage(&self, paths: &[&Path]) -> Result<(), GitError>;
 
-    /// Lands in M2.
     fn discard(&self, paths: &[&Path]) -> Result<(), GitError>;
 
-    /// Lands in M2.
+    /// Returns the new commit's id, read back rather than assumed: a hook or a
+    /// signature can change what was actually recorded.
     fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;
 
     /// Switches `HEAD`, and the working tree with it.
