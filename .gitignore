@@ -1,0 +1,39 @@
+# --- Rust ---------------------------------------------------------------
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock IS tracked. hideGit ships a binary, so a reproducible
+# dependency graph is part of the release artifact.
+# See: https://doc.rust-lang.org/cargo/faq.html#why-do-binaries-have-cargolock-in-version-control-but-not-libraries
+
+# --- Local agent notes --------------------------------------------------
+# Personal, untracked context for AI assistants. See CLAUDE.md.
+CLAUDE-Personal.md
+
+# --- Local configuration ------------------------------------------------
+.env
+.env.local
+*.local.toml
+
+# --- Editors / IDEs -----------------------------------------------------
+/.idea/
+/.vscode/*
+!/.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# --- Operating system ---------------------------------------------------
+.DS_Store
+.AppleDouble
+Thumbs.db
+desktop.ini
+
+# --- Build & packaging output -------------------------------------------
+/dist/
+/release/
+*.dmg
+*.msi
+*.AppImage
+*.flatpak
