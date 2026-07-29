@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
 use hidegit_core::model::{
-    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, WorktreeStatus,
+    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, StashEntry,
+    WorktreeStatus,
 };
 use hidegit_core::ops::{CancelToken, ProgressUpdate, StartPoint};
 use hidegit_core::{GitBackend, LogPage};
@@ -81,6 +82,12 @@ pub enum Selection {
     /// The staging view: what is staged, changed and untracked right now.
     WorkingDirectory,
     Commit(ObjectId),
+    /// A stash entry, by position from the top.
+    ///
+    /// Carries the index rather than the commit id because the index is what every
+    /// stash subcommand takes, and it is what the list is keyed by. The id is
+    /// looked up from `stashes` when the diff is loaded.
+    Stash(usize),
 }
 
 /// Unified or side-by-side, remembered per user.
@@ -477,6 +484,11 @@ pub struct OpenRepo {
     pub state: RepoState,
     /// The working directory as the staging view shows it.
     pub status: WorktreeStatus,
+    /// The stash, newest first.
+    ///
+    /// Read as part of a refresh, unlike `divergence`: it is one ref and one
+    /// reflog, which is cheap enough for the watcher path.
+    pub stashes: Vec<StashEntry>,
     /// Ahead/behind per local branch, keyed by full ref name.
     ///
     /// Loaded by its own task rather than as part of a refresh: it costs a commit

@@ -200,7 +200,7 @@ impl GitBackend for HybridBackend {
     }
 
     fn stashes(&self) -> Result<Vec<StashEntry>, GitError> {
-        Err(not_implemented("stashes", "M3"))
+        gix_read::stashes(&self.repo())
     }
 
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError> {
@@ -619,8 +619,77 @@ impl GitBackend for HybridBackend {
         }
     }
 
-    fn stash(&self, _op: &StashOp) -> Result<StashOutcome, GitError> {
-        Err(not_implemented("stash", "M3"))
+    fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError> {
+        self.guard_index()?;
+
+        match op {
+            StashOp::Push {
+                message,
+                include_untracked,
+            } => {
+                let mut command = GitCommand::new("stash").arg("push");
+                if *include_untracked {
+                    command = command.arg("--include-untracked");
+                }
+                if let Some(message) = message {
+                    // `--message=<text>` as one argument, not `--message -`:
+                    // unlike `git commit --file -`, `git stash push` does not read
+                    // its message from stdin — it takes `-` as the literal message,
+                    // which is how this was found. Attaching the text to the option
+                    // keeps it a single argv element, so a message that begins with
+                    // a dash is a message and never a flag.
+                    command = command.arg(format!("--message={message}"));
+                }
+
+                command.cwd(&self.workdir).takes_locks().run()?;
+                self.invalidate();
+
+                // Read back rather than assumed: `git stash push` with nothing to
+                // stash succeeds and creates nothing, and claiming an entry that
+                // does not exist would leave the sidebar pointing at nothing.
+                match gix_read::stashes(&self.repo())?.first() {
+                    Some(entry) => Ok(StashOutcome::Created(entry.id)),
+                    None => Ok(StashOutcome::Applied),
+                }
+            }
+
+            StashOp::Apply(index) | StashOp::Pop(index) => {
+                let verb = if matches!(op, StashOp::Apply(_)) {
+                    "apply"
+                } else {
+                    "pop"
+                };
+                let result = GitCommand::new("stash")
+                    .arg(verb)
+                    .operands([format!("stash@{{{index}}}")])
+                    .cwd(&self.workdir)
+                    .takes_locks()
+                    .run();
+                self.invalidate();
+
+                if let Err(error) = result {
+                    // A stash that conflicts is an outcome, not a failure: the
+                    // entry survives, the worktree has markers in it, and the user
+                    // has to resolve them. `pop` deliberately keeps the entry in
+                    // that case, which is Git's own behaviour.
+                    let conflicts = gix_read::status(&self.repo())?.conflicted;
+                    if !conflicts.is_empty() {
+                        return Ok(StashOutcome::Conflicted(conflicts));
+                    }
+                    return Err(error);
+                }
+                Ok(StashOutcome::Applied)
+            }
+
+            StashOp::Drop(index) => {
+                self.write(
+                    GitCommand::new("stash")
+                        .arg("drop")
+                        .operands([format!("stash@{{{index}}}")]),
+                )?;
+                Ok(StashOutcome::Dropped)
+            }
+        }
     }
 
     fn merge(&self, _from: &str, _opts: &MergeOpts) -> Result<MergeOutcome, GitError> {

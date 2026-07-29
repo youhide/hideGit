@@ -11,10 +11,12 @@ use std::sync::Arc;
 
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{
-    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, WorktreeStatus,
+    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, StashEntry,
+    WorktreeStatus,
 };
 use hidegit_core::ops::{
     CheckoutTarget, FetchOutcome, ForceMode, ProgressUpdate, PullOutcome, PushOutcome, StartPoint,
+    StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
 
@@ -64,6 +66,7 @@ pub struct OpenedRepository {
     pub refs: Refs,
     pub state: RepoState,
     pub status: WorktreeStatus,
+    pub stashes: Vec<StashEntry>,
     pub total: usize,
     pub first_page: Vec<Commit>,
 }
@@ -208,6 +211,14 @@ pub enum RepoMessage {
     /// The Cancel button on the progress banner.
     OperationCancelled,
 
+    // ---- the stash ----
+    /// Stash, apply, pop. Dropping goes through a confirmation first.
+    StashRequested(StashOp),
+    /// Asks to drop, which confirms rather than acting.
+    StashDropRequested(usize),
+    /// The confirmation was accepted. Only ever sent by the dialog.
+    StashDropConfirmed(usize),
+
     // ---- async results ----
     CommitsLoaded(Box<Result<Page, UiError>>),
     /// The O(n) pass that makes scrolling to an arbitrary row cheap.
@@ -262,6 +273,7 @@ pub struct Refreshed {
     pub refs: Refs,
     pub state: RepoState,
     pub status: WorktreeStatus,
+    pub stashes: Vec<StashEntry>,
     pub total: usize,
     pub first_page: Vec<Commit>,
 }

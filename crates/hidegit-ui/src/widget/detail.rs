@@ -1,13 +1,13 @@
 //! The detail pane: commit metadata, message, changed files, and the diff.
 
-use hidegit_core::model::{CommitDetail, Diff};
+use hidegit_core::model::{CommitDetail, Diff, StashEntry};
 use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
 use crate::format;
 use crate::message::{RepoMessage, UiError};
-use crate::state::{DetailPane, DiffMode, OpenRepo};
+use crate::state::{DetailPane, DiffMode, OpenRepo, Selection};
 use crate::theme::Palette;
 
 pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMessage> {
@@ -16,7 +16,14 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
         DetailPane::Loading => placeholder("Loading…", palette),
         DetailPane::Failed(error) => failure(error, palette),
         DetailPane::Commit { detail, diff, file } => {
-            commit(detail, diff, *file, repo.diff_mode, palette)
+            // A stash *is* a commit, which is what lets it reuse all of this — but
+            // it is not part of history, and labelling it as an ordinary commit
+            // would invite treating it like one.
+            let stash = match repo.selection {
+                Some(Selection::Stash(at)) => repo.stashes.get(at),
+                _ => None,
+            };
+            commit(detail, diff, *file, repo.diff_mode, stash, palette)
         }
         DetailPane::WorkingDirectory {
             staged,
@@ -48,23 +55,50 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
         .into()
 }
 
+/// A commit's metadata, message and diff.
+///
+/// `stash` is set when this commit is a stash entry rather than part of history, in
+/// which case the heading says so — `git stash show` is exactly a commit against
+/// its first parent, so everything below the heading is shared.
 fn commit<'a>(
     detail: &'a CommitDetail,
     diff: &'a Diff,
     selected_file: usize,
     mode: DiffMode,
+    stash: Option<&'a StashEntry>,
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
     let c = &detail.commit;
 
-    let mut header = column![
-        text(c.summary.clone())
-            .size(15.0)
-            .color(palette.text)
-            .font(Font {
-                weight: iced::font::Weight::Semibold,
-                ..Font::DEFAULT
-            }),
+    let mut header = column![];
+
+    if let Some(entry) = stash {
+        // Named in Git's own vocabulary, because `stash@{0}` is what the user
+        // would type at a terminal and what every stash command takes.
+        let where_from = match &entry.branch {
+            Some(branch) => format!("stash@{{{}}} · on {branch}", entry.index),
+            None => format!("stash@{{{}}}", entry.index),
+        };
+        header = header.push(
+            text(where_from)
+                .size(11.0)
+                .font(Font::MONOSPACE)
+                .color(palette.warning),
+        );
+    }
+
+    // A stash carries the user's own message, which is what the sidebar shows and
+    // what they will recognise; a commit's summary is its first line.
+    let title = match stash {
+        Some(entry) => entry.message.clone(),
+        None => c.summary.clone(),
+    };
+
+    header = header.push(text(title).size(15.0).color(palette.text).font(Font {
+        weight: iced::font::Weight::Semibold,
+        ..Font::DEFAULT
+    }));
+    header = header.push(
         row![
             text(c.id.short(10))
                 .size(12.0)
@@ -79,8 +113,8 @@ fn commit<'a>(
         ]
         .spacing(8)
         .align_y(Center),
-    ]
-    .spacing(6);
+    );
+    header = header.spacing(6);
 
     // Author and committer differ after a rebase or an applied patch, and that
     // difference is worth showing rather than flattening.

@@ -13,7 +13,7 @@ use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RevSpec};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, Patch, ProgressSink,
-    ProgressUpdate, PullOpts, PullOutcome, PushSpec,
+    ProgressUpdate, PullOpts, PullOutcome, PushSpec, StashOp,
 };
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
@@ -343,6 +343,7 @@ impl Hidegit {
             refs: opened.refs,
             state: opened.state,
             status: opened.status,
+            stashes: opened.stashes,
             divergence: HashMap::new(),
             pending: None,
             graph,
@@ -549,6 +550,22 @@ impl Hidegit {
                             Message::Repo(index, RepoMessage::StatusLoaded(Box::new(result)))
                         })
                     }
+                    // A stash is a commit, so it needs no diff code of its own —
+                    // `git stash show` is exactly a commit against its first
+                    // parent. The index is resolved to an id here, because the
+                    // index is what the list is keyed by and the id is what reads.
+                    Selection::Stash(at) => {
+                        let Some(id) = repo.stashes.get(at).map(|entry| entry.id) else {
+                            return Task::none();
+                        };
+                        repo.detail = DetailPane::Loading;
+                        repo.hunk = 0;
+
+                        let backend = Arc::clone(&repo.backend);
+                        blocking(move || load_commit(backend.as_ref(), id)).map(move |result| {
+                            Message::Repo(index, RepoMessage::DetailLoaded(Box::new(result)))
+                        })
+                    }
                 }
             }
 
@@ -646,8 +663,16 @@ impl Hidegit {
                     Ok(load) => {
                         // A stale result from a commit the user has already
                         // scrolled past must not replace what they selected
-                        // since.
-                        let still_selected = matches!(&repo.selection, Some(Selection::Commit(id)) if *id == load.id);
+                        // since. A stash loads through this path too — it *is* a
+                        // commit — so the check has to resolve its entry, or the
+                        // pane it asked for sits on "Loading…" for ever.
+                        let still_selected = match &repo.selection {
+                            Some(Selection::Commit(id)) => *id == load.id,
+                            Some(Selection::Stash(at)) => {
+                                repo.stashes.get(*at).is_some_and(|e| e.id == load.id)
+                            }
+                            _ => false,
+                        };
                         if still_selected {
                             repo.detail = DetailPane::Commit {
                                 detail: Box::new(load.detail),
@@ -958,6 +983,44 @@ impl Hidegit {
                 Task::none()
             }
 
+            // ---- the stash ----
+            RepoMessage::StashRequested(op) => {
+                let backend = Arc::clone(&repo.backend);
+                // The outcome is discarded on purpose: `Created`, `Applied` and
+                // `Dropped` are all "it worked", and the refresh that follows says
+                // more than a toast could. A conflict shows up as `RepoState`,
+                // which the banner already renders.
+                write_task(index, move || backend.stash(&op).map(|_| ()))
+            }
+
+            RepoMessage::StashDropRequested(at) => {
+                let describe = repo
+                    .stashes
+                    .get(at)
+                    .map(|entry| entry.message.clone())
+                    .unwrap_or_else(|| format!("stash@{{{at}}}"));
+
+                self.app.confirming = Some(Confirmation {
+                    title: "Drop this stash?".to_owned(),
+                    body: format!("“{describe}” will be lost. This cannot be undone."),
+                    confirm_label: "Drop".to_owned(),
+                    action: Box::new(Message::Repo(index, RepoMessage::StashDropConfirmed(at))),
+                });
+                Task::none()
+            }
+
+            RepoMessage::StashDropConfirmed(at) => {
+                // The selection is cleared first: dropping shifts every later
+                // entry down by one, so `Stash(at)` would then be showing a
+                // different stash's diff under the same heading.
+                if repo.selection == Some(Selection::Stash(at)) {
+                    repo.selection = None;
+                    repo.detail = DetailPane::Empty;
+                }
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.stash(&StashOp::Drop(at)).map(|_| ()))
+            }
+
             RepoMessage::DivergenceLoaded(result) => {
                 match *result {
                     Ok(divergence) => repo.divergence = divergence,
@@ -1125,6 +1188,7 @@ impl Hidegit {
                 repo.refs = refreshed.refs;
                 repo.state = refreshed.state;
                 repo.status = refreshed.status;
+                repo.stashes = refreshed.stashes;
 
                 // Restored by commit id rather than row index: a new commit at
                 // HEAD shifts every row down, and a refresh must not silently
@@ -1371,6 +1435,7 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
     let refs = backend.refs()?;
     let state = backend.repo_state()?;
     let status = backend.status()?;
+    let stashes = backend.stashes()?;
     let total = backend.commit_count(&RevSpec::All)?;
     let first_page = backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?;
 
@@ -1381,6 +1446,7 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
         refs,
         state,
         status,
+        stashes,
         total,
         first_page,
     })
@@ -1450,6 +1516,9 @@ fn reread(backend: &dyn GitBackend) -> Result<Refreshed, GitError> {
         refs: backend.refs()?,
         state: backend.repo_state()?,
         status: backend.status()?,
+        // One ref and one reflog, which is cheap enough for the watcher path —
+        // unlike ahead/behind, which is a walk per branch and has its own task.
+        stashes: backend.stashes()?,
         total: backend.commit_count(&RevSpec::All)?,
         first_page: backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?,
     })
@@ -1528,6 +1597,7 @@ mod tests {
             refs: Refs::default(),
             state: RepoState::Clean,
             status: WorktreeStatus::default(),
+            stashes: Vec::new(),
             total: count,
             first_page: history,
         }
@@ -2002,6 +2072,7 @@ mod tests {
                 refs: Refs::default(),
                 state: RepoState::Clean,
                 status: dirty(),
+                stashes: Vec::new(),
                 total: 100,
                 first_page: commits(100),
             }))),
@@ -2046,6 +2117,7 @@ mod tests {
                 refs: Refs::default(),
                 state: RepoState::Clean,
                 status: WorktreeStatus::default(),
+                stashes: Vec::new(),
                 total: 101,
                 first_page: grown,
             }))),
@@ -2943,6 +3015,155 @@ mod tests {
 
         let described = format!("{:?}", shortcut(&key, mods, Some(0), false));
         assert!(described.contains("Push"), "got {described}");
+    }
+
+    // ---- the stash ----
+
+    fn stash_entry(index: usize, message: &str) -> hidegit_core::model::StashEntry {
+        hidegit_core::model::StashEntry {
+            index,
+            id: ObjectId::from_hex(&format!("{index:040x}")).unwrap(),
+            message: message.to_owned(),
+            time: time::OffsetDateTime::UNIX_EPOCH,
+            branch: Some("main".to_owned()),
+        }
+    }
+
+    #[test]
+    fn dropping_a_stash_asks_first_and_names_what_is_lost() {
+        let mut app = app_with(1);
+        app.app.repos[0].stashes = vec![stash_entry(0, "half-finished lane colours")];
+
+        let _ = app.update(Message::Repo(0, RepoMessage::StashDropRequested(0)));
+
+        let confirmation = app.app.confirming.as_ref().expect("dropping confirms");
+        assert!(
+            confirmation.body.contains("half-finished lane colours"),
+            "it names the stash rather than asking generically: {}",
+            confirmation.body
+        );
+        assert!(confirmation.body.contains("cannot be undone"));
+        assert_eq!(confirmation.confirm_label, "Drop");
+    }
+
+    #[test]
+    fn dropping_the_open_stash_closes_the_pane_first() {
+        // Dropping shifts every later entry down by one, so `Stash(at)` would then
+        // be showing a *different* stash's diff under the same heading.
+        let mut app = app_with(1);
+        app.app.repos[0].stashes = vec![stash_entry(0, "first"), stash_entry(1, "second")];
+        app.app.repos[0].selection = Some(Selection::Stash(0));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::StashDropConfirmed(0)));
+
+        assert_eq!(app.app.repos[0].selection, None);
+        assert!(matches!(app.app.repos[0].detail, DetailPane::Empty));
+    }
+
+    #[test]
+    fn dropping_a_stash_that_is_not_open_leaves_the_selection_alone() {
+        let mut app = app_with(1);
+        app.app.repos[0].stashes = vec![stash_entry(0, "first"), stash_entry(1, "second")];
+        app.app.repos[0].selection = Some(Selection::WorkingDirectory);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::StashDropConfirmed(1)));
+
+        assert_eq!(
+            app.app.repos[0].selection,
+            Some(Selection::WorkingDirectory)
+        );
+    }
+
+    #[test]
+    fn selecting_a_stash_that_is_no_longer_there_does_nothing() {
+        // The list can shrink under the selection — a `git stash pop` in a
+        // terminal, picked up by the watcher — and an index past the end must not
+        // panic or load someone else's diff.
+        let mut app = app_with(1);
+        app.app.repos[0].stashes = vec![stash_entry(0, "only one")];
+
+        let _ = app.update(Message::Repo(0, RepoMessage::Selected(Selection::Stash(5))));
+
+        assert!(!matches!(app.app.repos[0].detail, DetailPane::Loading));
+    }
+
+    #[test]
+    fn a_stashs_diff_is_accepted_when_it_arrives() {
+        // Found by eye: the pane sat on "Loading…" for ever, because the staleness
+        // guard only recognised `Selection::Commit` and a stash arrives through the
+        // same path — it *is* a commit.
+        let mut app = app_with(1);
+        let entry = stash_entry(0, "half-finished lane colours");
+        let id = entry.id;
+        app.app.repos[0].stashes = vec![entry];
+        app.app.repos[0].selection = Some(Selection::Stash(0));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::DetailLoaded(Box::new(Ok(CommitLoad {
+                id,
+                detail: hidegit_core::model::CommitDetail {
+                    commit: commits(1).remove(0),
+                    changes: Vec::new(),
+                    stats: Default::default(),
+                },
+                diff: Diff::default(),
+            }))),
+        ));
+
+        assert!(
+            matches!(app.app.repos[0].detail, DetailPane::Commit { .. }),
+            "the diff has to land, not be discarded as stale"
+        );
+    }
+
+    #[test]
+    fn a_diff_for_a_stash_the_user_has_moved_on_from_is_still_discarded() {
+        let mut app = app_with(1);
+        app.app.repos[0].stashes = vec![stash_entry(0, "one"), stash_entry(1, "two")];
+        app.app.repos[0].selection = Some(Selection::Stash(1));
+
+        // The id belongs to entry 0, but entry 1 is open.
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::DetailLoaded(Box::new(Ok(CommitLoad {
+                id: stash_entry(0, "one").id,
+                detail: hidegit_core::model::CommitDetail {
+                    commit: commits(1).remove(0),
+                    changes: Vec::new(),
+                    stats: Default::default(),
+                },
+                diff: Diff::default(),
+            }))),
+        ));
+
+        assert!(!matches!(
+            app.app.repos[0].detail,
+            DetailPane::Commit { .. }
+        ));
+    }
+
+    #[test]
+    fn a_stash_refresh_replaces_the_whole_list() {
+        let mut app = app_with(1);
+        app.app.repos[0].stashes = vec![stash_entry(0, "stale")];
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(Refreshed {
+                head: opened(1).head,
+                refs: Refs::default(),
+                state: RepoState::Clean,
+                status: WorktreeStatus::default(),
+                stashes: vec![stash_entry(0, "fresh")],
+                total: 1,
+                first_page: commits(1),
+            }))),
+        ));
+
+        let stashes = &app.app.repos[0].stashes;
+        assert_eq!(stashes.len(), 1);
+        assert_eq!(stashes[0].message, "fresh");
     }
 
     #[test]

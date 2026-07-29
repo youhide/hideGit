@@ -337,6 +337,24 @@ impl Fixture {
         self
     }
 
+    /// Stashes whatever is in the working directory, with Git's own message.
+    ///
+    /// Needs something to stash: `git stash push` with a clean worktree succeeds
+    /// and creates nothing, which would make a test about entry `n` silently be
+    /// about a different one.
+    pub fn stash(self, file: &str, contents: &str) -> Self {
+        std::fs::write(self.dir.path().join(file), contents).expect("writing a fixture file");
+        self.git(["stash", "push", "--include-untracked"]);
+        self
+    }
+
+    /// Stashes with a message the user would have typed.
+    pub fn stash_named(self, file: &str, contents: &str, message: &str) -> Self {
+        std::fs::write(self.dir.path().join(file), contents).expect("writing a fixture file");
+        self.git(["stash", "push", "--include-untracked", "--message", message]);
+        self
+    }
+
     /// Adds a lightweight tag at `HEAD`.
     pub fn tag(self, name: &str) -> Self {
         self.git(["tag", name]);

@@ -9,8 +9,8 @@
 //! glyph rather than a menu, the same way a staging row carries `+`, `−` and `✕` —
 //! and a `⋯` that opens the action sheet for everything that does not fit.
 
-use hidegit_core::model::{Branch, Divergence, Head, Tag};
-use hidegit_core::ops::{CheckoutTarget, StartPoint};
+use hidegit_core::model::{Branch, Divergence, Head, StashEntry, Tag};
+use hidegit_core::ops::{CheckoutTarget, StartPoint, StashOp};
 use iced::widget::{Space, button, column, container, row, scrollable, text, tooltip};
 use iced::{Center, Fill, Font, Length, Padding};
 
@@ -65,6 +65,22 @@ pub fn view<'a>(repo: &'a OpenRepo, index: usize, palette: &'a Palette) -> Eleme
         sections = sections.push(section_heading("TAGS", repo.refs.tags.len(), None, palette));
         for tag in &repo.refs.tags {
             sections = sections.push(tag_row(tag, palette).map(move |m| Message::Repo(index, m)));
+        }
+    }
+
+    // Only when there is one. An empty "STASHES" heading reads as "you have no
+    // stashes" — which until M3 would have been a lie about a missing feature, and
+    // now would be a lie about the repository.
+    if !repo.stashes.is_empty() {
+        sections = sections.push(Space::new().height(8));
+        sections = sections.push(section_heading(
+            "STASHES",
+            repo.stashes.len(),
+            None,
+            palette,
+        ));
+        for entry in &repo.stashes {
+            sections = sections.push(stash_row(repo, entry, index, palette));
         }
     }
 
@@ -380,6 +396,68 @@ fn remote_branch_row<'a>(branch: &Branch, index: usize, palette: &Palette) -> El
                 RepoMessage::Selected(Selection::Commit(branch.target)),
             )),
         action_button("⋯", format!("Actions for {short}"), sheet, palette),
+    ]
+    .align_y(Center)
+    .into()
+}
+
+/// One stash entry: its message, the branch it came from, and what can be done.
+fn stash_row<'a>(
+    repo: &OpenRepo,
+    entry: &StashEntry,
+    index: usize,
+    palette: &Palette,
+) -> Element<'a, Message> {
+    let palette = *palette;
+    let at = entry.index;
+    let selected = repo.selection == Some(Selection::Stash(at));
+
+    // Git's own vocabulary: `stash@{0}` is what the user would type, so it is what
+    // they are shown, rather than an invented ordinal.
+    let position = text(format!("{{{at}}}"))
+        .size(HEADING_SIZE)
+        .font(Font::MONOSPACE)
+        .color(palette.muted);
+
+    let label = row![
+        position,
+        text(entry.message.clone())
+            .size(ITEM_SIZE)
+            .color(palette.text),
+    ]
+    .spacing(6)
+    .align_y(Center);
+
+    let title = match &entry.branch {
+        Some(branch) => format!("stash@{{{at}}} on {branch}"),
+        None => format!("stash@{{{at}}}"),
+    };
+    let sheet = ActionSheet::new(title.clone())
+        // Apply first: it is the reversible one. Pop is the same thing plus a
+        // deletion, and Drop is the deletion alone.
+        .item(
+            "Apply, keeping the stash",
+            Message::Repo(index, RepoMessage::StashRequested(StashOp::Apply(at))),
+        )
+        .item(
+            "Pop, removing the stash",
+            Message::Repo(index, RepoMessage::StashRequested(StashOp::Pop(at))),
+        )
+        .destructive(
+            "Drop",
+            Message::Repo(index, RepoMessage::StashDropRequested(at)),
+        );
+
+    row![
+        button(container(label).padding(Padding::from([3, 12])))
+            .width(Fill)
+            .padding(0)
+            .style(move |_, status| item_style(palette, selected, status))
+            .on_press(Message::Repo(
+                index,
+                RepoMessage::Selected(Selection::Stash(at)),
+            )),
+        action_button("⋯", format!("Actions for {title}"), sheet, palette),
     ]
     .align_y(Center)
     .into()

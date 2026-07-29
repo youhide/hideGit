@@ -16,7 +16,8 @@ use crate::error::GitError;
 use crate::model::{
     Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
     DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind,
-    ObjectId, RefKind, RefName, Refs, RepoState, RevSpec, Signature, Tag, WorktreeStatus,
+    ObjectId, RefKind, RefName, Refs, RepoState, RevSpec, Signature, StashEntry, Tag,
+    WorktreeStatus,
 };
 
 /// Files past this size get a placeholder instead of a diff.
@@ -260,6 +261,78 @@ pub(crate) fn divergence(repo: &gix::Repository) -> Result<HashMap<String, Diver
     }
 
     Ok(out)
+}
+
+/// The stash, newest entry first.
+///
+/// A stash is not a branch: `refs/stash` points only at the most recent entry, and
+/// the older ones live in that ref's *reflog*, which is what `stash@{n}` indexes
+/// into. So this reads the reflog rather than walking commits — walking would
+/// follow each entry's parents into ordinary history instead.
+///
+/// A repository that has never stashed has no `refs/stash` at all, which is an
+/// empty list rather than an error.
+pub(crate) fn stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, GitError> {
+    let Some(reference) = repo
+        .try_find_reference("refs/stash")
+        .map_err(|e| GitError::gix("looking for the stash", e))?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut platform = reference.log_iter();
+    // Reverse order is newest first, which is the order `stash@{0}` means and the
+    // order the sidebar shows.
+    let Some(entries) = platform
+        .rev()
+        .map_err(|e| GitError::gix("reading the stash reflog", e))?
+    else {
+        // The ref exists but its log does not, which a hand-written ref can
+        // produce. Nothing to list.
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        let line = match entry {
+            Ok(line) => line,
+            // One unreadable entry must not blank the whole list.
+            Err(e) => {
+                tracing::warn!(error = %e, index, "skipping unreadable stash entry");
+                continue;
+            }
+        };
+
+        let (branch, message) = parse_stash_subject(line.message.to_str_lossy().as_ref());
+        out.push(StashEntry {
+            index,
+            id: to_id(&line.new_oid),
+            message,
+            // An owned reflog signature carries its time directly, unlike the
+            // borrowed kind a commit hands out.
+            time: to_time(line.signature.time),
+            branch,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Pulls the branch and the message out of a stash reflog subject.
+///
+/// Git writes `WIP on <branch>: <sha> <summary>` when it invented the message, and
+/// `On <branch>: <message>` when the user supplied one. Anything else — a reflog
+/// written by another tool, or a wording change — is kept whole rather than
+/// mangled, because a message shown verbatim is never wrong.
+fn parse_stash_subject(subject: &str) -> (Option<String>, String) {
+    for prefix in ["WIP on ", "On "] {
+        if let Some(rest) = subject.strip_prefix(prefix)
+            && let Some((branch, message)) = rest.split_once(": ")
+        {
+            return (Some(branch.to_owned()), message.trim().to_owned());
+        }
+    }
+    (None, subject.trim().to_owned())
 }
 
 /// Is `ancestor` reachable from `descendant`?

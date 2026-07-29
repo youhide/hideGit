@@ -11,10 +11,10 @@
 
 use hidegit_core::backend::GitBackend;
 use hidegit_core::fixture::{Repo, fixture};
-use hidegit_core::model::{Divergence, Head, RevSpec};
+use hidegit_core::model::{DiffTarget, Divergence, Head, RevSpec};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, FetchOpts, ForceMode, NoProgress, ProgressSink, ProgressUpdate,
-    PullOpts, PullOutcome, PushSpec, StartPoint,
+    PullOpts, PullOutcome, PushSpec, StartPoint, StashOp, StashOutcome,
 };
 use hidegit_core::{GitError, ObjectId};
 
@@ -1078,4 +1078,280 @@ fn pushing_refuses_nothing_but_still_drops_stale_reads_when_it_fails() {
         before,
         "the repository is readable and unchanged after a refused push"
     );
+}
+
+// ---- the stash -----------------------------------------------------------
+
+#[test]
+fn a_repository_that_has_never_stashed_has_an_empty_stash_not_an_error() {
+    // There is no `refs/stash` at all, which is a normal state.
+    let repo = fixture().commit("A").build();
+
+    let stashes = repo.backend().stashes().expect("readable");
+
+    assert!(stashes.is_empty(), "got {stashes:?}");
+}
+
+#[test]
+fn stash_entries_come_back_newest_first_the_way_stash_at_zero_means() {
+    let repo = fixture()
+        .commit("A")
+        .stash_named("one.txt", "one\n", "the older one")
+        .stash_named("two.txt", "two\n", "the newer one")
+        .build();
+
+    let stashes = repo.backend().stashes().expect("readable");
+
+    assert_eq!(stashes.len(), 2);
+    assert_eq!(stashes[0].index, 0);
+    assert_eq!(stashes[0].message, "the newer one");
+    assert_eq!(stashes[1].index, 1);
+    assert_eq!(stashes[1].message, "the older one");
+}
+
+#[test]
+fn a_stash_records_the_branch_it_was_made_on() {
+    let repo = fixture()
+        .commit("A")
+        .branch("feat/graph")
+        .commit("B")
+        .stash("wip.txt", "work in progress\n")
+        .build();
+
+    let stashes = repo.backend().stashes().expect("readable");
+
+    assert_eq!(stashes[0].branch.as_deref(), Some("feat/graph"));
+    assert!(
+        stashes[0].message.contains("B"),
+        "Git's own WIP message names the commit it was on: {}",
+        stashes[0].message
+    );
+}
+
+#[test]
+fn a_stash_is_a_commit_so_its_contents_read_through_the_ordinary_diff() {
+    // The reason `Selection::Stash` needs no new diff code: `git stash show` is a
+    // commit against its first parent, which `DiffTarget::Commit` already is.
+    let repo = fixture()
+        .commit("A")
+        .edit("tracked.txt", "original\n", "B")
+        .build();
+    std::fs::write(repo.path().join("tracked.txt"), "changed\n").expect("writable");
+    repo.git(["stash", "push"]);
+
+    let backend = repo.backend();
+    let entry = &backend.stashes().expect("readable")[0];
+    let diff = backend
+        .diff(&DiffTarget::Commit(entry.id))
+        .expect("a stash diffs like any commit");
+
+    assert_eq!(diff.files.len(), 1);
+    assert_eq!(diff.files[0].path, std::path::Path::new("tracked.txt"));
+}
+
+#[test]
+fn stashing_takes_the_change_out_of_the_working_directory() {
+    let repo = fixture()
+        .commit("A")
+        .edit("tracked.txt", "original\n", "B")
+        .build();
+    std::fs::write(repo.path().join("tracked.txt"), "changed\n").expect("writable");
+
+    let backend = repo.backend();
+    let outcome = backend
+        .stash(&StashOp::Push {
+            message: Some("a message the user typed".to_owned()),
+            include_untracked: false,
+        })
+        .expect("stashing");
+
+    assert!(
+        matches!(outcome, StashOutcome::Created(_)),
+        "got {outcome:?}"
+    );
+    assert!(
+        backend.status().expect("readable").is_clean(),
+        "the working directory is clean again"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("tracked.txt")).expect("readable"),
+        "original\n",
+        "and the file is back to what was committed"
+    );
+    assert_eq!(
+        backend.stashes().expect("readable")[0].message,
+        "a message the user typed",
+        "the message went through stdin intact"
+    );
+}
+
+#[test]
+fn a_stash_message_that_looks_like_a_flag_is_still_a_message() {
+    // It travels on stdin rather than in argv, exactly so this cannot be read as
+    // an option.
+    let repo = fixture().commit("A").build();
+    std::fs::write(repo.path().join("new.txt"), "untracked\n").expect("writable");
+
+    let backend = repo.backend();
+    backend
+        .stash(&StashOp::Push {
+            message: Some("--include-untracked --all".to_owned()),
+            include_untracked: true,
+        })
+        .expect("stashing");
+
+    assert_eq!(
+        backend.stashes().expect("readable")[0].message,
+        "--include-untracked --all"
+    );
+}
+
+#[test]
+fn stashing_nothing_creates_nothing_rather_than_claiming_it_did() {
+    // `git stash push` with a clean worktree succeeds and creates no entry.
+    // Reporting `Created` would leave the sidebar pointing at something absent.
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+
+    let outcome = backend
+        .stash(&StashOp::Push {
+            message: None,
+            include_untracked: false,
+        })
+        .expect("not an error");
+
+    assert!(
+        !matches!(outcome, StashOutcome::Created(_)),
+        "nothing was created, so nothing is reported as created: {outcome:?}"
+    );
+    assert!(backend.stashes().expect("readable").is_empty());
+}
+
+#[test]
+fn applying_a_stash_restores_the_change_and_keeps_the_entry() {
+    let repo = fixture()
+        .commit("A")
+        .edit("tracked.txt", "original\n", "B")
+        .stash_named("tracked.txt", "changed\n", "wip")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .stash(&StashOp::Apply(0))
+        .expect("applying the stash");
+
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("tracked.txt")).expect("readable"),
+        "changed\n",
+    );
+    assert_eq!(
+        backend.stashes().expect("readable").len(),
+        1,
+        "apply keeps the entry; only pop and drop remove it"
+    );
+}
+
+#[test]
+fn popping_a_stash_restores_the_change_and_removes_the_entry() {
+    let repo = fixture()
+        .commit("A")
+        .edit("tracked.txt", "original\n", "B")
+        .stash_named("tracked.txt", "changed\n", "wip")
+        .build();
+    let backend = repo.backend();
+
+    backend.stash(&StashOp::Pop(0)).expect("popping the stash");
+
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("tracked.txt")).expect("readable"),
+        "changed\n",
+    );
+    assert!(backend.stashes().expect("readable").is_empty());
+}
+
+#[test]
+fn dropping_a_stash_removes_it_without_touching_the_working_directory() {
+    let repo = fixture()
+        .commit("A")
+        .edit("tracked.txt", "original\n", "B")
+        .stash_named("tracked.txt", "changed\n", "wip")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .stash(&StashOp::Drop(0))
+        .expect("dropping the stash");
+
+    assert!(backend.stashes().expect("readable").is_empty());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("tracked.txt")).expect("readable"),
+        "original\n",
+        "dropping discards the change rather than restoring it"
+    );
+}
+
+#[test]
+fn the_right_entry_is_dropped_when_there_are_several() {
+    let repo = fixture()
+        .commit("A")
+        .stash_named("one.txt", "one\n", "older")
+        .stash_named("two.txt", "two\n", "newer")
+        .build();
+    let backend = repo.backend();
+
+    // `stash@{1}` is the older one, which is what index 1 has to mean.
+    backend.stash(&StashOp::Drop(1)).expect("dropping");
+
+    let left = backend.stashes().expect("readable");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].message, "newer");
+}
+
+#[test]
+fn a_stash_that_conflicts_is_an_outcome_and_not_an_error() {
+    // The entry survives and the worktree has markers in it, which is a state the
+    // user has to work in rather than an error to dismiss.
+    let repo = fixture()
+        .commit("A")
+        .edit("shared.txt", "original\n", "B")
+        .stash_named("shared.txt", "from the stash\n", "wip")
+        .edit("shared.txt", "from a commit\n", "C")
+        .build();
+    let backend = repo.backend();
+
+    let outcome = backend
+        .stash(&StashOp::Pop(0))
+        .expect("a conflict is not an error");
+
+    match outcome {
+        StashOutcome::Conflicted(conflicts) => {
+            assert_eq!(conflicts.len(), 1);
+            assert_eq!(conflicts[0].path, std::path::Path::new("shared.txt"));
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+    assert_eq!(
+        backend.stashes().expect("readable").len(),
+        1,
+        "a conflicted pop keeps the entry, which is Git's own behaviour"
+    );
+}
+
+#[test]
+fn stashing_refuses_while_the_index_is_locked() {
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+
+    let lock = backend.git_dir().join("index.lock");
+    std::fs::write(&lock, b"").expect("a writable git directory");
+
+    let error = backend
+        .stash(&StashOp::Push {
+            message: None,
+            include_untracked: false,
+        })
+        .expect_err("another process holds the index");
+
+    assert!(matches!(error, GitError::IndexLocked(_)), "got {error:?}");
+    assert!(lock.exists(), "the lock is reported, never deleted");
 }
