@@ -12,13 +12,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use super::{GitBackend, gix_read, not_implemented};
-use crate::error::GitError;
+use crate::error::{GitError, classify_remote_failure};
 use crate::model::{
     Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, Refs,
     Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
 };
 use crate::ops::{
-    Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
+    Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, ForceMode, MergeOpts,
     MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome, PushSpec, RebasePlan,
     SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
 };
@@ -468,31 +468,155 @@ impl GitBackend for HybridBackend {
 
     fn fetch(
         &self,
-        _remote: &str,
-        _opts: &FetchOpts,
-        _progress: &dyn ProgressSink,
-        _cancel: &CancelToken,
+        remote: &str,
+        opts: &FetchOpts,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
     ) -> Result<FetchOutcome, GitError> {
-        Err(not_implemented("fetch", "M3"))
+        let mut command = GitCommand::new("fetch").arg("--progress");
+        if opts.prune {
+            command = command.arg("--prune");
+        }
+        if opts.tags {
+            command = command.arg("--tags");
+        }
+        command = if opts.all_remotes {
+            command.arg("--all")
+        } else {
+            command.operands([remote])
+        };
+
+        // A fetch does not take the index lock, so it is not routed through
+        // `write` — but it does move refs, so the memoised walk and the config
+        // snapshot still have to be dropped afterwards.
+        let output = command
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run_streaming(progress, cancel)
+            .map_err(|error| classify_remote_failure(remote, error))?;
+        self.invalidate();
+
+        Ok(parse_fetch(&output.stderr))
     }
 
     fn pull(
         &self,
-        _opts: &PullOpts,
-        _progress: &dyn ProgressSink,
-        _cancel: &CancelToken,
+        opts: &PullOpts,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
     ) -> Result<PullOutcome, GitError> {
-        Err(not_implemented("pull", "M3"))
+        self.guard_index()?;
+
+        let before = self.head()?.target();
+
+        // No strategy flag. `pull.rebase`, `pull.ff` and `rebase.autoStash` are
+        // the user's own configuration, and carrying it is half the reason writes
+        // shell out — a pull that behaved differently here than in the same
+        // user's terminal is the surprise this whole design avoids.
+        let mut command = GitCommand::new("pull").arg("--progress");
+        if let Some(remote) = &opts.remote {
+            command = command.operands([remote]);
+        }
+
+        let outcome = command
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run_streaming(progress, cancel);
+        self.invalidate();
+
+        if let Err(error) = outcome {
+            // A conflicted merge or rebase exits non-zero, and it is an outcome
+            // rather than a failure: it routes to the conflict UI, not to a
+            // toast. Anything with no conflicts behind it really did fail.
+            let conflicts = self.status()?.conflicted;
+            if !conflicts.is_empty() {
+                return Ok(PullOutcome::Conflicted(conflicts));
+            }
+            return Err(classify_remote_failure(
+                opts.remote.as_deref().unwrap_or("the upstream remote"),
+                error,
+            ));
+        }
+
+        let after = self.head()?.target();
+        match (before, after) {
+            (Some(before), Some(after)) if before == after => Ok(PullOutcome::UpToDate),
+            (Some(before), Some(after)) => {
+                let repo = self.repo();
+                // A merge commit means it was integrated rather than
+                // fast-forwarded, and so does a new HEAD the old one is not an
+                // ancestor of — which is what a rebase produces.
+                let merged = gix_read::commit_detail(&repo, after)?.commit.is_merge();
+                if merged || !gix_read::is_ancestor(&repo, before, after)? {
+                    Ok(PullOutcome::Integrated(after))
+                } else {
+                    Ok(PullOutcome::FastForwarded(after))
+                }
+            }
+            // An unborn branch that just gained its first history.
+            (None, Some(after)) => Ok(PullOutcome::FastForwarded(after)),
+            (_, None) => Ok(PullOutcome::UpToDate),
+        }
     }
 
     fn push(
         &self,
-        _remote: &str,
-        _spec: &PushSpec,
-        _progress: &dyn ProgressSink,
-        _cancel: &CancelToken,
+        remote: &str,
+        spec: &PushSpec,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
     ) -> Result<PushOutcome, GitError> {
-        Err(not_implemented("push", "M3"))
+        // **A deliberate exception to preferring machine formats.**
+        // `git push --porcelain` puts a stable tab-separated result on stdout,
+        // and that would be the obvious choice — except that it also *moves the
+        // failure detail off stderr*. Asked to push a stale lease, plain `git
+        // push` writes `! [rejected] main -> main (stale info)` and a hint saying
+        // what to do; with `--porcelain` those go to stdout and stderr keeps only
+        // `error: failed to push some refs`. Since Git's own message is the most
+        // useful thing hideGit has to say when a command fails, losing it costs
+        // more than parsing the human summary does — and this parser fails soft,
+        // so a wording change costs a summary line rather than correctness.
+        let mut command = GitCommand::new("push").arg("--progress");
+
+        command = match spec.force {
+            ForceMode::None => command,
+            // The default whenever a force is requested at all: it refuses if the
+            // remote moved since the last fetch.
+            ForceMode::WithLease => command.arg("--force-with-lease"),
+            // Never a fallback for a failed lease. Reaching this means the user
+            // selected it deliberately.
+            ForceMode::Force => command.arg("--force"),
+        };
+        if spec.set_upstream {
+            command = command.arg("--set-upstream");
+        }
+
+        let result = command
+            .operands([remote, spec.refspec.as_str()])
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run_streaming(progress, cancel);
+        // `--set-upstream` writes `branch.*.merge` into config, so the gitoxide
+        // snapshot has to be dropped whether the push succeeded or not.
+        self.invalidate();
+
+        match result {
+            Ok(output) => Ok(parse_push(&output.stderr)),
+            Err(error) => {
+                // Pushing several refs can update some and be refused others, and
+                // reporting only the failure would hide what did land. Nothing
+                // landing at all is a plain failure, and Git's own hint — which
+                // says exactly what to do about a non-fast-forward — is then the
+                // most useful thing hideGit can show.
+                if let GitError::Command { stderr, .. } = &error {
+                    let outcome = parse_push(stderr);
+                    if !outcome.updated.is_empty() {
+                        return Ok(outcome);
+                    }
+                }
+                Err(classify_remote_failure(remote, error))
+            }
+        }
     }
 
     fn stash(&self, _op: &StashOp) -> Result<StashOutcome, GitError> {
@@ -509,5 +633,197 @@ impl GitBackend for HybridBackend {
 
     fn cherry_pick(&self, _ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
         Err(not_implemented("cherry-pick", "M5"))
+    }
+}
+
+/// The flag `git` puts in the first column of a fetch or push result line.
+///
+/// One space means an ordinary fast-forward, which is why the flag is read from
+/// the trimmed line rather than from a fixed column: leading whitespace varies and
+/// a summary like `a3f9c21..b7e2d10` starts with none of these characters.
+fn ref_flag(line: &str) -> char {
+    let trimmed = line.trim_start();
+    match trimmed.chars().next() {
+        Some(c @ ('+' | '-' | 't' | '*' | '!' | '=')) if trimmed[1..].starts_with(' ') => c,
+        _ => ' ',
+    }
+}
+
+/// The destination ref of a `<from> -> <to>` line.
+fn destination(line: &str) -> Option<String> {
+    let (_, to) = line.rsplit_once("-> ")?;
+    let to = to.split_whitespace().next()?;
+    (!to.is_empty()).then(|| to.to_owned())
+}
+
+/// What a fetch brought back, from its stderr.
+///
+/// `git fetch` has no machine format before 2.41, so this reads the human output
+/// — the one place in hideGit that does. It is written to fail soft: a line it
+/// does not recognise is skipped, and an outcome that comes back empty means "the
+/// fetch worked and we could not summarise it", never an error. The refs
+/// themselves are read from the repository afterwards regardless.
+fn parse_fetch(stderr: &str) -> FetchOutcome {
+    let mut outcome = FetchOutcome::default();
+
+    for line in stderr.lines() {
+        let Some(to) = destination(line) else {
+            continue;
+        };
+        match ref_flag(line) {
+            '-' => outcome.pruned.push(to),
+            // `=` is "already up to date", which is not something that changed.
+            '=' => {}
+            // `!` is a rejected fetch, which `git` also reports non-zero for.
+            '!' => {}
+            _ => outcome.updated.push(to),
+        }
+    }
+
+    outcome
+}
+
+/// What a push did, from its stderr summary.
+///
+/// The same shape as a fetch's, and read the same way, for the reason given at the
+/// `--progress`-without-`--porcelain` decision in [`GitBackend::push`]: the
+/// machine format would move the failure detail off stderr, and that detail is
+/// what the user needs. Also fails soft — an unrecognised line costs a summary
+/// entry, never the operation.
+fn parse_push(stderr: &str) -> PushOutcome {
+    let mut outcome = PushOutcome::default();
+
+    for line in stderr.lines() {
+        let Some(to) = destination(line) else {
+            continue;
+        };
+        match ref_flag(line) {
+            '!' => outcome.rejected.push(to),
+            // `=` is up to date: nothing moved, and saying it did would be a lie.
+            '=' => {}
+            _ => outcome.updated.push(to),
+        }
+    }
+
+    outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fetch_summary_separates_what_moved_from_what_was_pruned() {
+        // Captured from a real `git fetch --progress --prune`.
+        let stderr = "\
+From /tmp/remote
+   a3f9c21..b7e2d10  main         -> origin/main
+ * [new branch]      feat/graph   -> origin/feat/graph
+ + f00dcafe...deadbee forced      -> origin/forced  (forced update)
+ - [deleted]         (none)       -> origin/gone
+ = [up to date]      release      -> origin/release
+ * [new tag]         v0.2.0       -> v0.2.0
+";
+        let outcome = parse_fetch(stderr);
+
+        assert_eq!(
+            outcome.updated,
+            vec![
+                "origin/main",
+                "origin/feat/graph",
+                "origin/forced",
+                "v0.2.0"
+            ]
+        );
+        assert_eq!(outcome.pruned, vec!["origin/gone"]);
+    }
+
+    #[test]
+    fn a_fetch_that_brought_nothing_back_is_an_empty_summary_not_a_failure() {
+        assert_eq!(parse_fetch(""), FetchOutcome::default());
+        // Progress output and nothing else: the fetch worked, there was no news.
+        assert_eq!(
+            parse_fetch("remote: Enumerating objects: 100% (5/5), done.\n"),
+            FetchOutcome::default()
+        );
+    }
+
+    #[test]
+    fn a_line_shape_git_may_change_is_skipped_rather_than_guessed_at() {
+        // The reason this parser fails soft: Git's human output is not an
+        // interface. Something unrecognised must cost a summary line, never the
+        // whole operation.
+        let outcome = parse_fetch("From /tmp/remote\nsomething entirely new\n");
+        assert_eq!(outcome, FetchOutcome::default());
+    }
+
+    #[test]
+    fn a_push_summary_reports_the_destination_ref() {
+        // Captured from a real `git push --progress`.
+        let stderr = "\
+To /tmp/remote
+   a3f9c21..b7e2d10  main -> main
+ * [new branch]      feat -> feat
+ = [up to date]      old -> old
+";
+        let outcome = parse_push(stderr);
+
+        assert_eq!(outcome.updated, vec!["main", "feat"]);
+        assert!(outcome.rejected.is_empty());
+    }
+
+    #[test]
+    fn a_stale_lease_is_reported_as_a_rejection_like_any_other() {
+        // The reason `--porcelain` is not used: with it, this line and Git's hint
+        // go to stdout and stderr keeps only "failed to push some refs", so the
+        // user loses the only part that says what to do.
+        let stderr = "\
+To /tmp/remote
+ ! [rejected]        main -> main (stale info)
+error: failed to push some refs to '/tmp/remote'
+";
+        let outcome = parse_push(stderr);
+
+        assert!(outcome.updated.is_empty());
+        assert_eq!(outcome.rejected, vec!["main"]);
+    }
+
+    #[test]
+    fn a_wholly_rejected_push_reports_nothing_as_updated() {
+        // This is what decides between an error carrying Git's hint and a partial
+        // success, so it has to be exact.
+        let stderr = "\
+To /tmp/remote
+ ! [rejected]        main -> main (non-fast-forward)
+error: failed to push some refs to '/tmp/remote'
+hint: Updates were rejected because the tip of your current branch is behind
+";
+        let outcome = parse_push(stderr);
+
+        assert!(outcome.updated.is_empty(), "got {:?}", outcome.updated);
+        assert_eq!(outcome.rejected, vec!["main"]);
+    }
+
+    #[test]
+    fn a_partly_rejected_push_reports_both_halves() {
+        let stderr = "\
+To /tmp/remote
+   a3f9c21..b7e2d10  ok -> ok
+ ! [rejected]        no -> no (non-fast-forward)
+";
+        let outcome = parse_push(stderr);
+
+        assert_eq!(outcome.updated, vec!["ok"]);
+        assert_eq!(outcome.rejected, vec!["no"]);
+    }
+
+    #[test]
+    fn a_summary_that_merely_starts_with_a_flag_character_is_not_a_flag() {
+        // `t` and `-` are flags, but only followed by a space. A summary like
+        // `tags/v1..HEAD` must not be read as a tag update.
+        assert_eq!(ref_flag("   a3f9c21..b7e2d10  main -> origin/main"), ' ');
+        assert_eq!(ref_flag(" t [tag update]      v1 -> v1"), 't');
+        assert_eq!(ref_flag(" - [deleted]         (none) -> origin/gone"), '-');
+        assert_eq!(ref_flag("total nonsense"), ' ');
     }
 }

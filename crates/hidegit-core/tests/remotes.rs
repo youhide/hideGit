@@ -11,8 +11,11 @@
 
 use hidegit_core::backend::GitBackend;
 use hidegit_core::fixture::{Repo, fixture};
-use hidegit_core::model::{Divergence, Head};
-use hidegit_core::ops::{CheckoutTarget, StartPoint};
+use hidegit_core::model::{Divergence, Head, RevSpec};
+use hidegit_core::ops::{
+    CancelToken, CheckoutTarget, FetchOpts, ForceMode, NoProgress, ProgressSink, ProgressUpdate,
+    PullOpts, PullOutcome, PushSpec, StartPoint,
+};
 use hidegit_core::{GitError, ObjectId};
 
 /// The branch `HEAD` is on, or a description of why it is not on one.
@@ -602,5 +605,477 @@ fn a_rename_does_not_lose_the_branchs_upstream() {
             .expect("readable")
             .contains_key("refs/heads/trunk"),
         "so ahead/behind survives the rename"
+    );
+}
+
+// ---- fetch, pull and push ------------------------------------------------
+
+/// Collects progress reports, so a test can assert the sink was actually fed.
+#[derive(Default)]
+struct Reports(std::sync::Mutex<Vec<ProgressUpdate>>);
+
+impl ProgressSink for Reports {
+    fn report(&self, update: ProgressUpdate) {
+        self.0.lock().expect("not poisoned").push(update);
+    }
+}
+
+impl Reports {
+    fn phases(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .expect("not poisoned")
+            .iter()
+            .map(|u| u.phase.clone())
+            .collect()
+    }
+}
+
+#[test]
+fn a_fetch_brings_the_remotes_new_commit_into_a_tracking_ref() {
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit_on_remote("origin", "theirs")
+        .build();
+    let backend = repo.backend();
+
+    let outcome = backend
+        .fetch(
+            "origin",
+            &FetchOpts::default(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("a local remote needs no credentials");
+
+    assert_eq!(
+        outcome.updated,
+        vec!["origin/main"],
+        "the summary names what moved"
+    );
+    // Asserted against the far side rather than hideGit's own reader: a bug
+    // shared by the writer and the reader would pass otherwise.
+    assert_eq!(
+        repo.git(["rev-parse", "refs/remotes/origin/main"]),
+        Repo::git_in(repo.remote_path("origin"), ["rev-parse", "refs/heads/main"]),
+    );
+}
+
+#[test]
+fn a_fetch_that_had_nothing_to_bring_back_is_not_a_failure() {
+    let repo = fixture().commit("A").with_remote("origin").build();
+
+    let outcome = repo
+        .backend()
+        .fetch(
+            "origin",
+            &FetchOpts::default(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("an up-to-date fetch succeeds");
+
+    assert!(outcome.updated.is_empty(), "got {:?}", outcome.updated);
+    assert!(outcome.pruned.is_empty());
+}
+
+#[test]
+fn a_pruning_fetch_reports_the_tracking_ref_it_removed() {
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .branch("doomed")
+        .commit("B")
+        .build();
+    repo.git(["push", "origin", "doomed"]);
+    repo.git(["fetch", "origin"]);
+    // Deleted *on the remote itself*, not through this repository's own push:
+    // `git push --delete` prunes the local tracking ref as it goes, so there
+    // would be nothing left to prune. Going behind hideGit's back is also what
+    // actually happens when someone merges and deletes a pull request branch.
+    Repo::git_in(
+        repo.remote_path("origin"),
+        ["branch", "--delete", "--force", "doomed"],
+    );
+
+    let outcome = repo
+        .backend()
+        .fetch(
+            "origin",
+            &FetchOpts {
+                prune: true,
+                ..FetchOpts::default()
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("pruning succeeds");
+
+    assert_eq!(outcome.pruned, vec!["origin/doomed"]);
+}
+
+#[test]
+fn a_fetch_reports_progress_in_real_units() {
+    // `UI_SPEC` requires a real unit rather than an indeterminate spinner, so the
+    // sink has to actually be fed. A local remote is fast, but `--progress` still
+    // reports its phases because stderr is a pipe rather than a terminal.
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit_on_remote("origin", "theirs")
+        .build();
+
+    let reports = Reports::default();
+    repo.backend()
+        .fetch(
+            "origin",
+            &FetchOpts::default(),
+            &reports,
+            &CancelToken::new(),
+        )
+        .expect("fetching");
+
+    let phases = reports.phases();
+    assert!(
+        !phases.is_empty(),
+        "a fetch that transferred an object reported nothing"
+    );
+    assert!(
+        phases.iter().any(|p| p.contains("objects")),
+        "phases should name objects: {phases:?}"
+    );
+}
+
+#[test]
+fn a_fetch_cancelled_before_it_starts_does_not_touch_the_remote() {
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit_on_remote("origin", "theirs")
+        .build();
+    let before = repo.git(["rev-parse", "refs/remotes/origin/main"]);
+
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let error = repo
+        .backend()
+        .fetch("origin", &FetchOpts::default(), &NoProgress, &cancel)
+        .expect_err("a cancelled fetch does not report success");
+
+    assert!(matches!(error, GitError::Cancelled { .. }), "got {error:?}");
+    assert_eq!(
+        repo.git(["rev-parse", "refs/remotes/origin/main"]),
+        before,
+        "nothing was fetched"
+    );
+}
+
+#[test]
+fn a_push_puts_the_local_commit_on_the_remote() {
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit("B")
+        .build();
+    let backend = repo.backend();
+
+    let outcome = backend
+        .push(
+            "origin",
+            &PushSpec {
+                refspec: "refs/heads/main:refs/heads/main".to_owned(),
+                force: ForceMode::None,
+                set_upstream: false,
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("a fast-forward push");
+
+    // The names are as Git printed them, which is the short form — these are for
+    // showing a person, not for resolving.
+    assert_eq!(outcome.updated, vec!["main"]);
+    assert!(outcome.rejected.is_empty());
+    assert_eq!(
+        Repo::git_in(repo.remote_path("origin"), ["rev-parse", "refs/heads/main"]),
+        repo.id("B").to_hex(),
+        "the remote really has it"
+    );
+}
+
+#[test]
+fn a_push_of_a_new_branch_can_set_its_upstream_in_the_same_command() {
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .branch("feat/graph")
+        .commit("B")
+        .build();
+
+    repo.backend()
+        .push(
+            "origin",
+            &PushSpec {
+                refspec: "refs/heads/feat/graph:refs/heads/feat/graph".to_owned(),
+                force: ForceMode::None,
+                set_upstream: true,
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("pushing a new branch");
+
+    assert_eq!(
+        repo.git(["rev-parse", "--abbrev-ref", "feat/graph@{upstream}"]),
+        "origin/feat/graph",
+        "so the sidebar has ahead/behind from the first push"
+    );
+    // The upstream lives in `.git/config`, which gitoxide caches from the moment
+    // the repository was opened — so this is the read that would go stale if a
+    // push did not drop that snapshot.
+    let refs = repo.backend().refs().expect("refs are readable");
+    assert_eq!(
+        refs.locals
+            .iter()
+            .find(|b| b.name.short == "feat/graph")
+            .and_then(|b| b.upstream.as_deref()),
+        Some("refs/remotes/origin/feat/graph"),
+    );
+}
+
+#[test]
+fn a_rejected_push_reports_gits_own_hint_rather_than_forcing() {
+    // Losing the remote's commits has to be a deliberate choice, so the refusal
+    // is surfaced verbatim — Git's hint says exactly what to do about it.
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit_on_remote("origin", "theirs")
+        .commit("mine")
+        .build();
+    let on_remote_before =
+        Repo::git_in(repo.remote_path("origin"), ["rev-parse", "refs/heads/main"]);
+
+    let error = repo
+        .backend()
+        .push(
+            "origin",
+            &PushSpec {
+                refspec: "refs/heads/main:refs/heads/main".to_owned(),
+                force: ForceMode::None,
+                set_upstream: false,
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect_err("a non-fast-forward push is refused");
+
+    match error {
+        GitError::Command { stderr, .. } => assert!(
+            stderr.contains("rejected") || stderr.contains("fetch first"),
+            "git's own words must survive: {stderr}"
+        ),
+        other => panic!("expected a Command error, got {other:?}"),
+    }
+    assert_eq!(
+        Repo::git_in(repo.remote_path("origin"), ["rev-parse", "refs/heads/main"]),
+        on_remote_before,
+        "the remote is untouched"
+    );
+}
+
+#[test]
+fn force_with_lease_refuses_when_the_remote_moved_since_the_last_fetch() {
+    // The whole point of a lease: forcing past someone else's commit that you
+    // have never seen is exactly what plain `--force` would do and this must not.
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit_on_remote("origin", "theirs")
+        .commit("mine")
+        .build();
+
+    let error = repo
+        .backend()
+        .push(
+            "origin",
+            &PushSpec {
+                refspec: "refs/heads/main:refs/heads/main".to_owned(),
+                force: ForceMode::WithLease,
+                set_upstream: false,
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect_err("the lease is stale, so the push is refused");
+
+    match error {
+        GitError::Command { stderr, .. } => assert!(
+            stderr.contains("stale info") || stderr.contains("rejected"),
+            "got {stderr}"
+        ),
+        other => panic!("expected a Command error, got {other:?}"),
+    }
+}
+
+#[test]
+fn force_with_lease_succeeds_when_the_local_view_of_the_remote_is_current() {
+    // Having fetched, the lease holds, and rewriting your own branch is allowed.
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .branch("feat")
+        .commit("B")
+        .build();
+    repo.git(["push", "--set-upstream", "origin", "feat"]);
+    // Rewrite the branch so the push is not a fast-forward.
+    repo.git(["commit", "--amend", "--no-edit", "--allow-empty"]);
+
+    repo.backend()
+        .push(
+            "origin",
+            &PushSpec {
+                refspec: "refs/heads/feat:refs/heads/feat".to_owned(),
+                force: ForceMode::WithLease,
+                set_upstream: false,
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("a current lease permits the rewrite");
+
+    assert_eq!(
+        Repo::git_in(repo.remote_path("origin"), ["rev-parse", "refs/heads/feat"]),
+        repo.git(["rev-parse", "refs/heads/feat"]),
+    );
+}
+
+#[test]
+fn a_pull_that_can_fast_forward_says_so() {
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit_on_remote("origin", "theirs")
+        .build();
+
+    let outcome = repo
+        .backend()
+        .pull(&PullOpts::default(), &NoProgress, &CancelToken::new())
+        .expect("pulling");
+
+    match outcome {
+        PullOutcome::FastForwarded(id) => assert_eq!(
+            id.to_hex(),
+            repo.git(["rev-parse", "HEAD"]),
+            "the reported id is where HEAD actually ended up"
+        ),
+        other => panic!("expected a fast-forward, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_pull_with_nothing_to_bring_back_says_up_to_date() {
+    let repo = fixture().commit("A").with_remote("origin").build();
+
+    let outcome = repo
+        .backend()
+        .pull(&PullOpts::default(), &NoProgress, &CancelToken::new())
+        .expect("pulling");
+
+    assert_eq!(outcome, PullOutcome::UpToDate, "got {outcome:?}");
+}
+
+#[test]
+fn a_pull_that_has_to_merge_reports_an_integration_not_a_fast_forward() {
+    // Both sides moved, so the user's own `pull.rebase` decides how — and either
+    // way HEAD is not a plain fast-forward of where it was.
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit_on_remote("origin", "theirs")
+        .edit("mine.txt", "mine\n", "mine")
+        .build();
+    // Pinned so the outcome does not depend on the machine's git config.
+    repo.git(["config", "pull.rebase", "false"]);
+
+    let outcome = repo
+        .backend()
+        .pull(&PullOpts::default(), &NoProgress, &CancelToken::new())
+        .expect("a clean merge");
+
+    match outcome {
+        PullOutcome::Integrated(id) => {
+            assert_eq!(id.to_hex(), repo.git(["rev-parse", "HEAD"]));
+            assert_eq!(
+                repo.git(["rev-list", "--count", "--merges", "HEAD", "-1"]),
+                "1",
+                "a merge commit is what integrated it"
+            );
+        }
+        other => panic!("expected an integration, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_pull_that_conflicts_is_an_outcome_and_not_an_error() {
+    // Conflicts route to the resolution UI. Reporting them as a failed command
+    // would put a wall of stderr in front of a state the user has to work in.
+    let repo = fixture()
+        .commit("A")
+        .edit("shared.txt", "original\n", "base")
+        .with_remote("origin")
+        .commit_on_remote_edit("origin", "shared.txt", "theirs\n", "theirs")
+        .edit("shared.txt", "mine\n", "mine")
+        .build();
+    repo.git(["config", "pull.rebase", "false"]);
+
+    let outcome = repo
+        .backend()
+        .pull(&PullOpts::default(), &NoProgress, &CancelToken::new())
+        .expect("a conflict is not an error");
+
+    match outcome {
+        PullOutcome::Conflicted(conflicts) => {
+            assert_eq!(conflicts.len(), 1);
+            assert_eq!(conflicts[0].path, std::path::Path::new("shared.txt"));
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+    assert_eq!(
+        repo.backend().repo_state().expect("readable"),
+        hidegit_core::model::RepoState::Merging,
+        "and the repository says what it is in the middle of"
+    );
+}
+
+#[test]
+fn pushing_refuses_nothing_but_still_drops_stale_reads_when_it_fails() {
+    // A failed push may still have written config — `--set-upstream` does — so the
+    // gitoxide snapshot has to be dropped either way.
+    let repo = fixture()
+        .commit("A")
+        .with_remote("origin")
+        .commit_on_remote("origin", "theirs")
+        .commit("mine")
+        .build();
+    let backend = repo.backend();
+    let before = backend.commit_count(&RevSpec::All).expect("readable");
+
+    let _ = backend.push(
+        "origin",
+        &PushSpec {
+            refspec: "refs/heads/main:refs/heads/main".to_owned(),
+            force: ForceMode::None,
+            set_upstream: false,
+        },
+        &NoProgress,
+        &CancelToken::new(),
+    );
+
+    assert_eq!(
+        backend.commit_count(&RevSpec::All).expect("readable"),
+        before,
+        "the repository is readable and unchanged after a refused push"
     );
 }

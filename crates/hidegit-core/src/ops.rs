@@ -123,6 +123,10 @@ pub struct FetchOpts {
 }
 
 /// What a fetch brought back.
+///
+/// The names are as `git` printed them — usually short, like `origin/main` — so
+/// they are for showing a person, not for resolving. An empty outcome means the
+/// fetch worked and there was nothing to summarise, never that it failed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FetchOutcome {
     pub updated: Vec<String>,
@@ -154,9 +158,13 @@ pub enum PullOutcome {
 
 /// What a push did, per ref.
 ///
-/// `rejected` is not an error: pushing several branches at once can succeed for
-/// some and be refused for others, and reporting only the failure would hide
-/// what did land.
+/// `rejected` is not, by itself, an error: pushing several refs at once can update
+/// some and be refused others, and reporting only the failure would hide what did
+/// land. A push where *nothing* landed is a plain failure, and Git's own hint —
+/// which says exactly what to do about a non-fast-forward — is what gets shown.
+///
+/// Names are as `git` printed them, so the short form. For display, not for
+/// resolving.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PushOutcome {
     pub updated: Vec<String>,

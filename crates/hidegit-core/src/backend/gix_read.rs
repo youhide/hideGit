@@ -262,6 +262,21 @@ pub(crate) fn divergence(repo: &gix::Repository) -> Result<HashMap<String, Diver
     Ok(out)
 }
 
+/// Is `ancestor` reachable from `descendant`?
+///
+/// Used to tell a fast-forward from an integration: after a pull, a new `HEAD`
+/// that the old one is an ancestor of was fast-forwarded, and one it is not was
+/// merged or rebased.
+pub(crate) fn is_ancestor(
+    repo: &gix::Repository,
+    ancestor: ObjectId,
+    descendant: ObjectId,
+) -> Result<bool, GitError> {
+    // Everything reachable from `ancestor` is painted unwanted by hiding
+    // `descendant` exactly when `descendant` already contains all of it.
+    Ok(count_excluding(repo, ancestor, descendant)? == 0)
+}
+
 /// How many commits `from` reaches that `hidden` does not.
 fn count_excluding(
     repo: &gix::Repository,

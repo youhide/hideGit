@@ -252,10 +252,30 @@ impl Fixture {
     /// Adds a commit to the remote that the local repository does not have yet,
     /// so a fetch has something to bring back and `behind` is non-zero.
     ///
+    /// The file is named after the commit, so it cannot conflict with anything
+    /// local. Use [`Fixture::commit_on_remote_edit`] to set up a conflict
+    /// deliberately.
+    pub fn commit_on_remote(self, remote: &str, name: &str) -> Self {
+        let file = format!("{name}.txt");
+        let contents = format!("{name}\n");
+        self.commit_on_remote_edit(remote, &file, &contents, name)
+    }
+
+    /// Changes a specific file on the remote, so a pull has to merge — and, when
+    /// the same file also changed locally, conflict.
+    ///
     /// Done by cloning the bare repository, committing there and pushing back,
     /// rather than by writing objects by hand: the result is a history a real
     /// `git` produced, which is the only kind worth asserting against.
-    pub fn commit_on_remote(self, remote: &str, name: &str) -> Self {
+    pub fn commit_on_remote_edit(
+        self,
+        remote: &str,
+        file: &str,
+        contents: &str,
+        message: &str,
+    ) -> Self {
+        use std::ffi::OsStr;
+
         let bare = self
             .remotes
             .get(remote)
@@ -266,7 +286,7 @@ impl Fixture {
         let work = scratch.path().join("work");
         let date = format!("{} +0000", self.clock);
 
-        let run = |args: Vec<&std::ffi::OsStr>, cwd: &Path| {
+        let run = |args: &[&OsStr], cwd: &Path| {
             let result = GitCommand::new("--no-pager")
                 .args(args)
                 .cwd(cwd)
@@ -280,39 +300,39 @@ impl Fixture {
             }
         };
 
-        use std::ffi::OsStr;
         run(
-            vec![OsStr::new("clone"), OsStr::new(&url), work.as_os_str()],
+            &[OsStr::new("clone"), OsStr::new(&url), work.as_os_str()],
             scratch.path(),
         );
+        // The clone must not inherit the developer's identity either.
+        for (key, value) in [
+            ("user.name", "hideGit Fixture"),
+            ("user.email", "fixture@hidegit.invalid"),
+            ("commit.gpgsign", "false"),
+            ("core.autocrlf", "false"),
+        ] {
+            run(
+                &[OsStr::new("config"), OsStr::new(key), OsStr::new(value)],
+                &work,
+            );
+        }
+
+        let path = work.join(file);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("a writable clone");
+        }
+        std::fs::write(&path, contents).expect("a writable clone");
+
+        run(&[OsStr::new("add"), OsStr::new("--all")], &work);
         run(
-            vec![
-                OsStr::new("config"),
-                OsStr::new("user.name"),
-                OsStr::new("hideGit Fixture"),
-            ],
-            &work,
-        );
-        run(
-            vec![
-                OsStr::new("config"),
-                OsStr::new("user.email"),
-                OsStr::new("fixture@hidegit.invalid"),
-            ],
-            &work,
-        );
-        std::fs::write(work.join(format!("{name}.txt")), format!("{name}\n"))
-            .expect("a writable clone");
-        run(vec![OsStr::new("add"), OsStr::new("--all")], &work);
-        run(
-            vec![
+            &[
                 OsStr::new("commit"),
                 OsStr::new("--message"),
-                OsStr::new(name),
+                OsStr::new(message),
             ],
             &work,
         );
-        run(vec![OsStr::new("push")], &work);
+        run(&[OsStr::new("push")], &work);
 
         self
     }
