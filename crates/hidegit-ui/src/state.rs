@@ -13,7 +13,7 @@ use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
 use hidegit_core::model::{
     Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, WorktreeStatus,
 };
-use hidegit_core::ops::StartPoint;
+use hidegit_core::ops::{CancelToken, ProgressUpdate, StartPoint};
 use hidegit_core::{GitBackend, LogPage};
 
 use crate::message::{Message, UiError};
@@ -299,6 +299,55 @@ impl Prompt {
     }
 }
 
+/// A long operation in flight.
+///
+/// One at a time per repository, which is why the toolbar replaces its buttons
+/// with a banner rather than queueing: two fetches racing for the same refs is not
+/// a thing worth supporting, and `id` is what keeps a *cancelled* operation's late
+/// result from clearing the banner of the one that replaced it.
+#[derive(Debug, Clone)]
+pub struct Operation {
+    pub id: u64,
+    /// What to call it in the banner — "Fetching", "Pushing to origin".
+    pub label: String,
+    /// Set by the Cancel button. The worker polls it and kills the subprocess.
+    pub cancel: CancelToken,
+    /// The most recent report, or `None` before the first one arrives.
+    pub progress: Option<ProgressUpdate>,
+}
+
+impl Operation {
+    /// The banner's right-hand text: the phase and a real unit.
+    ///
+    /// `UI_SPEC.md` requires a real unit rather than an indeterminate spinner, so
+    /// before the first report this says what it is waiting for rather than
+    /// inventing a number.
+    pub fn detail(&self) -> String {
+        match &self.progress {
+            None => "starting…".to_owned(),
+            Some(update) => match update.total {
+                Some(total) => format!("{} {}/{}", update.phase, update.done, total),
+                None => format!("{} {}", update.phase, update.done),
+            },
+        }
+    }
+
+    /// Progress as a fraction, when the total is known.
+    pub fn fraction(&self) -> Option<f32> {
+        self.progress.as_ref().and_then(ProgressUpdate::fraction)
+    }
+}
+
+/// Where a push would go, and under what name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushTarget {
+    pub remote: String,
+    pub branch: String,
+    pub refspec: String,
+    /// True when the branch has no upstream yet, so the push should record one.
+    pub set_upstream: bool,
+}
+
 /// A transient message.
 #[derive(Debug, Clone)]
 pub struct Toast {
@@ -435,6 +484,8 @@ pub struct OpenRepo {
     /// the watcher. A branch that tracks nothing is absent, which is different
     /// from being level with a remote and has to render differently.
     pub divergence: HashMap<String, Divergence>,
+    /// The network operation in flight, if any.
+    pub pending: Option<Operation>,
     pub graph: GraphView,
     pub selection: Option<Selection>,
     pub detail: DetailPane,
@@ -503,6 +554,81 @@ impl OpenRepo {
     /// `UI_SPEC.md` requires those two answers to be the same one.
     pub fn can_switch_branches(&self) -> bool {
         !self.state.is_in_progress()
+    }
+
+    /// The remote to reach for when nothing names one.
+    ///
+    /// `origin` when it exists, because that is what it means; otherwise the first
+    /// remote there is, alphabetically, so a repository whose only remote is called
+    /// something else still works. Derived from remote-tracking refs, which is all
+    /// `refs` carries — `remotes()` arrives with the rest of remote management.
+    pub fn default_remote(&self) -> Option<String> {
+        let mut names: Vec<&str> = self
+            .refs
+            .remotes
+            .iter()
+            .filter_map(|b| b.name.short.split_once('/').map(|(remote, _)| remote))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+
+        if names.contains(&"origin") {
+            return Some("origin".to_owned());
+        }
+        names.first().map(|n| (*n).to_owned())
+    }
+
+    /// Where a push from the current branch would go.
+    ///
+    /// `None` when there is nothing to push *from* — a detached `HEAD` or an unborn
+    /// branch — or nowhere to push *to*. The toolbar reads this both to decide
+    /// whether Push is available and to say why it is not.
+    pub fn push_target(&self) -> Option<PushTarget> {
+        let Head::Branch { name, .. } = &self.head else {
+            return None;
+        };
+        let branch = name.short.clone();
+
+        // An existing upstream names both the remote *and the branch on it*, and
+        // the two are not always the same name. Renaming a local branch leaves its
+        // upstream pointing at the old one, which is the ordinary state — pushing
+        // to the local name instead would quietly create a second branch on the
+        // remote rather than updating the one being tracked.
+        let upstream = self
+            .refs
+            .locals
+            .iter()
+            .find(|b| b.name.full == name.full)
+            .and_then(|b| b.upstream.as_deref())
+            .and_then(|full| full.strip_prefix("refs/remotes/"))
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(remote, on_remote)| (remote.to_owned(), on_remote.to_owned()));
+
+        let set_upstream = upstream.is_none();
+        let (remote, on_remote) = match upstream {
+            Some(pair) => pair,
+            // Nothing tracked yet, so it goes out under its own name.
+            None => (self.default_remote()?, branch.clone()),
+        };
+
+        Some(PushTarget {
+            remote,
+            // Fully qualified on both sides, so a branch whose name also matches a
+            // tag cannot be resolved to the wrong thing on either end.
+            refspec: format!("refs/heads/{branch}:refs/heads/{on_remote}"),
+            branch,
+            set_upstream,
+        })
+    }
+
+    /// How far ahead the current branch is of its upstream, for the Push button.
+    pub fn head_ahead(&self) -> usize {
+        match &self.head {
+            Head::Branch { name, .. } => self
+                .divergence_of(&name.full)
+                .map_or(0, |drift| drift.ahead),
+            _ => 0,
+        }
     }
 
     /// Ahead/behind for a branch, or `None` when it tracks nothing.

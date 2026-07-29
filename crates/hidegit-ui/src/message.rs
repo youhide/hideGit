@@ -13,7 +13,9 @@ use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{
     Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, WorktreeStatus,
 };
-use hidegit_core::ops::{CheckoutTarget, StartPoint};
+use hidegit_core::ops::{
+    CheckoutTarget, FetchOutcome, ForceMode, ProgressUpdate, PullOutcome, PushOutcome, StartPoint,
+};
 use hidegit_core::{GitBackend, GitError};
 
 use crate::state::{ActionSheet, Pane, Prompt, Selection, StagingRow};
@@ -182,6 +184,30 @@ pub enum RepoMessage {
         force: bool,
     },
 
+    // ---- remotes ----
+    /// `Cmd+Shift+F`, or the toolbar. Every remote, pruning as it goes.
+    FetchRequested,
+    /// `Cmd+Shift+P`, or the toolbar. Uses the branch's own upstream, and the
+    /// user's own `pull.rebase` decides how it integrates.
+    PullRequested,
+    /// `Cmd+Shift+U`, or the toolbar.
+    PushRequested {
+        force: ForceMode,
+    },
+    /// A force push was confirmed. Only ever sent by the dialog.
+    PushConfirmed {
+        force: ForceMode,
+    },
+    /// A report from the operation in flight, tagged with which one.
+    ///
+    /// Tagged because a cancelled operation's last report can arrive after the one
+    /// that replaced it has started, and it must not redraw that banner.
+    OperationProgress(u64, ProgressUpdate),
+    /// The operation ended, tagged with which one.
+    OperationFinished(u64, Box<Result<OperationOutcome, UiError>>),
+    /// The Cancel button on the progress banner.
+    OperationCancelled,
+
     // ---- async results ----
     CommitsLoaded(Box<Result<Page, UiError>>),
     /// The O(n) pass that makes scrolling to an arbitrary row cheap.
@@ -203,6 +229,18 @@ pub enum RepoMessage {
     RepositoryChanged,
     /// The reread that `RepositoryChanged` asked for, applied in place.
     Refreshed(Box<Result<Refreshed, UiError>>),
+}
+
+/// How a network operation ended.
+///
+/// One message for all three, because the banner, the refresh and the error path
+/// are the same for each; only what gets *reported* on success differs, and mostly
+/// nothing is — the refresh that follows is the result.
+#[derive(Debug, Clone)]
+pub enum OperationOutcome {
+    Fetched(FetchOutcome),
+    Pulled(PullOutcome),
+    Pushed(PushOutcome),
 }
 
 /// A commit and its diff, loaded together because the detail pane shows both.

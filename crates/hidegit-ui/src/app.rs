@@ -11,18 +11,22 @@ use std::sync::Arc;
 
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RevSpec};
-use hidegit_core::ops::{CheckoutTarget, CommitOpts, Patch};
+use hidegit_core::ops::{
+    CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, Patch, ProgressSink,
+    ProgressUpdate, PullOpts, PullOutcome, PushSpec,
+};
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
 use iced::widget::canvas;
 use iced::{Element as IcedElement, Subscription, Task, keyboard};
 
 use crate::message::{
-    CommitLoad, Message, OpenedRepository, Page, Refreshed, RepoMessage, StatusLoad, UiError,
+    CommitLoad, Message, OpenedRepository, OperationOutcome, Page, Refreshed, RepoMessage,
+    StatusLoad, UiError,
 };
 use crate::state::{
-    App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo, PAGE_SIZE,
-    PROMPT_FIELD_IDS, Pane, Prompt, PromptKind, ROW_HEIGHT, Screen, Section, Selection,
+    App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo, Operation,
+    PAGE_SIZE, PROMPT_FIELD_IDS, Pane, Prompt, PromptKind, ROW_HEIGHT, Screen, Section, Selection,
 };
 use crate::{screen, watcher, widget};
 
@@ -35,6 +39,9 @@ pub struct Hidegit {
     /// Redraws that do not move the viewport or change the commit list reuse it
     /// rather than rebuilding every row.
     caches: HashMap<usize, canvas::Cache>,
+    /// Monotonic, so a cancelled operation's late messages can be told from the
+    /// operation that replaced it.
+    next_operation_id: u64,
 }
 
 /// Runs `f` on tokio's blocking pool and delivers its result as a message.
@@ -58,6 +65,73 @@ where
         },
         |result| result,
     )
+}
+
+/// Feeds a [`ProgressSink`] into a channel the UI can await.
+///
+/// The adapter `hidegit-core` promises when it says progress goes through a trait
+/// object so it stays free of any async runtime. `hidegit-core` reports; this
+/// turns each report into a `Message`.
+/// `futures`' channel rather than tokio's, because iced re-exports it already and
+/// `unbounded_send` works from a blocking thread without an async context.
+struct ChannelSink(iced::futures::channel::mpsc::UnboundedSender<ProgressUpdate>);
+
+impl ProgressSink for ChannelSink {
+    fn report(&self, update: ProgressUpdate) {
+        // A closed receiver means the UI stopped listening. The work carries on —
+        // it is cancellation that stops it, not a missing audience.
+        let _ = self.0.unbounded_send(update);
+    }
+}
+
+/// Runs a long operation, delivering its progress and then its result.
+///
+/// The difference from [`blocking`] is that this yields *many* messages. A network
+/// operation is a one-shot, so it is a `Task::stream` rather than a long-lived
+/// `Subscription`: the stream ends when the work does.
+///
+/// The sink is moved into the blocking closure, so the sender is dropped exactly
+/// when the work returns — which is what tells the stream to stop waiting for
+/// progress and go and collect the result.
+fn streaming<F>(index: usize, id: u64, cancel: CancelToken, f: F) -> Task<Message>
+where
+    F: FnOnce(&dyn ProgressSink, &CancelToken) -> Result<OperationOutcome, GitError>
+        + Send
+        + 'static,
+{
+    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+    let worker = tokio::task::spawn_blocking(move || {
+        let sink = ChannelSink(sender);
+        f(&sink, &cancel)
+    });
+
+    let stream = iced::futures::stream::unfold(Some((receiver, worker)), move |state| async move {
+        use iced::futures::StreamExt as _;
+        let (mut receiver, worker) = state?;
+
+        match receiver.next().await {
+            Some(update) => Some((
+                Message::Repo(index, RepoMessage::OperationProgress(id, update)),
+                Some((receiver, worker)),
+            )),
+            // Every sender is gone, so the work has returned.
+            None => {
+                let result = match worker.await {
+                    Ok(result) => result.map_err(UiError::from),
+                    Err(join) => Err(UiError {
+                        summary: "a background Git operation panicked".to_owned(),
+                        details: join.to_string(),
+                    }),
+                };
+                Some((
+                    Message::Repo(index, RepoMessage::OperationFinished(id, Box::new(result))),
+                    None,
+                ))
+            }
+        }
+    });
+
+    Task::stream(stream)
 }
 
 impl Hidegit {
@@ -270,6 +344,7 @@ impl Hidegit {
             state: opened.state,
             status: opened.status,
             divergence: HashMap::new(),
+            pending: None,
             graph,
             selection: selection.clone(),
             detail: DetailPane::Empty,
@@ -294,6 +369,40 @@ impl Hidegit {
         }
 
         Task::batch(tasks)
+    }
+
+    /// Starts a network operation, if one is not already running.
+    ///
+    /// The one place that decides an operation is allowed and records it, so the
+    /// "one at a time" rule and the banner cannot disagree. Refuses silently while
+    /// something is in flight — the toolbar has already replaced its buttons with
+    /// the banner, so the only way to get here is a keyboard shortcut, and a toast
+    /// saying "wait" would be noise.
+    fn start_operation<F>(&mut self, index: usize, label: String, work: F) -> Task<Message>
+    where
+        F: FnOnce(&dyn ProgressSink, &CancelToken) -> Result<OperationOutcome, GitError>
+            + Send
+            + 'static,
+    {
+        let Some(repo) = self.app.repos.get_mut(index) else {
+            return Task::none();
+        };
+        if repo.pending.is_some() {
+            return Task::none();
+        }
+
+        self.next_operation_id += 1;
+        let id = self.next_operation_id;
+        let cancel = CancelToken::new();
+
+        repo.pending = Some(Operation {
+            id,
+            label,
+            cancel: cancel.clone(),
+            progress: None,
+        });
+
+        streaming(index, id, cancel, work)
     }
 
     /// Loads ahead/behind for every tracking branch.
@@ -691,6 +800,164 @@ impl Hidegit {
                 write_task(index, move || backend.delete_branch(&name, force))
             }
 
+            // ---- remotes ----
+            RepoMessage::FetchRequested => {
+                let backend = Arc::clone(&repo.backend);
+                // Every remote, pruning as it goes: a tracking ref for a branch
+                // someone deleted is the sidebar telling a lie, and there is no
+                // reason to make the user ask for the truth separately.
+                let opts = FetchOpts {
+                    prune: true,
+                    tags: false,
+                    all_remotes: true,
+                };
+                self.start_operation(index, "Fetching".to_owned(), move |progress, cancel| {
+                    backend
+                        .fetch("", &opts, progress, cancel)
+                        .map(OperationOutcome::Fetched)
+                })
+            }
+
+            RepoMessage::PullRequested => {
+                let backend = Arc::clone(&repo.backend);
+                self.start_operation(index, "Pulling".to_owned(), move |progress, cancel| {
+                    backend
+                        .pull(&PullOpts::default(), progress, cancel)
+                        .map(OperationOutcome::Pulled)
+                })
+            }
+
+            // A plain push acts. A forced one asks first, and names the branch and
+            // the remote rather than leaving them to be assumed.
+            RepoMessage::PushRequested { force } => {
+                let Some(target) = repo.push_target() else {
+                    return Task::none();
+                };
+                if force == ForceMode::None {
+                    return Task::done(Message::Repo(index, RepoMessage::PushConfirmed { force }));
+                }
+
+                let lease = force == ForceMode::WithLease;
+                self.app.confirming = Some(Confirmation {
+                    title: format!("Force push {} to {}?", target.branch, target.remote),
+                    body: if lease {
+                        format!(
+                            "This replaces {}/{} with your version. It refuses if the remote \
+                             moved since your last fetch.",
+                            target.remote, target.branch
+                        )
+                    } else {
+                        format!(
+                            "This replaces {}/{} with your version even if someone else has \
+                             pushed since your last fetch. Their commits would become \
+                             unreachable.",
+                            target.remote, target.branch
+                        )
+                    },
+                    confirm_label: if lease { "Force push" } else { "Force" }.to_owned(),
+                    action: Box::new(Message::Repo(index, RepoMessage::PushConfirmed { force })),
+                });
+                Task::none()
+            }
+
+            RepoMessage::PushConfirmed { force } => {
+                let Some(target) = repo.push_target() else {
+                    return Task::none();
+                };
+                let backend = Arc::clone(&repo.backend);
+                let spec = PushSpec {
+                    refspec: target.refspec,
+                    force,
+                    set_upstream: target.set_upstream,
+                };
+                let remote = target.remote;
+                let label = format!("Pushing {} to {remote}", target.branch);
+
+                self.start_operation(index, label, move |progress, cancel| {
+                    backend
+                        .push(&remote, &spec, progress, cancel)
+                        .map(OperationOutcome::Pushed)
+                })
+            }
+
+            RepoMessage::OperationProgress(id, update) => {
+                // Ignored unless it belongs to the operation on screen: a cancelled
+                // one's last report can arrive after its replacement has started.
+                if let Some(pending) = &mut repo.pending
+                    && pending.id == id
+                {
+                    pending.progress = Some(update);
+                }
+                Task::none()
+            }
+
+            RepoMessage::OperationFinished(id, result) => {
+                if repo.pending.as_ref().is_none_or(|p| p.id != id) {
+                    // A late result from something already cancelled and replaced.
+                    return Task::none();
+                }
+                repo.pending = None;
+
+                match *result {
+                    Ok(outcome) => {
+                        // Success is otherwise silent — the refresh is the result —
+                        // but a push that was partly refused must not be, because a
+                        // push that appears to have worked and did not is a lie.
+                        if let OperationOutcome::Pushed(push) = &outcome
+                            && !push.rejected.is_empty()
+                        {
+                            let rejected = push.rejected.join(", ");
+                            self.app.toast(&UiError {
+                                summary: format!("The remote refused {rejected}"),
+                                details: format!(
+                                    "Updated: {}\nRefused: {rejected}",
+                                    push.updated.join(", ")
+                                ),
+                            });
+                        }
+                        if let OperationOutcome::Pulled(PullOutcome::Conflicted(conflicts)) =
+                            &outcome
+                        {
+                            // Not an error, and not silent either: the repository is
+                            // now in a state the user has to finish, and the banner
+                            // that says so needs the refresh to appear.
+                            tracing::info!(
+                                paths = conflicts.len(),
+                                "the pull conflicted; the repository is mid-merge"
+                            );
+                        }
+                        Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                    }
+                    Err(error) => {
+                        // Cancelling is what was asked for, so it is silent — unless
+                        // the killed `git` left a lock behind, which the user has to
+                        // know about because hideGit will not delete it.
+                        if error.summary.contains("cancelled")
+                            && !error.details.contains("index.lock")
+                        {
+                            return Task::done(Message::Repo(
+                                index,
+                                RepoMessage::RepositoryChanged,
+                            ));
+                        }
+                        self.app.toast(&error);
+                        // Refreshed even on failure: a fetch that failed part-way
+                        // may still have moved some refs.
+                        Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                    }
+                }
+            }
+
+            RepoMessage::OperationCancelled => {
+                // Only asks. The worker notices, kills the subprocess, and reports
+                // back through `OperationFinished` like any other ending — so the
+                // banner clears in exactly one place.
+                if let Some(pending) = &repo.pending {
+                    pending.cancel.cancel();
+                }
+                Task::none()
+            }
+
             RepoMessage::DivergenceLoaded(result) => {
                 match *result {
                     Ok(divergence) => repo.divergence = divergence,
@@ -1025,11 +1292,32 @@ fn shortcut(
         None => Message::ToastDismissed(u64::MAX),
     };
 
+    let shift = modifiers.shift();
+
     match key {
         Key::Named(Named::Enter) if command => repo(RepoMessage::CommitRequested),
         Key::Named(Named::Backspace) if command => repo(RepoMessage::DiscardSelectedRequested),
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
         Key::Character(c) if command && c.as_str() == "d" => repo(RepoMessage::DiffModeToggled),
+
+        // The remote operations. All modified, so the `editing` guard above lets
+        // them through while a commit message is being typed — which is exactly
+        // when `Cmd+Shift+U` is wanted.
+        //
+        // Matched case-insensitively: with Shift held, the character iced reports
+        // is the shifted one on most layouts, and hard-coding either case would
+        // make the binding depend on the keyboard.
+        Key::Character(c) if command && shift && c.eq_ignore_ascii_case("f") => {
+            repo(RepoMessage::FetchRequested)
+        }
+        Key::Character(c) if command && shift && c.eq_ignore_ascii_case("p") => {
+            repo(RepoMessage::PullRequested)
+        }
+        Key::Character(c) if command && shift && c.eq_ignore_ascii_case("u") => {
+            repo(RepoMessage::PushRequested {
+                force: ForceMode::None,
+            })
+        }
         Key::Character(c) if c.as_str() == "j" && !command => repo(RepoMessage::HunkStepped(1)),
         Key::Character(c) if c.as_str() == "k" && !command => repo(RepoMessage::HunkStepped(-1)),
         Key::Named(Named::ArrowDown) => repo(RepoMessage::SelectionMoved(1)),
@@ -2149,6 +2437,512 @@ mod tests {
             None,
             "absent is not the same as level with a remote"
         );
+    }
+
+    // ---- network operations ----
+
+    /// Puts an operation on screen without running one.
+    fn pending(app: &mut Hidegit, id: u64) -> CancelToken {
+        let cancel = CancelToken::new();
+        app.app.repos[0].pending = Some(Operation {
+            id,
+            label: "Fetching".to_owned(),
+            cancel: cancel.clone(),
+            progress: None,
+        });
+        cancel
+    }
+
+    #[test]
+    fn only_one_network_operation_runs_at_a_time() {
+        // The toolbar hides its buttons while one is in flight, so the only way
+        // here is a shortcut — and a second fetch racing the first for the same
+        // refs is not worth supporting.
+        let mut app = app_with(1);
+        let cancel = pending(&mut app, 7);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::FetchRequested));
+
+        let still = app.app.repos[0].pending.as_ref().expect("still running");
+        assert_eq!(still.id, 7, "the first operation was not replaced");
+        assert!(!cancel.is_cancelled(), "nor cancelled behind its back");
+    }
+
+    #[test]
+    fn cancelling_asks_rather_than_clearing_the_banner_itself() {
+        // The worker notices, kills the subprocess and reports back like any other
+        // ending, so the banner clears in exactly one place. Clearing it here would
+        // say the operation had stopped before it had.
+        let mut app = app_with(1);
+        let cancel = pending(&mut app, 1);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::OperationCancelled));
+
+        assert!(cancel.is_cancelled());
+        assert!(
+            app.app.repos[0].pending.is_some(),
+            "the banner stays up until the worker confirms"
+        );
+    }
+
+    #[test]
+    fn a_late_message_from_a_replaced_operation_is_ignored() {
+        // The bug the id exists to prevent: cancel a fetch, start a push, and the
+        // fetch's last report or its ending must not touch the push's banner.
+        let mut app = app_with(1);
+        let _ = pending(&mut app, 1);
+        app.app.repos[0].pending.as_mut().unwrap().id = 2;
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationProgress(
+                1,
+                ProgressUpdate {
+                    phase: "Receiving objects".to_owned(),
+                    done: 5,
+                    total: Some(10),
+                },
+            ),
+        ));
+        assert!(
+            app.app.repos[0]
+                .pending
+                .as_ref()
+                .unwrap()
+                .progress
+                .is_none(),
+            "the stale report did not redraw the current banner"
+        );
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationFinished(
+                1,
+                Box::new(Ok(OperationOutcome::Fetched(Default::default()))),
+            ),
+        ));
+        assert!(
+            app.app.repos[0].pending.is_some(),
+            "and the stale ending did not clear it"
+        );
+    }
+
+    #[test]
+    fn progress_reaches_the_banner_and_reads_in_a_real_unit() {
+        let mut app = app_with(1);
+        let _ = pending(&mut app, 3);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationProgress(
+                3,
+                ProgressUpdate {
+                    phase: "Receiving objects".to_owned(),
+                    done: 42,
+                    total: Some(100),
+                },
+            ),
+        ));
+
+        let banner = app.app.repos[0].pending.as_ref().expect("still running");
+        assert_eq!(banner.detail(), "Receiving objects 42/100");
+        assert_eq!(banner.fraction(), Some(0.42));
+    }
+
+    #[test]
+    fn a_banner_with_no_report_yet_says_so_rather_than_inventing_a_number() {
+        let mut app = app_with(1);
+        let _ = pending(&mut app, 1);
+
+        let banner = app.app.repos[0].pending.as_ref().unwrap();
+        assert_eq!(banner.detail(), "starting…");
+        assert_eq!(
+            banner.fraction(),
+            None,
+            "no total means no bar — an indeterminate one is what UI_SPEC rules out"
+        );
+    }
+
+    #[test]
+    fn a_finished_operation_clears_the_banner_and_says_nothing_on_success() {
+        let mut app = app_with(1);
+        let _ = pending(&mut app, 5);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationFinished(
+                5,
+                Box::new(Ok(OperationOutcome::Fetched(Default::default()))),
+            ),
+        ));
+
+        assert!(app.app.repos[0].pending.is_none());
+        assert!(
+            app.app.toasts.is_empty(),
+            "the refresh that follows is the result"
+        );
+    }
+
+    #[test]
+    fn a_partly_refused_push_is_reported_because_a_silent_one_would_be_a_lie() {
+        let mut app = app_with(1);
+        let _ = pending(&mut app, 5);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationFinished(
+                5,
+                Box::new(Ok(OperationOutcome::Pushed(
+                    hidegit_core::ops::PushOutcome {
+                        updated: vec!["main".to_owned()],
+                        rejected: vec!["feat/graph".to_owned()],
+                    },
+                ))),
+            ),
+        ));
+
+        let toast = app.app.toasts.first().expect("a refusal is reported");
+        assert!(
+            toast.summary.contains("feat/graph"),
+            "it names what was refused: {}",
+            toast.summary
+        );
+    }
+
+    #[test]
+    fn a_cancelled_operation_is_silent_because_it_is_what_was_asked_for() {
+        let mut app = app_with(1);
+        let _ = pending(&mut app, 5);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationFinished(
+                5,
+                Box::new(Err(UiError::from(GitError::Cancelled { stale_lock: None }))),
+            ),
+        ));
+
+        assert!(app.app.repos[0].pending.is_none());
+        assert!(app.app.toasts.is_empty(), "no dialog about a Cancel click");
+    }
+
+    #[test]
+    fn a_cancellation_that_left_a_lock_behind_says_so() {
+        // hideGit will not delete it, so the user has to be told it is there.
+        let mut app = app_with(1);
+        let _ = pending(&mut app, 5);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationFinished(
+                5,
+                Box::new(Err(UiError::from(GitError::Cancelled {
+                    stale_lock: Some(PathBuf::from("/repo/.git/index.lock")),
+                }))),
+            ),
+        ));
+
+        let toast = app.app.toasts.first().expect("a stale lock is reported");
+        assert!(
+            toast.details.contains("index.lock"),
+            "it names the file: {}",
+            toast.details
+        );
+    }
+
+    #[test]
+    fn a_failed_operation_toasts_gits_own_words() {
+        let mut app = app_with(1);
+        let _ = pending(&mut app, 5);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationFinished(
+                5,
+                Box::new(Err(UiError::from(GitError::Command {
+                    argv: vec!["push".to_owned(), "origin".to_owned()],
+                    status: Some(1),
+                    stderr: "hint: Updates were rejected because the remote contains work\n"
+                        .to_owned(),
+                }))),
+            ),
+        ));
+
+        let toast = app.app.toasts.first().expect("a failure is reported");
+        assert!(
+            toast.details.contains("Updates were rejected"),
+            "verbatim, not paraphrased: {}",
+            toast.details
+        );
+    }
+
+    #[test]
+    fn a_force_push_asks_first_and_names_the_branch_and_the_remote() {
+        let mut app = app_with(1);
+        // A branch with an upstream, so there is somewhere to push.
+        app.app.repos[0].refs = tracking_refs();
+        app.app.repos[0].head = head_on("main");
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PushRequested {
+                force: ForceMode::WithLease,
+            },
+        ));
+
+        let confirmation = app
+            .app
+            .confirming
+            .as_ref()
+            .expect("forcing a push confirms");
+        assert!(
+            confirmation.title.contains("main"),
+            "{}",
+            confirmation.title
+        );
+        assert!(
+            confirmation.title.contains("origin"),
+            "{}",
+            confirmation.title
+        );
+        assert!(
+            confirmation.body.contains("refuses if the remote moved"),
+            "a lease says what protects you: {}",
+            confirmation.body
+        );
+    }
+
+    #[test]
+    fn a_plain_push_does_not_ask() {
+        let mut app = app_with(1);
+        app.app.repos[0].refs = tracking_refs();
+        app.app.repos[0].head = head_on("main");
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PushRequested {
+                force: ForceMode::None,
+            },
+        ));
+
+        assert!(app.app.confirming.is_none());
+    }
+
+    #[test]
+    fn a_bare_force_warns_that_someone_elses_commits_would_be_lost() {
+        let mut app = app_with(1);
+        app.app.repos[0].refs = tracking_refs();
+        app.app.repos[0].head = head_on("main");
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PushRequested {
+                force: ForceMode::Force,
+            },
+        ));
+
+        let body = &app.app.confirming.as_ref().expect("it confirms").body;
+        assert!(
+            body.contains("unreachable"),
+            "the difference from a lease has to be stated: {body}"
+        );
+    }
+
+    /// A repository with `main` tracking `origin/main`.
+    fn tracking_refs() -> Refs {
+        Refs {
+            locals: vec![hidegit_core::model::Branch {
+                name: RefName {
+                    kind: RefKind::LocalBranch,
+                    full: "refs/heads/main".into(),
+                    short: "main".into(),
+                },
+                target: ObjectId::from_hex(&"0".repeat(40)).unwrap(),
+                upstream: Some("refs/remotes/origin/main".into()),
+            }],
+            remotes: vec![hidegit_core::model::Branch {
+                name: RefName {
+                    kind: RefKind::RemoteBranch,
+                    full: "refs/remotes/origin/main".into(),
+                    short: "origin/main".into(),
+                },
+                target: ObjectId::from_hex(&"0".repeat(40)).unwrap(),
+                upstream: None,
+            }],
+            tags: Vec::new(),
+        }
+    }
+
+    fn head_on(branch: &str) -> Head {
+        Head::Branch {
+            name: RefName {
+                kind: RefKind::LocalBranch,
+                full: format!("refs/heads/{branch}"),
+                short: branch.to_owned(),
+            },
+            target: ObjectId::from_hex(&"0".repeat(40)).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_push_knows_where_to_go_from_the_branchs_own_upstream() {
+        let mut app = app_with(1);
+        app.app.repos[0].refs = tracking_refs();
+        app.app.repos[0].head = head_on("main");
+
+        let target = app.app.repos[0]
+            .push_target()
+            .expect("a tracking branch has somewhere to go");
+
+        assert_eq!(target.remote, "origin");
+        assert_eq!(target.refspec, "refs/heads/main:refs/heads/main");
+        assert!(
+            !target.set_upstream,
+            "it already has one; recording it again would be noise"
+        );
+    }
+
+    #[test]
+    fn a_renamed_branch_pushes_to_the_branch_it_tracks_not_to_its_own_name() {
+        // Found by eye. Renaming leaves the upstream pointing at the old name,
+        // which is the ordinary state — and pushing to the local name instead
+        // quietly created a *second* branch on the remote rather than updating the
+        // one being tracked.
+        let mut app = app_with(1);
+        let mut refs = tracking_refs();
+        refs.locals[0].name = RefName {
+            kind: RefKind::LocalBranch,
+            full: "refs/heads/main-renamed".into(),
+            short: "main-renamed".into(),
+        };
+        app.app.repos[0].refs = refs;
+        app.app.repos[0].head = head_on("main-renamed");
+
+        let target = app.app.repos[0]
+            .push_target()
+            .expect("it tracks origin/main");
+
+        assert_eq!(target.remote, "origin");
+        assert_eq!(
+            target.refspec, "refs/heads/main-renamed:refs/heads/main",
+            "the destination is the tracked branch, not the local name"
+        );
+        assert!(!target.set_upstream);
+    }
+
+    #[test]
+    fn an_upstream_branch_name_containing_slashes_survives_intact() {
+        // `origin/release/1.x` is remote `origin` and branch `release/1.x`, not
+        // remote `origin` and branch `release`.
+        let mut app = app_with(1);
+        let mut refs = tracking_refs();
+        refs.locals[0].upstream = Some("refs/remotes/origin/release/1.x".into());
+        app.app.repos[0].refs = refs;
+        app.app.repos[0].head = head_on("main");
+
+        let target = app.app.repos[0].push_target().expect("it tracks something");
+        assert_eq!(target.refspec, "refs/heads/main:refs/heads/release/1.x");
+    }
+
+    #[test]
+    fn a_branch_with_no_upstream_pushes_to_the_default_remote_and_records_it() {
+        let mut app = app_with(1);
+        app.app.repos[0].refs = tracking_refs();
+        app.app.repos[0].head = head_on("feat/graph");
+
+        let target = app.app.repos[0].push_target().expect("origin exists");
+
+        assert_eq!(target.remote, "origin");
+        assert_eq!(
+            target.refspec,
+            "refs/heads/feat/graph:refs/heads/feat/graph"
+        );
+        assert!(
+            target.set_upstream,
+            "so the sidebar has ahead/behind from the first push"
+        );
+    }
+
+    #[test]
+    fn a_detached_head_has_nothing_to_push_from() {
+        let mut app = app_with(1);
+        app.app.repos[0].refs = tracking_refs();
+        app.app.repos[0].head = Head::Detached {
+            target: ObjectId::from_hex(&"0".repeat(40)).unwrap(),
+        };
+
+        assert!(app.app.repos[0].push_target().is_none());
+    }
+
+    #[test]
+    fn a_repository_with_no_remote_has_nowhere_to_push() {
+        let app = app_with(1);
+        assert_eq!(app.app.repos[0].default_remote(), None);
+        assert!(app.app.repos[0].push_target().is_none());
+    }
+
+    #[test]
+    fn origin_wins_over_other_remotes_because_that_is_what_it_means() {
+        let mut app = app_with(1);
+        let mut refs = tracking_refs();
+        refs.remotes.push(hidegit_core::model::Branch {
+            name: RefName {
+                kind: RefKind::RemoteBranch,
+                full: "refs/remotes/upstream/main".into(),
+                short: "upstream/main".into(),
+            },
+            target: ObjectId::from_hex(&"0".repeat(40)).unwrap(),
+            upstream: None,
+        });
+        app.app.repos[0].refs = refs;
+
+        assert_eq!(app.app.repos[0].default_remote().as_deref(), Some("origin"));
+    }
+
+    #[test]
+    fn the_only_remote_is_used_even_when_it_is_not_called_origin() {
+        let mut app = app_with(1);
+        app.app.repos[0].refs = Refs {
+            remotes: vec![hidegit_core::model::Branch {
+                name: RefName {
+                    kind: RefKind::RemoteBranch,
+                    full: "refs/remotes/fork/main".into(),
+                    short: "fork/main".into(),
+                },
+                target: ObjectId::from_hex(&"0".repeat(40)).unwrap(),
+                upstream: None,
+            }],
+            ..Refs::default()
+        };
+
+        assert_eq!(app.app.repos[0].default_remote().as_deref(), Some("fork"));
+    }
+
+    #[test]
+    fn the_remote_shortcuts_are_all_modified_so_they_work_while_typing() {
+        // `Cmd+Shift+U` is wanted precisely while a commit message is being
+        // written, and the `editing` guard only lets modified keys through.
+        let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
+
+        for (character, expected) in [("f", "Fetch"), ("p", "Pull"), ("u", "Push")] {
+            let key = keyboard::Key::Character(character.into());
+            let message = shortcut(&key, mods, Some(0), true);
+            let described = format!("{message:?}");
+            assert!(
+                described.contains(expected),
+                "{character} while editing should still {expected}, got {described}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_remote_shortcuts_survive_a_layout_that_reports_a_capital() {
+        // With Shift held, iced reports whichever character the layout produces.
+        let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
+        let key = keyboard::Key::Character("U".into());
+
+        let described = format!("{:?}", shortcut(&key, mods, Some(0), false));
+        assert!(described.contains("Push"), "got {described}");
     }
 
     #[test]
