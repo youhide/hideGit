@@ -5,9 +5,10 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](./docs/ROADMAP.md)
 
-> **Pre-alpha.** It runs, and it reads. You can open a repository, scroll its history and read any
-> commit's diff. Nothing writes yet — staging and committing arrive in
-> [M2](./docs/ROADMAP.md#m2--working-directory), remotes in
+> **Pre-alpha.** It runs, it reads, and it commits. You can open a repository, scroll its history,
+> read any commit's diff, stage by file, by hunk or by individual line, discard, and commit —
+> and the file list updates on its own when something changes on disk. Nothing touches a remote
+> yet: branches, fetch, pull and push arrive in
 > [M3](./docs/ROADMAP.md#m3--branches--remotes). See [ROADMAP](./docs/ROADMAP.md) for what ships
 > when, and [ARCHITECTURE](./docs/ARCHITECTURE.md) for how it is built.
 
@@ -32,8 +33,8 @@ resolve conflicts — and tells you when something needs your attention on a pul
 
 | | Feature | Milestone |
 |---|---|---|
-| 🟡 | Commit graph, commit details, file tree, diff viewer | [M1](./docs/ROADMAP.md#m1--scaffold--read-only-viewer) |
-| ⬜ | Stage / unstage by file and by hunk, commit, amend | [M2](./docs/ROADMAP.md#m2--working-directory) |
+| ✅ | Commit graph, commit details, file tree, diff viewer | [M1](./docs/ROADMAP.md#m1--scaffold--read-only-viewer) |
+| ✅ | Stage / unstage by file, hunk and line, discard, commit, amend | [M2](./docs/ROADMAP.md#m2--working-directory) |
 | ⬜ | Branches, tags, stash, fetch / pull / push, remotes | [M3](./docs/ROADMAP.md#m3--branches--remotes) |
 | ⬜ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
 | ⬜ | Merge, rebase, cherry-pick, revert, conflict resolution UI | [M5](./docs/ROADMAP.md#m5--history-operations) |
@@ -69,7 +70,7 @@ Pre-built installers (`.dmg`, `.msi`, AppImage, Flatpak) arrive at
 ## Building from source
 
 ```sh
-git clone https://github.com/<owner>/hideGit
+git clone https://github.com/youhide/hideGit
 cd hideGit
 cargo run --release                      # opens the welcome screen
 cargo run --release -- /path/to/a/repo   # opens a repository straight away
