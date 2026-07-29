@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
-use hidegit_core::model::{Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState};
+use hidegit_core::model::{
+    Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState, WorktreeStatus,
+};
 use hidegit_core::{GitBackend, LogPage};
 
 use crate::message::UiError;
@@ -75,7 +77,7 @@ impl Pane {
 /// What the detail pane is showing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
-    /// The staging view. M2 fills it in; M1 shows what is coming.
+    /// The staging view: what is staged, changed and untracked right now.
     WorkingDirectory,
     Commit(ObjectId),
 }
@@ -109,7 +111,34 @@ pub enum DetailPane {
         /// Which file's diff is expanded.
         file: usize,
     },
+    /// The staging view. Both diffs are held at once because the pane shows
+    /// both lists, and a file can legitimately appear in each.
+    WorkingDirectory {
+        staged: Box<Diff>,
+        unstaged: Box<Diff>,
+        /// Which row of the combined list is open, if any.
+        selected: Option<StagingRow>,
+    },
     Failed(UiError),
+}
+
+/// A row in the staging view, identifying which list it came from.
+///
+/// The list matters as much as the path: the same file can sit in `staged` and
+/// in `unstaged` at once, showing a different diff and offering a different
+/// action in each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StagingRow {
+    pub section: Section,
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Staged,
+    Unstaged,
+    Untracked,
+    Conflicted,
 }
 
 /// A transient message.
@@ -239,6 +268,8 @@ pub struct OpenRepo {
     /// Consulted before rendering any action: a repository mid-rebase does not
     /// offer "commit" as though nothing is happening.
     pub state: RepoState,
+    /// The working directory as the staging view shows it.
+    pub status: WorktreeStatus,
     pub graph: GraphView,
     pub selection: Option<Selection>,
     pub detail: DetailPane,

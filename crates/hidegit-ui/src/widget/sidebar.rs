@@ -55,7 +55,11 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
         .into()
 }
 
-fn heading<'a>(label: &'a str, count: usize, palette: &Palette) -> Element<'a, RepoMessage> {
+pub(crate) fn heading<'a>(
+    label: &'a str,
+    count: usize,
+    palette: &Palette,
+) -> Element<'a, RepoMessage> {
     let muted = palette.muted;
     let count = if count > 0 {
         text(count.to_string()).size(HEADING_SIZE).color(muted)
@@ -82,14 +86,24 @@ fn working_directory<'a>(repo: &OpenRepo, palette: &Palette) -> Element<'a, Repo
     let selected = matches!(repo.selection, Some(Selection::WorkingDirectory));
     let palette = *palette;
 
-    // M2 fills this in. Until then it is honest about being unavailable rather
-    // than showing a zero that might be wrong.
+    // The badge counts every entry across all four lists, so a file both
+    // staged and edited again counts twice — the same way `git status` lists
+    // it under two headings.
+    let count = repo.status.change_count();
+    let badge = if count > 0 {
+        text(count.to_string())
+            .size(HEADING_SIZE)
+            .color(palette.accent)
+    } else {
+        text("").size(HEADING_SIZE)
+    };
+
     let label = row![
         text("WORKING DIRECTORY")
             .size(HEADING_SIZE)
             .color(palette.muted),
         Space::new().width(Fill),
-        text("M2").size(HEADING_SIZE).color(palette.muted),
+        badge,
     ]
     .align_y(Center);
 
@@ -157,7 +171,11 @@ fn tag_row<'a>(tag: &Tag, palette: &Palette) -> Element<'a, RepoMessage> {
     .into()
 }
 
-fn item_style(palette: Palette, selected: bool, status: button::Status) -> button::Style {
+pub(crate) fn item_style(
+    palette: Palette,
+    selected: bool,
+    status: button::Status,
+) -> button::Style {
     let background = match (selected, status) {
         (true, _) => Some(
             iced::Color {

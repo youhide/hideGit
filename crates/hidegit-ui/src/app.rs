@@ -15,7 +15,9 @@ use hidegit_core::{GitBackend, GitError, HybridBackend};
 use iced::widget::canvas;
 use iced::{Element as IcedElement, Subscription, Task, keyboard};
 
-use crate::message::{CommitLoad, Message, OpenedRepository, Page, RepoMessage, UiError};
+use crate::message::{
+    CommitLoad, Message, OpenedRepository, Page, RepoMessage, StatusLoad, UiError,
+};
 use crate::state::{
     App, CHECKPOINT_INTERVAL, DetailPane, GraphView, OpenRepo, PAGE_SIZE, Pane, ROW_HEIGHT, Screen,
     Selection,
@@ -152,6 +154,7 @@ impl Hidegit {
             head: opened.head,
             refs: opened.refs,
             state: opened.state,
+            status: opened.status,
             graph,
             selection: selection.clone(),
             detail: DetailPane::Empty,
@@ -247,12 +250,14 @@ impl Hidegit {
                             Message::Repo(index, RepoMessage::DetailLoaded(Box::new(result)))
                         })
                     }
-                    // The staging view is M2. Selecting it shows what is
-                    // coming rather than an empty pane pretending to be a
-                    // clean working directory.
                     Selection::WorkingDirectory => {
-                        repo.detail = DetailPane::Empty;
-                        Task::none()
+                        repo.detail = DetailPane::Loading;
+                        repo.hunk = 0;
+
+                        let backend = Arc::clone(&repo.backend);
+                        blocking(move || load_status(backend.as_ref())).map(move |result| {
+                            Message::Repo(index, RepoMessage::StatusLoaded(Box::new(result)))
+                        })
                     }
                 }
             }
@@ -366,6 +371,34 @@ impl Hidegit {
                 Task::none()
             }
 
+            RepoMessage::StatusLoaded(result) => {
+                match *result {
+                    Ok(load) => {
+                        repo.status = load.status;
+                        // The same guard the commit detail uses: a status that
+                        // finished after the user moved on to a commit must not
+                        // replace what they are looking at now.
+                        if matches!(repo.selection, Some(Selection::WorkingDirectory)) {
+                            repo.detail = DetailPane::WorkingDirectory {
+                                staged: Box::new(load.staged),
+                                unstaged: Box::new(load.unstaged),
+                                selected: None,
+                            };
+                        }
+                    }
+                    Err(error) => repo.detail = DetailPane::Failed(error),
+                }
+                Task::none()
+            }
+
+            RepoMessage::StagingRowSelected(row) => {
+                if let DetailPane::WorkingDirectory { selected, .. } = &mut repo.detail {
+                    *selected = Some(row);
+                    repo.hunk = 0;
+                }
+                Task::none()
+            }
+
             RepoMessage::RepositoryChanged => {
                 repo.backend.invalidate();
                 let path = repo.path.clone();
@@ -447,6 +480,7 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
     let head = backend.head()?;
     let refs = backend.refs()?;
     let state = backend.repo_state()?;
+    let status = backend.status()?;
     let total = backend.commit_count(&RevSpec::All)?;
     let first_page = backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?;
 
@@ -456,8 +490,22 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
         head,
         refs,
         state,
+        status,
         total,
         first_page,
+    })
+}
+
+/// Reads the working directory and both of its diffs.
+///
+/// One blocking unit of work, for the same reason `open_repository` is: the
+/// staging view is not usable until all of it has arrived, and loading the
+/// lists before the diffs would show a populated list beside an empty pane.
+fn load_status(backend: &dyn GitBackend) -> Result<StatusLoad, GitError> {
+    Ok(StatusLoad {
+        status: backend.status()?,
+        staged: backend.diff(&DiffTarget::Staged)?,
+        unstaged: backend.diff(&DiffTarget::Unstaged)?,
     })
 }
 
@@ -475,7 +523,10 @@ pub use widget::graph::GraphCanvas;
 mod tests {
     use super::*;
     use hidegit_core::FakeBackend;
-    use hidegit_core::model::{Commit, Head, RefKind, RefName, Refs, RepoState, Signature};
+    use hidegit_core::model::{
+        ChangeStatus, Commit, Diff, FileChange, Head, RefKind, RefName, Refs, RepoState, Signature,
+        WorktreeStatus,
+    };
     use time::OffsetDateTime;
 
     fn commits(count: usize) -> Vec<Commit> {
@@ -517,8 +568,27 @@ mod tests {
             },
             refs: Refs::default(),
             state: RepoState::Clean,
+            status: WorktreeStatus::default(),
             total: count,
             first_page: history,
+        }
+    }
+
+    fn change(path: &str, status: ChangeStatus) -> FileChange {
+        FileChange {
+            path: PathBuf::from(path),
+            status,
+        }
+    }
+
+    /// A working directory with one file in each of the three plain lists.
+    fn dirty() -> WorktreeStatus {
+        WorktreeStatus {
+            staged: vec![change("staged.txt", ChangeStatus::Added)],
+            unstaged: vec![change("changed.txt", ChangeStatus::Modified)],
+            untracked: vec![PathBuf::from("new.txt")],
+            conflicted: Vec::new(),
+            state: RepoState::Clean,
         }
     }
 
@@ -646,17 +716,109 @@ mod tests {
     }
 
     #[test]
-    fn selecting_the_working_directory_does_not_pretend_it_is_clean() {
+    fn selecting_the_working_directory_loads_it_rather_than_showing_nothing() {
         let mut app = app_with(3);
         let _ = app.update(Message::Repo(
             0,
             RepoMessage::Selected(Selection::WorkingDirectory),
         ));
 
-        assert!(matches!(
-            app.app.active_repo().unwrap().detail,
-            DetailPane::Empty
+        assert!(
+            matches!(app.app.active_repo().unwrap().detail, DetailPane::Loading),
+            "the pane says it is working rather than pretending the tree is clean"
+        );
+    }
+
+    #[test]
+    fn a_loaded_status_fills_the_staging_view_and_the_sidebar_badge() {
+        let mut app = app_with(3);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Selected(Selection::WorkingDirectory),
         ));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StatusLoaded(Box::new(Ok(StatusLoad {
+                status: dirty(),
+                staged: Diff::default(),
+                unstaged: Diff::default(),
+            }))),
+        ));
+
+        let repo = app.app.active_repo().unwrap();
+        assert_eq!(repo.status.change_count(), 3);
+        assert!(matches!(
+            repo.detail,
+            DetailPane::WorkingDirectory { selected: None, .. }
+        ));
+    }
+
+    #[test]
+    fn a_status_that_arrives_after_the_user_moved_on_does_not_replace_the_commit() {
+        // The same guard the commit detail has, in the other direction: the
+        // status is slower than a click on the graph.
+        let mut app = app_with(3);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Selected(Selection::WorkingDirectory),
+        ));
+
+        let id = app.app.active_repo().unwrap().graph.commits[1].id;
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Selected(Selection::Commit(id)),
+        ));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StatusLoaded(Box::new(Ok(StatusLoad {
+                status: dirty(),
+                staged: Diff::default(),
+                unstaged: Diff::default(),
+            }))),
+        ));
+
+        let repo = app.app.active_repo().unwrap();
+        assert!(
+            !matches!(repo.detail, DetailPane::WorkingDirectory { .. }),
+            "the pane belongs to the commit the user selected since"
+        );
+        assert_eq!(
+            repo.status.change_count(),
+            3,
+            "the status itself is still worth keeping — the sidebar badge uses it"
+        );
+    }
+
+    #[test]
+    fn selecting_a_staging_row_remembers_which_list_it_came_from() {
+        // The same path can be staged and changed at once, so the row identity
+        // has to carry its section rather than just its index.
+        let mut app = app_with(3);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Selected(Selection::WorkingDirectory),
+        ));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StatusLoaded(Box::new(Ok(StatusLoad {
+                status: dirty(),
+                staged: Diff::default(),
+                unstaged: Diff::default(),
+            }))),
+        ));
+
+        let row = crate::state::StagingRow {
+            section: crate::state::Section::Unstaged,
+            index: 0,
+        };
+        let _ = app.update(Message::Repo(0, RepoMessage::StagingRowSelected(row)));
+
+        let DetailPane::WorkingDirectory { selected, .. } = &app.app.active_repo().unwrap().detail
+        else {
+            panic!("the staging view is open");
+        };
+        assert_eq!(*selected, Some(row));
     }
 
     #[test]

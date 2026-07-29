@@ -18,6 +18,18 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
         DetailPane::Commit { detail, diff, file } => {
             commit(detail, diff, *file, repo.diff_mode, palette)
         }
+        DetailPane::WorkingDirectory {
+            staged,
+            unstaged,
+            selected,
+        } => crate::widget::staging::view(
+            &repo.status,
+            staged,
+            unstaged,
+            *selected,
+            repo.diff_mode,
+            palette,
+        ),
     };
 
     let surface = palette.surface;

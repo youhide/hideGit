@@ -37,6 +37,7 @@ Layout sketches are structural, not visual design.
 |---|---|---|
 | Welcome | Open, clone, recent repositories | M1 |
 | Main window | Graph, sidebar, detail — where all work happens | M1 |
+| Staging view | Staged / changed / untracked / conflicted, and the selected file's diff | M2 |
 | Diff view | Unified / side-by-side, hunk staging | M1 / M2 |
 | Commit composer | Message, amend, sign-off | M2 |
 | Conflict resolver | Three-pane resolution | M5 |
@@ -89,12 +90,13 @@ enum RepoMessage {
     // user intent
     Selected(Selection),
     GraphScrolled(Viewport),
+    StagingRowSelected(StagingRow),     // which section, and where in it
     StageRequested(StageTarget),        // File | Files | Hunk | Lines
     CommitRequested(CommitDraft),
     CheckoutRequested(CheckoutTarget),
     PushRequested(PushSpec),
     // async results
-    StatusLoaded(Result<WorktreeStatus, GitError>),
+    StatusLoaded(Result<StatusLoad, GitError>),   // status plus both diffs, in one unit
     CommitsLoaded(Result<Vec<Commit>, GitError>),
     DiffLoaded(Result<Diff, GitError>),
     OperationProgress(OperationId, Progress),
@@ -154,6 +156,48 @@ cancel affordance.
 **In-progress operations** get a persistent banner across the top: *"Rebasing feat/graph onto main
 — 3 of 7 commits"* with Continue / Skip / Abort. It cannot be dismissed, because the repository
 genuinely is in that state and hiding it is how people lose work.
+
+## Staging view
+
+Fills the detail pane when the sidebar's working-directory row is selected. Four sections down the
+left, the selected file's diff on the right.
+
+```
+┌──────────────────────────────┬──────────────────────────────────┐
+│ CONFLICTED                 1 │ M tracked.txt            +1 −1   │
+│ ! shared.txt  both modified  ├──────────────────────────────────┤
+│ STAGED                     3 │ @@ -1,3 +1,3 @@                  │
+│ A .gitignore                 │   1   1   one                    │
+│ R before.txt → after.txt     │   2     − two                    │
+│ M tracked.txt                │       2 + TWO                    │
+│ CHANGED                    2 │   3   3   three                  │
+│ D doomed.txt                 │                                  │
+│ M tracked.txt                │                                  │
+│ UNTRACKED                  1 │                                  │
+│ ? untracked.txt              │                                  │
+└──────────────────────────────┴──────────────────────────────────┘
+```
+
+- **Conflicts sit at the top**, because nothing else in the working directory can be finished
+  until they are resolved. Each names why it conflicts in Git's own words — "both modified",
+  "deleted by them".
+- **A file can appear in two sections at once.** Staged and then edited again, it is in both
+  `STAGED` and `CHANGED`, and the two rows show *different diffs*: `HEAD` against the index, and
+  the index against the working tree. Selecting a row therefore carries which section it came
+  from, not just its path.
+- **A rename is one row**, `before → after`, rather than a deletion and an addition that the
+  reader has to pair up themselves.
+- Status is carried by a glyph (`A`/`M`/`D`/`R`/`C`/`T`/`?`/`!`) as well as by colour, so the list
+  reads without hue.
+- Untracked files have no diff to show — nothing in the repository has ever seen them — so the
+  pane says so rather than rendering every line as an addition against nothing.
+- A clean working directory says *"Nothing to commit"* and what that means, per the empty-state
+  rule below.
+
+The sidebar badge counts every entry across all four sections, so a file that is both staged and
+changed counts twice — the same way `git status` lists it under two headings.
+
+Stage, unstage and discard actions attach to these rows; the commit composer sits below them.
 
 ## Diff view
 

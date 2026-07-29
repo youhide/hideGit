@@ -21,6 +21,7 @@ pub mod widget {
     pub mod diff;
     pub mod graph;
     pub mod sidebar;
+    pub mod staging;
 }
 
 pub use app::Hidegit;

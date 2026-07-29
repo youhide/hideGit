@@ -9,10 +9,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use hidegit_core::graph::Checkpoints;
-use hidegit_core::model::{Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState};
+use hidegit_core::model::{
+    Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState, WorktreeStatus,
+};
 use hidegit_core::{GitBackend, GitError};
 
-use crate::state::{Pane, Selection};
+use crate::state::{Pane, Selection, StagingRow};
 
 /// A failure, in the shape the UI shows it.
 ///
@@ -57,6 +59,7 @@ pub struct OpenedRepository {
     pub head: Head,
     pub refs: Refs,
     pub state: RepoState,
+    pub status: WorktreeStatus,
     pub total: usize,
     pub first_page: Vec<Commit>,
 }
@@ -95,6 +98,8 @@ pub enum RepoMessage {
     /// `J` / `K`: next or previous hunk.
     HunkStepped(i32),
     FileSelected(usize),
+    /// A row in the staging view: which list it came from, and where in it.
+    StagingRowSelected(StagingRow),
     /// The graph canvas learned how tall it is, in rows.
     ViewportChanged(usize),
 
@@ -103,6 +108,9 @@ pub enum RepoMessage {
     /// The O(n) pass that makes scrolling to an arbitrary row cheap.
     CheckpointsBuilt(Checkpoints),
     DetailLoaded(Box<Result<CommitLoad, UiError>>),
+    /// Both halves of the working-directory diff, loaded together because the
+    /// staging view shows both lists at once.
+    StatusLoaded(Box<Result<StatusLoad, UiError>>),
     /// Something changed the repository: reload refs, state and history.
     ///
     /// One code path for "something changed", rather than each operation
@@ -116,4 +124,16 @@ pub struct CommitLoad {
     pub id: ObjectId,
     pub detail: CommitDetail,
     pub diff: Diff,
+}
+
+/// The working directory, and both of its diffs.
+///
+/// One unit of work rather than three messages: the staging view is not usable
+/// until all of it has arrived, and showing the lists before the diffs would
+/// flash an empty pane next to a populated one.
+#[derive(Debug, Clone)]
+pub struct StatusLoad {
+    pub status: WorktreeStatus,
+    pub staged: Diff,
+    pub unstaged: Diff,
 }

@@ -154,6 +154,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_semantic_colours_are_readable_as_text_on_a_panel() {
+        // The staging view paints file paths in these: staged in `success`,
+        // unstaged in `warning`, conflicted in `danger`. They stopped being
+        // decoration the moment they carried a word, so they have to clear the
+        // large-text threshold on the panel they sit on.
+        let p = Palette::DARK;
+        for (name, colour) in [
+            ("success", p.success),
+            ("warning", p.warning),
+            ("danger", p.danger),
+        ] {
+            assert!(
+                contrast(colour, p.surface) >= 3.0,
+                "{name} on a panel is {:.2}:1",
+                contrast(colour, p.surface)
+            );
+        }
+    }
+
     /// Simulates how a colour appears under a red-green colour vision
     /// deficiency, using the Viénot–Brettel–Mollon reduction.
     fn simulate(c: Color, protanopia: bool) -> (f32, f32, f32) {
