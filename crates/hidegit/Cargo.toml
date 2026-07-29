@@ -1,0 +1,25 @@
+[package]
+name = "hidegit"
+description = "A cross-platform desktop Git client with pull request alerts built in."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "hidegit"
+path = "src/main.rs"
+
+[dependencies]
+hidegit-core.workspace = true
+hidegit-ui.workspace = true
+directories = "6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true

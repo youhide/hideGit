@@ -1,0 +1,27 @@
+[package]
+name = "hidegit-core"
+description = "Git domain model and the hybrid GitBackend for hideGit. No UI, no network."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# This crate must never depend on `iced`, on `hidegit-forge`, or on an HTTP
+# client — that constraint is what lets the domain logic be tested without a
+# window and without a token. See docs/ARCHITECTURE.md#crate-layout.
+[dependencies]
+gix.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tracing.workspace = true
+
+[features]
+# Exposes `FakeBackend` to downstream crates so `hidegit-ui` can be tested
+# against scripted repository states, including error states that are painful
+# to produce with a real repository.
+fake = []
+
+[lints]
+workspace = true

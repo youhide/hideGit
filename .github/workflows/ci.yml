@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Formatting is platform-independent, so it runs once rather than three times.
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # clippy and the test suite run on all three platforms: the subprocess
+  # boundary and the windowing stack genuinely differ between them.
+  check:
+    name: clippy & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux windowing and font dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The test suite builds fixture repositories with the system `git`, so
+      # its identity has to be set for `git commit` to succeed on a clean runner.
+      - name: Configure git identity for fixture repositories
+        run: |
+          git config --global user.name "hideGit CI"
+          git config --global user.email "ci@hidegit.invalid"
+          git config --global init.defaultBranch main
+
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
