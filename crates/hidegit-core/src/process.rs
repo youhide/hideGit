@@ -15,10 +15,13 @@
 //! - every invocation is logged at `debug` with its full argument vector.
 
 use std::ffi::{OsStr, OsString};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use crate::error::{GitError, Version};
+use crate::ops::{CancelToken, ProgressSink, ProgressUpdate};
 
 /// The oldest `git` hideGit runs against.
 ///
@@ -242,6 +245,202 @@ impl GitCommand {
     }
 }
 
+/// How long to wait for more stderr before checking the cancel flag again.
+///
+/// Short enough that Cancel feels immediate, long enough that a quiet fetch does
+/// not spin a core. The read itself is what blocks, so this is only the ceiling
+/// on how stale the cancellation check can be.
+const CANCEL_POLL: Duration = Duration::from_millis(50);
+
+impl GitCommand {
+    /// Runs a long command, reporting progress and honouring cancellation.
+    ///
+    /// The difference from [`GitCommand::run`] is that stderr is read
+    /// *incrementally* instead of at the end. Git writes `--progress` output
+    /// there and rewrites each line in place with a bare carriage return, so a
+    /// reader that waits for a newline sees nothing until the operation is over —
+    /// which is exactly the report the user wanted while it was running.
+    ///
+    /// Everything is still accumulated verbatim, so a failure carries Git's own
+    /// words the way `run` does. Cancellation kills the child and then checks for
+    /// a leftover `index.lock`, which is **reported, never deleted**: whatever
+    /// holds it may still be working.
+    pub fn run_streaming(
+        &self,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<GitOutput, GitError> {
+        // Checked before spawning as well as during: a click on Cancel while the
+        // task was still queued should not start a network operation at all.
+        if cancel.is_cancelled() {
+            return Err(self.cancelled());
+        }
+
+        let argv = self.argv();
+        tracing::debug!(argv = ?argv, cwd = ?self.cwd, "running git with progress");
+
+        let mut command = Command::new("git");
+        command
+            .args(&self.args)
+            .env_clear()
+            .envs(self.environment())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        if let Some(cwd) = &self.cwd {
+            command.current_dir(cwd);
+        }
+
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(GitError::GitNotFound);
+            }
+            Err(e) => return Err(GitError::Io(e)),
+        };
+
+        // stdout is drained on its own thread. A command whose output fills the
+        // pipe buffer while this thread reads stderr would deadlock otherwise,
+        // and `git push --porcelain` produces enough to matter.
+        let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
+        let stdout_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = stdout_pipe.read_to_end(&mut buf);
+            buf
+        });
+
+        // stderr is read on its own thread too, and chunks arrive over a channel.
+        // Reading the pipe directly would block, and a fetch that stalls on the
+        // network produces no output at all — so a Cancel during the stall, which
+        // is exactly when a user reaches for it, would do nothing until the
+        // network gave up. `recv_timeout` bounds the wait instead.
+        let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
+        let (chunks, incoming) = std::sync::mpsc::channel::<Vec<u8>>();
+        let stderr_reader = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match stderr_pipe.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if chunks.send(buf[..n].to_vec()).is_err() {
+                            // The main thread gave up on us — it cancelled.
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut stderr = String::new();
+        let mut pending = String::new();
+
+        loop {
+            if cancel.is_cancelled() {
+                // Killing the child closes both pipes, which is what lets the
+                // reader threads finish rather than blocking for ever.
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stderr_reader.join();
+                let _ = stdout_reader.join();
+                return Err(self.cancelled());
+            }
+
+            match incoming.recv_timeout(CANCEL_POLL) {
+                Ok(chunk) => {
+                    let chunk = String::from_utf8_lossy(&chunk);
+                    stderr.push_str(&chunk);
+                    pending.push_str(&chunk);
+                    report_complete_lines(&mut pending, progress);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                // The sender is gone, so stderr is at end of file.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+
+        // Whatever is left has no separator after it, which is how the final
+        // `100% (n/n), done.` of a phase usually arrives.
+        report_line(&pending, progress);
+        let _ = stderr_reader.join();
+
+        let status = child.wait()?;
+        let stdout = stdout_reader
+            .join()
+            .unwrap_or_else(|_| panic!("the stdout reader thread panicked"));
+
+        if !status.success() {
+            // A killed child looks like a failure. Reporting it as one would
+            // put a wall of stderr in front of a user who pressed Cancel.
+            if cancel.is_cancelled() {
+                return Err(self.cancelled());
+            }
+            return Err(GitError::Command {
+                argv,
+                status: status.code(),
+                stderr,
+            });
+        }
+
+        Ok(GitOutput { stdout, stderr })
+    }
+
+    /// The cancellation error, naming a lock the killed process left behind.
+    fn cancelled(&self) -> GitError {
+        // The lock lives in the git directory, and what this command was given
+        // is a worktree — so it is discovered from there rather than assumed.
+        let stale_lock = self
+            .cwd
+            .as_deref()
+            .and_then(git_dir_of)
+            .as_deref()
+            .and_then(index_lock);
+
+        GitError::Cancelled { stale_lock }
+    }
+}
+
+/// Reports every progress line that is terminated, leaving any partial tail.
+///
+/// Git separates progress updates with a bare carriage return so each rewrites
+/// the last, and ends a phase with a newline. Both count as terminators, which is
+/// the whole reason a line-based reader is not enough here.
+fn report_complete_lines(pending: &mut String, progress: &dyn ProgressSink) {
+    while let Some(end) = pending.find(['\r', '\n']) {
+        let line: String = pending.drain(..=end).collect();
+        report_line(&line, progress);
+    }
+}
+
+fn report_line(line: &str, progress: &dyn ProgressSink) {
+    if let Some(update) = ProgressUpdate::parse(line) {
+        progress.report(update);
+    }
+}
+
+/// Finds the git directory for a worktree, for locating `index.lock`.
+///
+/// A plain `.git` join covers the ordinary case; a `.git` *file* means a worktree
+/// or a submodule, where the real directory is named inside it.
+fn git_dir_of(workdir: &Path) -> Option<PathBuf> {
+    let dot_git = workdir.join(".git");
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    if dot_git.is_file() {
+        let contents = std::fs::read_to_string(&dot_git).ok()?;
+        let path = contents.strip_prefix("gitdir:")?.trim();
+        return Some(workdir.join(path));
+    }
+    // A bare repository is its own git directory.
+    workdir
+        .join("HEAD")
+        .is_file()
+        .then(|| workdir.to_path_buf())
+}
+
 /// What a successful invocation produced.
 #[derive(Debug, Clone)]
 pub struct GitOutput {
@@ -325,6 +524,7 @@ pub fn index_lock(git_dir: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::NoProgress;
 
     #[test]
     fn arguments_are_never_concatenated_into_a_shell_string() {
@@ -428,6 +628,170 @@ mod tests {
         // fail everything else too. This asserts the actual check.
         let version = git_preflight().expect("git on PATH and new enough");
         assert!(version >= MINIMUM_GIT_VERSION);
+    }
+
+    #[test]
+    fn a_streamed_command_that_reports_nothing_still_returns_its_output() {
+        // `rev-parse --git-dir` writes no progress at all. The streaming path
+        // must not need any in order to complete.
+        let output = GitCommand::new("--version")
+            .run_streaming(&NoProgress, &CancelToken::new())
+            .expect("git --version succeeds");
+
+        assert!(output.trimmed_stdout().starts_with("git version"));
+    }
+
+    #[test]
+    fn a_streamed_command_cancelled_before_it_runs_is_never_spawned() {
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        // A subcommand that does not exist: if this were spawned, the error
+        // would be `Command`, not `Cancelled`.
+        let error = GitCommand::new("definitely-not-a-git-subcommand")
+            .run_streaming(&NoProgress, &cancel)
+            .expect_err("a cancelled command does not run");
+
+        assert!(matches!(error, GitError::Cancelled { stale_lock: None }));
+    }
+
+    #[test]
+    fn a_streamed_failure_carries_gits_own_stderr_like_an_ordinary_one() {
+        let error = GitCommand::new("cat-file")
+            .arg("-p")
+            .arg("0000000000000000000000000000000000000000")
+            .cwd(std::env::temp_dir())
+            .run_streaming(&NoProgress, &CancelToken::new())
+            .expect_err("bogus object must fail");
+
+        match error {
+            GitError::Command { argv, stderr, .. } => {
+                assert_eq!(argv[0], "cat-file");
+                assert!(!stderr.is_empty(), "git's message must be preserved");
+            }
+            other => panic!("expected a Command error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn progress_lines_separated_by_carriage_returns_are_each_reported() {
+        // The reason a line reader is not enough: git rewrites its progress line
+        // in place with a bare CR, so a reader waiting for a newline would see
+        // nothing until the operation was already over.
+        struct Collect(std::sync::Mutex<Vec<(String, u64)>>);
+        impl ProgressSink for Collect {
+            fn report(&self, update: ProgressUpdate) {
+                self.0.lock().unwrap().push((update.phase, update.done));
+            }
+        }
+
+        let sink = Collect(std::sync::Mutex::new(Vec::new()));
+        let mut pending = String::from(
+            "Counting objects:  33% (1/3)\rCounting objects:  66% (2/3)\r\
+             Counting objects: 100% (3/3), done.\nReceiving objects:  50% (1/2)\r",
+        );
+        report_complete_lines(&mut pending, &sink);
+
+        assert_eq!(
+            sink.0.into_inner().unwrap(),
+            vec![
+                ("Counting objects".to_owned(), 1),
+                ("Counting objects".to_owned(), 2),
+                ("Counting objects".to_owned(), 3),
+                ("Receiving objects".to_owned(), 1),
+            ]
+        );
+        assert!(pending.is_empty(), "every line here was terminated");
+    }
+
+    #[test]
+    fn a_partial_progress_line_waits_for_its_terminator() {
+        struct Count(std::sync::atomic::AtomicUsize);
+        impl ProgressSink for Count {
+            fn report(&self, _update: ProgressUpdate) {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+
+        let sink = Count(std::sync::atomic::AtomicUsize::new(0));
+        // A chunk boundary can fall anywhere, including mid-number. Reporting
+        // `(4/` as progress would show a nonsense count.
+        let mut pending = String::from("Receiving objects:  40% (4/");
+        report_complete_lines(&mut pending, &sink);
+
+        assert_eq!(sink.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            pending, "Receiving objects:  40% (4/",
+            "kept for the next read"
+        );
+    }
+
+    #[test]
+    fn the_git_directory_is_found_for_a_worktree_and_for_a_bare_repository() {
+        let repo = tempfile::tempdir().expect("a temporary directory");
+        GitCommand::new("init")
+            .args(["-b", "main"])
+            .operands([repo.path()])
+            .takes_locks()
+            .run()
+            .expect("git init");
+        assert_eq!(
+            git_dir_of(repo.path()),
+            Some(repo.path().join(".git")),
+            "an ordinary worktree keeps its git directory beside it"
+        );
+
+        let bare = tempfile::tempdir().expect("a temporary directory");
+        GitCommand::new("init")
+            .args(["--bare", "-b", "main"])
+            .operands([bare.path()])
+            .takes_locks()
+            .run()
+            .expect("git init --bare");
+        assert_eq!(
+            git_dir_of(bare.path()),
+            Some(bare.path().to_path_buf()),
+            "a bare repository is its own git directory"
+        );
+
+        assert_eq!(
+            git_dir_of(std::env::temp_dir().as_path()),
+            None,
+            "somewhere that is not a repository has no git directory"
+        );
+    }
+
+    #[test]
+    fn a_lock_left_by_a_cancelled_command_is_reported_and_never_deleted() {
+        let repo = tempfile::tempdir().expect("a temporary directory");
+        GitCommand::new("init")
+            .args(["-b", "main"])
+            .operands([repo.path()])
+            .takes_locks()
+            .run()
+            .expect("git init");
+
+        // Stands in for the lock a killed `git` leaves behind.
+        let lock = repo.path().join(".git").join("index.lock");
+        std::fs::write(&lock, b"").expect("a writable git directory");
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let error = GitCommand::new("status")
+            .cwd(repo.path())
+            .run_streaming(&NoProgress, &cancel)
+            .expect_err("cancelled");
+
+        match error {
+            GitError::Cancelled {
+                stale_lock: Some(reported),
+            } => assert_eq!(reported, lock),
+            other => panic!("expected a reported stale lock, got {other:?}"),
+        }
+        assert!(
+            lock.exists(),
+            "the lock is named, never removed — it may belong to a live process"
+        );
     }
 
     #[test]

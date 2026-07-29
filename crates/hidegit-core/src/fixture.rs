@@ -40,6 +40,12 @@ pub struct Fixture {
     /// Seconds since the epoch for the next commit. Fixed rather than "now" so
     /// two runs of the same fixture produce the same ordering.
     clock: i64,
+    /// Bare repositories acting as remotes, by remote name.
+    ///
+    /// Each is a real repository on a local path, so fetch, push and pull are
+    /// exercised end to end with no network and no credentials — which is what
+    /// keeps the suite hermetic on all three CI platforms.
+    remotes: HashMap<String, TempDir>,
 }
 
 impl Fixture {
@@ -52,6 +58,7 @@ impl Fixture {
             // 2020-01-01T00:00:00Z, far enough from any real timestamp to be
             // recognisable in a failure message.
             clock: 1_577_836_800,
+            remotes: HashMap::new(),
         };
 
         this.git(["init", "-b", "main"]);
@@ -199,9 +206,114 @@ impl Fixture {
     }
 
     /// Creates a remote-tracking ref without needing an actual remote.
+    ///
+    /// Enough for testing how refs are *read*. Anything that talks to a remote —
+    /// fetch, push, pull, ahead/behind — needs [`Fixture::with_remote`] instead,
+    /// because a ref invented with `update-ref` has nothing on the other end.
     pub fn remote_ref(self, name: &str) -> Self {
         let head = self.git(["rev-parse", "HEAD"]);
         self.git(["update-ref", name, &head]);
+        self
+    }
+
+    /// Adds a real remote: a bare repository on a local path, with the current
+    /// branch pushed to it and tracking configured.
+    ///
+    /// A local path rather than a URL on purpose. Fetch and push run for real,
+    /// through the same code as any other remote, and the suite still needs no
+    /// network, no credential helper and no fixture server on any platform.
+    ///
+    /// Call it after at least one commit exists — there is nothing to push from
+    /// an unborn branch, and `--set-upstream` has no branch to attach to.
+    pub fn with_remote(mut self, name: &str) -> Self {
+        let bare = TempDir::new().expect("a writable temporary directory");
+        let url = bare.path().display().to_string();
+
+        // `--bare` because a remote that has a worktree refuses a push to its
+        // checked-out branch, which is not the failure any test here is about.
+        let init = GitCommand::new("init")
+            .args(["--bare", "-b", "main"])
+            .operands([bare.path()])
+            .takes_locks()
+            .run();
+        if let Err(e) = init {
+            panic!("could not create a bare remote: {e}");
+        }
+
+        self.git(["remote", "add", name, &url]);
+
+        let branch = self.git(["rev-parse", "--abbrev-ref", "HEAD"]);
+        self.git(["push", "--set-upstream", name, &branch]);
+
+        self.remotes.insert(name.to_owned(), bare);
+        self
+    }
+
+    /// Adds a commit to the remote that the local repository does not have yet,
+    /// so a fetch has something to bring back and `behind` is non-zero.
+    ///
+    /// Done by cloning the bare repository, committing there and pushing back,
+    /// rather than by writing objects by hand: the result is a history a real
+    /// `git` produced, which is the only kind worth asserting against.
+    pub fn commit_on_remote(self, remote: &str, name: &str) -> Self {
+        let bare = self
+            .remotes
+            .get(remote)
+            .unwrap_or_else(|| panic!("no fixture remote named {remote}"));
+        let url = bare.path().display().to_string();
+
+        let scratch = TempDir::new().expect("a writable temporary directory");
+        let work = scratch.path().join("work");
+        let date = format!("{} +0000", self.clock);
+
+        let run = |args: Vec<&std::ffi::OsStr>, cwd: &Path| {
+            let result = GitCommand::new("--no-pager")
+                .args(args)
+                .cwd(cwd)
+                .takes_locks()
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .env("GIT_EDITOR", "true")
+                .run();
+            if let Err(e) = result {
+                panic!("remote-side fixture command failed: {e}");
+            }
+        };
+
+        use std::ffi::OsStr;
+        run(
+            vec![OsStr::new("clone"), OsStr::new(&url), work.as_os_str()],
+            scratch.path(),
+        );
+        run(
+            vec![
+                OsStr::new("config"),
+                OsStr::new("user.name"),
+                OsStr::new("hideGit Fixture"),
+            ],
+            &work,
+        );
+        run(
+            vec![
+                OsStr::new("config"),
+                OsStr::new("user.email"),
+                OsStr::new("fixture@hidegit.invalid"),
+            ],
+            &work,
+        );
+        std::fs::write(work.join(format!("{name}.txt")), format!("{name}\n"))
+            .expect("a writable clone");
+        run(vec![OsStr::new("add"), OsStr::new("--all")], &work);
+        run(
+            vec![
+                OsStr::new("commit"),
+                OsStr::new("--message"),
+                OsStr::new(name),
+            ],
+            &work,
+        );
+        run(vec![OsStr::new("push")], &work);
+
         self
     }
 
@@ -340,10 +452,18 @@ impl Fixture {
 
     /// Finishes the repository.
     pub fn build(self) -> Repo {
+        let remotes = self
+            .remotes
+            .iter()
+            .map(|(name, dir)| (name.clone(), dir.path().to_path_buf()))
+            .collect();
+
         Repo {
             path: self.dir.path().to_path_buf(),
             dir: self.dir,
             commits: self.commits,
+            remote_paths: remotes,
+            remote_dirs: self.remotes.into_values().collect(),
         }
     }
 }
@@ -355,6 +475,9 @@ pub struct Repo {
     dir: TempDir,
     path: PathBuf,
     commits: HashMap<String, ObjectId>,
+    remote_paths: HashMap<String, PathBuf>,
+    #[expect(dead_code, reason = "held solely to keep the remotes alive")]
+    remote_dirs: Vec<TempDir>,
 }
 
 impl Repo {
@@ -373,5 +496,38 @@ impl Repo {
             .commits
             .get(name)
             .unwrap_or_else(|| panic!("no fixture commit named {name}"))
+    }
+
+    /// The bare repository standing in for a named remote.
+    ///
+    /// Tests assert against the far side directly through this — after a push,
+    /// what matters is what the *remote* now has, not what hideGit's own reader
+    /// says about it.
+    pub fn remote_path(&self, name: &str) -> &Path {
+        self.remote_paths
+            .get(name)
+            .unwrap_or_else(|| panic!("no fixture remote named {name}"))
+    }
+
+    /// Runs `git` in a repository and returns its trimmed stdout, for asserting
+    /// against real Git rather than against hideGit's own reader.
+    ///
+    /// Panics on failure, printing the command — a fixture assertion that cannot
+    /// run is a broken test, not a test failure to interpret.
+    pub fn git_in<const N: usize>(at: &Path, args: [&str; N]) -> String {
+        match GitCommand::new("--no-pager")
+            .args(args)
+            .cwd(at)
+            .takes_locks()
+            .run()
+        {
+            Ok(output) => output.trimmed_stdout(),
+            Err(e) => panic!("git {args:?} in {} failed: {e}", at.display()),
+        }
+    }
+
+    /// [`Repo::git_in`], in this repository.
+    pub fn git<const N: usize>(&self, args: [&str; N]) -> String {
+        Self::git_in(&self.path, args)
     }
 }

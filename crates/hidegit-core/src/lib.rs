@@ -10,6 +10,7 @@
 //! auditable in one file. See `docs/adr/0002-git-backend-hybrid.md`.
 
 pub mod backend;
+pub mod clone;
 pub mod error;
 pub mod graph;
 pub mod model;
@@ -22,6 +23,7 @@ pub mod watch;
 pub mod fixture;
 
 pub use backend::{GitBackend, HybridBackend};
+pub use clone::clone_repository;
 pub use error::{AuthError, GitError, Version};
 pub use model::*;
 pub use process::{MINIMUM_GIT_VERSION, git_preflight};

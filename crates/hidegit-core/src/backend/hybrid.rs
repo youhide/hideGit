@@ -14,12 +14,13 @@ use std::sync::{Arc, Mutex};
 use super::{GitBackend, gix_read, not_implemented};
 use crate::error::GitError;
 use crate::model::{
-    Blob, Commit, CommitDetail, Diff, DiffTarget, Head, LogPage, ObjectId, Refs, RepoState,
-    RevSpec, WorktreeStatus,
+    Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, Refs,
+    Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
 };
 use crate::ops::{
-    Blame, CheckoutTarget, CommitOpts, FetchOutcome, MergeOpts, MergeOutcome, Patch, ProgressSink,
-    PushSpec, RebasePlan, SequenceOutcome, StashOp, StashOutcome,
+    Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
+    MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome, PushSpec, RebasePlan,
+    SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
 };
 use crate::process::GitCommand;
 
@@ -167,6 +168,18 @@ impl GitBackend for HybridBackend {
 
     fn status(&self) -> Result<WorktreeStatus, GitError> {
         gix_read::status(&self.repo())
+    }
+
+    fn remotes(&self) -> Result<Vec<Remote>, GitError> {
+        Err(not_implemented("remotes", "M3"))
+    }
+
+    fn stashes(&self) -> Result<Vec<StashEntry>, GitError> {
+        Err(not_implemented("stashes", "M3"))
+    }
+
+    fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError> {
+        Err(not_implemented("divergence", "M3"))
     }
 
     fn blame(&self, _path: &Path, _at: ObjectId) -> Result<Blame, GitError> {
@@ -321,8 +334,55 @@ impl GitBackend for HybridBackend {
         Err(not_implemented("checkout", "M3"))
     }
 
-    fn fetch(&self, _remote: &str, _progress: &dyn ProgressSink) -> Result<FetchOutcome, GitError> {
+    fn create_branch(&self, _name: &str, _from: &StartPoint) -> Result<(), GitError> {
+        Err(not_implemented("create-branch", "M3"))
+    }
+
+    fn rename_branch(&self, _from: &str, _to: &str) -> Result<(), GitError> {
+        Err(not_implemented("rename-branch", "M3"))
+    }
+
+    fn delete_branch(&self, _name: &str, _force: bool) -> Result<(), GitError> {
+        Err(not_implemented("delete-branch", "M3"))
+    }
+
+    fn create_tag(&self, _spec: &TagSpec) -> Result<(), GitError> {
+        Err(not_implemented("create-tag", "M3"))
+    }
+
+    fn delete_tag(&self, _name: &str) -> Result<(), GitError> {
+        Err(not_implemented("delete-tag", "M3"))
+    }
+
+    fn add_remote(&self, _name: &str, _url: &str) -> Result<(), GitError> {
+        Err(not_implemented("add-remote", "M3"))
+    }
+
+    fn set_remote_url(&self, _name: &str, _url: &str) -> Result<(), GitError> {
+        Err(not_implemented("set-remote-url", "M3"))
+    }
+
+    fn remove_remote(&self, _name: &str) -> Result<(), GitError> {
+        Err(not_implemented("remove-remote", "M3"))
+    }
+
+    fn fetch(
+        &self,
+        _remote: &str,
+        _opts: &FetchOpts,
+        _progress: &dyn ProgressSink,
+        _cancel: &CancelToken,
+    ) -> Result<FetchOutcome, GitError> {
         Err(not_implemented("fetch", "M3"))
+    }
+
+    fn pull(
+        &self,
+        _opts: &PullOpts,
+        _progress: &dyn ProgressSink,
+        _cancel: &CancelToken,
+    ) -> Result<PullOutcome, GitError> {
+        Err(not_implemented("pull", "M3"))
     }
 
     fn push(
@@ -330,7 +390,8 @@ impl GitBackend for HybridBackend {
         _remote: &str,
         _spec: &PushSpec,
         _progress: &dyn ProgressSink,
-    ) -> Result<(), GitError> {
+        _cancel: &CancelToken,
+    ) -> Result<PushOutcome, GitError> {
         Err(not_implemented("push", "M3"))
     }
 

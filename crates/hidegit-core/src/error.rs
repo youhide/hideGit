@@ -42,6 +42,15 @@ pub enum GitError {
     #[error(transparent)]
     Auth(#[from] AuthError),
 
+    /// A long operation the user stopped.
+    ///
+    /// Not a failure — it is what was asked for — so the UI reports it silently
+    /// unless `stale_lock` is set. Killing `git` mid-write can leave `index.lock`
+    /// behind, and hideGit names it rather than deleting it: the lock may equally
+    /// belong to a process that is still running.
+    #[error("the operation was cancelled")]
+    Cancelled { stale_lock: Option<PathBuf> },
+
     /// A `git` invocation exited non-zero. Carries the argument vector and
     /// Git's own stderr, so a bug report contains what is needed to reproduce
     /// it and the UI can show Git's message verbatim instead of paraphrasing.
@@ -91,6 +100,56 @@ impl GitError {
     }
 }
 
+/// Recognises a credential failure in a network command's stderr.
+///
+/// The point is to let the UI offer the action that fixes it — "no credential
+/// helper answered for `origin`" with the remote named — instead of only showing
+/// a wall of text.
+///
+/// **Matching on Git's wording is a real maintenance cost.** Its messages are
+/// good but they are not an interface, and they change. That is mitigated by
+/// returning the original [`GitError::Command`] untouched whenever nothing
+/// matches: a phrase hideGit stops recognising degrades to "here is exactly what
+/// git said", which is never wrong, rather than to a confident wrong diagnosis.
+pub(crate) fn classify_remote_failure(remote: &str, error: GitError) -> GitError {
+    let GitError::Command { ref stderr, .. } = error else {
+        return error;
+    };
+
+    // `GIT_TERMINAL_PROMPT=0` is set on every invocation precisely so a missing
+    // credential fails fast instead of hanging on a prompt nobody can see. These
+    // are the shapes that failure takes.
+    const NO_CREDENTIALS: &[&str] = &[
+        "terminal prompts disabled",
+        "could not read Username",
+        "could not read Password",
+        "no askpass",
+    ];
+    const REJECTED: &[&str] = &[
+        "Authentication failed",
+        "Permission denied (publickey)",
+        "Invalid username or token",
+        "access denied or repository not exported",
+    ];
+
+    let contains = |needles: &[&str]| needles.iter().any(|needle| stderr.contains(needle));
+
+    if contains(NO_CREDENTIALS) {
+        return AuthError::NoCredentials {
+            remote: remote.to_owned(),
+        }
+        .into();
+    }
+    if contains(REJECTED) {
+        return AuthError::Rejected {
+            remote: remote.to_owned(),
+        }
+        .into();
+    }
+
+    error
+}
+
 /// Why authentication failed. Populated from M3, when writes to a remote
 /// start going through the user's credential helper.
 #[derive(Debug, Error)]
@@ -125,5 +184,87 @@ impl Version {
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failure(stderr: &str) -> GitError {
+        GitError::Command {
+            argv: vec!["push".to_owned(), "origin".to_owned()],
+            status: Some(128),
+            stderr: stderr.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_prompt_that_could_not_be_shown_is_a_missing_credential() {
+        let error = classify_remote_failure(
+            "origin",
+            failure(
+                "fatal: could not read Username for 'https://example.invalid': \
+                 terminal prompts disabled\n",
+            ),
+        );
+
+        match error {
+            GitError::Auth(AuthError::NoCredentials { remote }) => assert_eq!(remote, "origin"),
+            other => panic!("expected NoCredentials, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_refused_key_or_password_is_a_rejection() {
+        for stderr in [
+            "remote: Invalid username or token.\nfatal: Authentication failed for 'https://example.invalid'\n",
+            "git@example.invalid: Permission denied (publickey).\nfatal: Could not read from remote repository.\n",
+        ] {
+            match classify_remote_failure("upstream", failure(stderr)) {
+                GitError::Auth(AuthError::Rejected { remote }) => assert_eq!(remote, "upstream"),
+                other => panic!("expected Rejected for {stderr:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_failure_keeps_gits_own_words_rather_than_guessing() {
+        // The load-bearing case: Git's wording is not an interface, so a phrase
+        // hideGit does not know must degrade to the verbatim message instead of
+        // being forced into an auth diagnosis it cannot support.
+        let stderr = "error: failed to push some refs to 'https://example.invalid'\n\
+                      hint: Updates were rejected because the tip of your current branch is behind\n";
+
+        match classify_remote_failure("origin", failure(stderr)) {
+            GitError::Command {
+                argv,
+                status,
+                stderr: kept,
+            } => {
+                assert_eq!(argv, vec!["push", "origin"]);
+                assert_eq!(status, Some(128));
+                assert_eq!(kept, stderr, "stderr must survive verbatim");
+            }
+            other => panic!("expected the original Command error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_a_command_failure_is_classified() {
+        // A cancellation or an IO error is not a credential problem, and must
+        // pass through untouched.
+        let cancelled = classify_remote_failure(
+            "origin",
+            GitError::Cancelled {
+                stale_lock: Some(PathBuf::from("/repo/.git/index.lock")),
+            },
+        );
+        assert!(matches!(
+            cancelled,
+            GitError::Cancelled {
+                stale_lock: Some(_)
+            }
+        ));
     }
 }
