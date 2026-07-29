@@ -24,11 +24,14 @@ use crate::widget::sidebar::{heading, item_style};
 const ITEM_SIZE: f32 = 13.0;
 const LIST_WIDTH: f32 = 280.0;
 
+#[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
     status: &'a WorktreeStatus,
     staged: &'a Diff,
     unstaged: &'a Diff,
     selected: Option<StagingRow>,
+    lines: &'a std::collections::BTreeSet<(usize, usize)>,
+    focused_hunk: usize,
     mode: DiffMode,
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
@@ -82,7 +85,16 @@ pub fn view<'a>(
     row![
         container(scrollable(list).height(Fill)).width(Length::Fixed(LIST_WIDTH)),
         vertical_rule(palette.border),
-        container(pane(staged, unstaged, selected, mode, palette)).width(Fill),
+        container(pane(
+            staged,
+            unstaged,
+            selected,
+            lines,
+            focused_hunk,
+            mode,
+            palette,
+        ))
+        .width(Fill),
     ]
     .height(Fill)
     .into()
@@ -92,10 +104,13 @@ pub fn view<'a>(
 ///
 /// Which list the row came from decides which diff it is read from: the same
 /// path in `staged` and in `unstaged` shows two different things.
+#[allow(clippy::too_many_arguments)]
 fn pane<'a>(
     staged: &'a Diff,
     unstaged: &'a Diff,
     selected: Option<StagingRow>,
+    lines: &'a std::collections::BTreeSet<(usize, usize)>,
+    focused_hunk: usize,
     mode: DiffMode,
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
@@ -103,9 +118,17 @@ fn pane<'a>(
         return placeholder("Select a file to see its changes", palette);
     };
 
+    let staging = |is_staged: bool| {
+        Some(diff::Staging {
+            staged: is_staged,
+            lines,
+            focused_hunk,
+        })
+    };
+
     match row.section {
-        Section::Staged => diff::view(staged, row.index, mode, palette),
-        Section::Unstaged => diff::view(unstaged, row.index, mode, palette),
+        Section::Staged => diff::view(staged, row.index, mode, palette, staging(true)),
+        Section::Unstaged => diff::view(unstaged, row.index, mode, palette, staging(false)),
         // An untracked file has no diff to show: nothing in the repository has
         // ever seen it, so every line would be an addition against nothing.
         Section::Untracked => placeholder("Untracked — stage it to see it as a diff", palette),

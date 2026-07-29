@@ -198,8 +198,26 @@ impl GitBackend for HybridBackend {
         self.write(GitCommand::new("add").arg("--all").operands(paths))
     }
 
-    fn stage_patch(&self, _patch: &Patch) -> Result<(), GitError> {
-        Err(not_implemented("hunk staging", "M2"))
+    fn stage_patch(&self, patch: &Patch) -> Result<(), GitError> {
+        self.guard_index()?;
+
+        // The patch arrives on stdin rather than through a temporary file:
+        // nothing to name, nothing to clean up, and no window in which a path
+        // built from repository content reaches the filesystem.
+        let mut command = GitCommand::new("apply").arg("--cached");
+        if patch.reverse {
+            command = command.arg("--reverse");
+        }
+        // `-` is the operand meaning stdin, and it goes after `--` like any
+        // other so a patch can never be mistaken for a flag.
+        command = command.operands(["-"]);
+
+        command
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run_with_stdin(Some(patch.text.as_bytes()))?;
+        self.invalidate();
+        Ok(())
     }
 
     fn unstage(&self, paths: &[&Path]) -> Result<(), GitError> {

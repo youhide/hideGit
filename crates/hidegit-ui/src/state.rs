@@ -5,7 +5,7 @@
 //! the start, because multi-repository tabs are M6 and retrofitting them into a
 //! single-repository shape would be a rewrite rather than an addition.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -118,6 +118,10 @@ pub enum DetailPane {
         unstaged: Box<Diff>,
         /// Which row of the combined list is open, if any.
         selected: Option<StagingRow>,
+        /// Changed lines picked out of the open file's diff, as `(hunk, line)`
+        /// indices. Cleared whenever the open row changes, because the indices
+        /// mean nothing against a different diff.
+        lines: BTreeSet<(usize, usize)>,
     },
     Failed(UiError),
 }

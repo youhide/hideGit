@@ -22,11 +22,14 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
             staged,
             unstaged,
             selected,
+            lines,
         } => crate::widget::staging::view(
             &repo.status,
             staged,
             unstaged,
             *selected,
+            lines,
+            repo.hunk,
             repo.diff_mode,
             palette,
         ),
@@ -216,7 +219,9 @@ fn commit<'a>(
                 diff,
                 selected_file,
                 mode,
-                palette
+                palette,
+                // A commit's diff is history: there is nothing to stage in it.
+                None
             ))
             .width(Fill)
             .height(Fill),

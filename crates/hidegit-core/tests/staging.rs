@@ -532,3 +532,119 @@ fn staging_nothing_is_not_an_error_and_does_not_stage_everything() {
     );
     assert_eq!(status.untracked.len(), 1);
 }
+
+// ---- stage_patch, through the backend ---------------------------------
+
+use hidegit_core::ops::Patch;
+
+/// Builds the patch the UI would build for `selection`, ready to apply.
+fn patch_for(diff: &hidegit_core::model::Diff, selection: &Selection, reverse: bool) -> Patch {
+    let file = only_file(diff);
+    Patch {
+        file: file.path.clone(),
+        text: serialize(file, selection).expect("a patch"),
+        reverse,
+    }
+}
+
+#[test]
+fn stage_patch_stages_one_hunk_through_the_backend() {
+    let mut original = String::new();
+    for i in 1..=40 {
+        original.push_str(&format!("line {i}\n"));
+    }
+    let edited = original
+        .replace("line 2\n", "LINE TWO\n")
+        .replace("line 38\n", "LINE THIRTY EIGHT\n");
+
+    let repo = fixture()
+        .edit("f.txt", &original, "base")
+        .write("f.txt", &edited)
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend.diff(&DiffTarget::Unstaged).unwrap();
+    backend
+        .stage_patch(&patch_for(&diff, &Selection::hunk(0), false))
+        .unwrap();
+
+    let staged = staged_patch(repo.path());
+    assert!(staged.contains("+LINE TWO\n"), "{staged}");
+    assert!(!staged.contains("LINE THIRTY EIGHT"), "{staged}");
+
+    // And the rest is still waiting, which is what makes this useful.
+    assert_eq!(backend.diff(&DiffTarget::Unstaged).unwrap().files.len(), 1);
+}
+
+#[test]
+fn stage_patch_in_reverse_unstages() {
+    let repo = fixture()
+        .edit("f.txt", "before\n", "base")
+        .stage("f.txt", "after\n")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend.diff(&DiffTarget::Staged).unwrap();
+    backend
+        .stage_patch(&patch_for(&diff, &Selection::everything(), true))
+        .unwrap();
+
+    assert!(
+        backend.status().unwrap().staged.is_empty(),
+        "the index is back at HEAD"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("f.txt")).unwrap(),
+        "after\n",
+        "and the working tree was never touched"
+    );
+}
+
+#[test]
+fn a_patch_that_does_not_apply_reports_gits_own_words() {
+    let repo = fixture()
+        .edit("f.txt", "before\n", "base")
+        .write("f.txt", "after\n")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend.diff(&DiffTarget::Unstaged).unwrap();
+    let mut patch = patch_for(&diff, &Selection::everything(), false);
+    // Corrupt the context so the patch cannot possibly apply.
+    patch.text = patch.text.replace("-before", "-something else entirely");
+
+    match backend.stage_patch(&patch) {
+        Err(hidegit_core::GitError::Command { stderr, .. }) => {
+            assert!(
+                !stderr.is_empty(),
+                "git's own message is surfaced rather than paraphrased"
+            );
+        }
+        other => panic!("expected a Command error, got {other:?}"),
+    }
+
+    assert!(
+        backend.status().unwrap().staged.is_empty(),
+        "a rejected patch leaves the index alone"
+    );
+}
+
+#[test]
+fn stage_patch_refuses_while_the_index_is_locked() {
+    let repo = fixture()
+        .edit("f.txt", "before\n", "base")
+        .write("f.txt", "after\n")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend.diff(&DiffTarget::Unstaged).unwrap();
+    let patch = patch_for(&diff, &Selection::everything(), false);
+
+    let lock = backend.git_dir().join("index.lock");
+    std::fs::write(&lock, b"").unwrap();
+
+    assert!(matches!(
+        backend.stage_patch(&patch),
+        Err(hidegit_core::GitError::IndexLocked(_))
+    ));
+}

@@ -234,8 +234,14 @@ Two modes, toggleable and remembered per user: **unified** and **side-by-side**.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-- Hunk headers carry a stage/unstage action (M2)
-- Line selection allows staging a subset of a hunk (M2)
+- Hunk headers carry a stage/unstage action; the file header carries one for the whole file
+- Clicking a changed line picks it out; the file header then offers those lines instead, because
+  acting on the whole hunk would silently include what was left out
+- A chosen line is marked twice: a bar in the margin and a brighter background. The background is
+  *brightened*, not tinted toward the accent — the accent is a bright blue and the line backgrounds
+  are very dark, so blending turns a removal purple and an addition teal, trading the added/removed
+  reading away rather than adding to it
+- `J`/`K` step between hunks, highlighting the one they land on
 - Word-level intra-line highlighting on modified lines
 - Whitespace-change toggle; large-file and binary-file placeholders rather than a hang
 - Syntax highlighting deferred past M1 — correct diffing first

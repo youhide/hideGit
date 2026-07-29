@@ -5,12 +5,14 @@
 //! through [`blocking`] onto tokio's blocking pool and comes back as another
 //! message. `update` itself only ever touches memory.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RevSpec};
+use hidegit_core::ops::Patch;
+use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
 use iced::widget::canvas;
 use iced::{Element as IcedElement, Subscription, Task, keyboard};
@@ -184,6 +186,50 @@ impl Hidegit {
         }
 
         Task::batch(tasks)
+    }
+
+    /// Turns a selection into a patch and applies it to the index.
+    ///
+    /// Which direction it goes is decided by which list the open row is in:
+    /// a staged file's patch is applied in reverse, which is what unstaging a
+    /// hunk means.
+    fn apply_patch(&mut self, index: usize, selection: PatchSelection) -> Task<Message> {
+        let Some(repo) = self.app.repos.get(index) else {
+            return Task::none();
+        };
+        let DetailPane::WorkingDirectory {
+            staged,
+            unstaged,
+            selected: Some(row),
+            ..
+        } = &repo.detail
+        else {
+            return Task::none();
+        };
+
+        let (diff, reverse) = match row.section {
+            Section::Staged => (staged, true),
+            Section::Unstaged => (unstaged, false),
+            // Untracked files have no diff to slice, and conflicts are M5.
+            _ => return Task::none(),
+        };
+        let Some(file) = diff.files.get(row.index) else {
+            return Task::none();
+        };
+        // A binary file, or a selection that resolves to nothing: there is no
+        // patch to build, and an empty one is an error to `git apply` rather
+        // than a no-op.
+        let Some(text) = hidegit_core::patch::serialize(file, &selection) else {
+            return Task::none();
+        };
+
+        let patch = Patch {
+            file: file.path.clone(),
+            text,
+            reverse,
+        };
+        let backend = Arc::clone(&repo.backend);
+        write_task(index, move || backend.stage_patch(&patch))
     }
 
     /// Rebuilds the lane-state checkpoints for everything loaded so far.
@@ -389,10 +435,20 @@ impl Hidegit {
                         // finished after the user moved on to a commit must not
                         // replace what they are looking at now.
                         if matches!(repo.selection, Some(Selection::WorkingDirectory)) {
+                            // The open row is kept across a refresh so staging
+                            // one hunk does not close the file the user is
+                            // working through. Line indices do not survive:
+                            // they meant something about a diff that no longer
+                            // exists.
+                            let previous = match &repo.detail {
+                                DetailPane::WorkingDirectory { selected, .. } => *selected,
+                                _ => None,
+                            };
                             repo.detail = DetailPane::WorkingDirectory {
                                 staged: Box::new(load.staged),
                                 unstaged: Box::new(load.unstaged),
-                                selected: None,
+                                selected: previous,
+                                lines: BTreeSet::new(),
                             };
                         }
                     }
@@ -472,11 +528,47 @@ impl Hidegit {
             }
 
             RepoMessage::StagingRowSelected(row) => {
-                if let DetailPane::WorkingDirectory { selected, .. } = &mut repo.detail {
+                if let DetailPane::WorkingDirectory {
+                    selected, lines, ..
+                } = &mut repo.detail
+                {
+                    // Indices are relative to the open file's diff, so opening
+                    // a different one makes them meaningless rather than stale.
+                    if *selected != Some(row) {
+                        lines.clear();
+                    }
                     *selected = Some(row);
                     repo.hunk = 0;
                 }
                 Task::none()
+            }
+
+            RepoMessage::LineToggled(hunk, line) => {
+                if let DetailPane::WorkingDirectory { lines, .. } = &mut repo.detail
+                    && !lines.insert((hunk, line))
+                {
+                    lines.remove(&(hunk, line));
+                }
+                Task::none()
+            }
+
+            RepoMessage::HunkStageRequested(hunk) => {
+                self.apply_patch(index, PatchSelection::hunk(hunk))
+            }
+
+            RepoMessage::FileStageRequested => {
+                self.apply_patch(index, PatchSelection::everything())
+            }
+
+            RepoMessage::SelectedLinesStageRequested => {
+                let DetailPane::WorkingDirectory { lines, .. } = &repo.detail else {
+                    return Task::none();
+                };
+                let mut selection = PatchSelection::default();
+                for (hunk, line) in lines {
+                    selection = selection.with_lines(*hunk, [*line]);
+                }
+                self.apply_patch(index, selection)
             }
 
             // Reread and apply in place. Reopening would push a *second* entry
@@ -1049,6 +1141,95 @@ mod tests {
             RepoMessage::StagingRowSelected(crate::state::StagingRow { section, index }),
         ));
         app
+    }
+
+    #[test]
+    fn toggling_a_line_adds_it_and_toggling_again_takes_it_back_out() {
+        let mut app = staging(crate::state::Section::Unstaged, 0);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::LineToggled(0, 2)));
+        let DetailPane::WorkingDirectory { lines, .. } = &app.app.active_repo().unwrap().detail
+        else {
+            panic!("the staging view is open");
+        };
+        assert!(lines.contains(&(0, 2)));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::LineToggled(0, 2)));
+        let DetailPane::WorkingDirectory { lines, .. } = &app.app.active_repo().unwrap().detail
+        else {
+            panic!("the staging view is open");
+        };
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn opening_a_different_file_drops_the_line_selection() {
+        // The indices meant something about the previous file's diff. Carrying
+        // them over would stage whatever happened to sit at those positions.
+        let mut app = staging(crate::state::Section::Unstaged, 0);
+        let _ = app.update(Message::Repo(0, RepoMessage::LineToggled(0, 1)));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StagingRowSelected(crate::state::StagingRow {
+                section: crate::state::Section::Staged,
+                index: 0,
+            }),
+        ));
+
+        let DetailPane::WorkingDirectory { lines, .. } = &app.app.active_repo().unwrap().detail
+        else {
+            panic!("the staging view is open");
+        };
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn a_refresh_keeps_the_open_file_but_drops_the_line_selection() {
+        // Staging one hunk of a file should leave you looking at the rest of
+        // it, not back at the list — but the line indices describe a diff that
+        // no longer exists.
+        let mut app = staging(crate::state::Section::Unstaged, 0);
+        let _ = app.update(Message::Repo(0, RepoMessage::LineToggled(0, 1)));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StatusLoaded(Box::new(Ok(StatusLoad {
+                status: dirty(),
+                staged: Diff::default(),
+                unstaged: Diff::default(),
+            }))),
+        ));
+
+        let DetailPane::WorkingDirectory {
+            selected, lines, ..
+        } = &app.app.active_repo().unwrap().detail
+        else {
+            panic!("the staging view is open");
+        };
+        assert_eq!(
+            *selected,
+            Some(crate::state::StagingRow {
+                section: crate::state::Section::Unstaged,
+                index: 0
+            }),
+            "the file the user was working through stayed open"
+        );
+        assert!(lines.is_empty(), "but its line selection did not");
+    }
+
+    #[test]
+    fn staging_a_hunk_of_a_file_with_no_diff_loaded_does_nothing() {
+        // `dirty()` carries no diffs, so there is no patch to build. The guard
+        // matters because an empty patch is an error to `git apply`, not a
+        // no-op.
+        let mut app = staging(crate::state::Section::Unstaged, 0);
+        let _ = app.update(Message::Repo(0, RepoMessage::HunkStageRequested(0)));
+
+        assert!(
+            app.app.toasts.is_empty(),
+            "and it does not report a failure"
+        );
     }
 
     #[test]

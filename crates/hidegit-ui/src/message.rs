@@ -114,6 +114,15 @@ pub enum RepoMessage {
     /// `Cmd+Backspace`: discard whatever row is selected. Confirms, like every
     /// other route to discarding does.
     DiscardSelectedRequested,
+    /// A click on a changed line in the staging view's diff, by hunk and line
+    /// index. Toggles whether it is part of the next patch.
+    LineToggled(usize, usize),
+    /// `[Stage hunk]`, by hunk index.
+    HunkStageRequested(usize),
+    /// `[Stage file]` — every hunk, the same code path with everything picked.
+    FileStageRequested,
+    /// Acts on exactly the lines picked out so far.
+    SelectedLinesStageRequested,
     /// Asks to discard, which raises a confirmation rather than acting.
     DiscardRequested(Vec<PathBuf>),
     /// The confirmation was accepted. Only ever sent by the dialog.
