@@ -365,15 +365,26 @@ background = "#16181d"
 surface    = "#1c1f26"
 text       = "#e6e8ec"
 muted      = "#8b93a3"
-accent     = "#4c8dff"
+accent     = "#f65e17"
 success    = "#3fb950"
 warning    = "#d29922"
 danger     = "#f85149"
 
 # Graph lane colours, cycled. Must remain distinguishable
 # under deuteranopia and protanopia — verified, not assumed.
-lanes = ["#4c8dff", "#3fb950", "#d29922", "#bc8cff", "#39c5cf", "#f85149"]
+lanes = ["#f65e17", "#3fb950", "#4c8dff", "#bc8cff", "#39c5cf", "#e36bb0"]
 ```
+
+The accent is the orange from the ring in `assets/icon.png`, so the application
+and its icon share one colour. It is used as drawn rather than lightened: it
+reaches 5.13:1 as text on a panel, against the 5.15:1 of the blue it replaced.
+
+Lane 0 follows the accent. Amber and red are not lane colours — they carry
+meaning as `warning` and `danger`, and a lane painted the same red as a conflict
+marker was a mixed signal. Removing them also keeps three warm lanes from
+crowding an orange accent; the replacement set is measurably further apart than
+the old one under both simulated deficiencies (minimum separation 0.063 against
+0.056).
 
 Constraints:
 

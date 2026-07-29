@@ -46,17 +46,23 @@ impl Palette {
         border: color!(0x2a2f3a),
         text: color!(0xe6e8ec),
         muted: color!(0x8b93a3),
-        accent: color!(0x4c8dff),
+        // The orange from the ring in `assets/icon.png`. It clears the same
+        // contrast bar the blue it replaced did — 5.13:1 on a panel against
+        // 5.15:1 — so the brand colour is used as drawn, not lightened.
+        accent: color!(0xf65e17),
         success: color!(0x3fb950),
         warning: color!(0xd29922),
         danger: color!(0xf85149),
+        // Amber and red are deliberately absent: they stay semantic, and a
+        // lane painted the same red as a conflict was always a mixed signal.
+        // Dropping them also keeps three warm lanes from crowding the accent.
         lanes: [
-            color!(0x4c8dff),
+            color!(0xf65e17),
             color!(0x3fb950),
-            color!(0xd29922),
+            color!(0x4c8dff),
             color!(0xbc8cff),
             color!(0x39c5cf),
-            color!(0xf85149),
+            color!(0xe36bb0),
         ],
         added: color!(0x1b3a24),
         removed: color!(0x3c1618),
@@ -160,8 +166,12 @@ mod tests {
         // unstaged in `warning`, conflicted in `danger`. They stopped being
         // decoration the moment they carried a word, so they have to clear the
         // large-text threshold on the panel they sit on.
+        //
+        // `accent` is in here because the sidebar and the commit detail pane
+        // paint text with it too — it is not only a selection highlight.
         let p = Palette::DARK;
         for (name, colour) in [
+            ("accent", p.accent),
             ("success", p.success),
             ("warning", p.warning),
             ("danger", p.danger),
