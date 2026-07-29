@@ -28,6 +28,23 @@ OPTIONS:
     -V, --version    Print the version
 ";
 
+/// The window icon, embedded so the binary stays self-contained.
+///
+/// Regenerated from `assets/icon.png` by `cargo run -p xtask -- icons`.
+const WINDOW_ICON: &[u8] = include_bytes!("../../../assets/generated/window-icon-256.png");
+
+/// The Wayland `app_id` and X11 `WM_CLASS`.
+///
+/// Wayland compositors find an application's icon by matching this against an
+/// installed `.desktop` file, so it has to stay identical to the filename of
+/// `packaging/linux/com.youhide.hidegit.desktop`. It also matches the
+/// `ProjectDirs` qualifier in `config.rs` and the macOS bundle identifier.
+///
+/// Linux-only because `PlatformSpecific` is a different struct on every
+/// backend, and only the Linux one carries an application id.
+#[cfg(target_os = "linux")]
+const APPLICATION_ID: &str = "com.youhide.hidegit";
+
 /// The application, plus the state only the binary is responsible for.
 struct Shell {
     ui: Hidegit,
@@ -87,15 +104,23 @@ fn main() -> iced::Result {
     };
     let recents: Vec<PathBuf> = state.recents.into_iter().map(|r| r.path).collect();
 
-    let window_settings = window::Settings {
+    // `mut` is only used on Linux; see the cfg block below.
+    #[allow(unused_mut)]
+    let mut window_settings = window::Settings {
         size: Size::new(geometry.width, geometry.height),
         position: match (geometry.x, geometry.y) {
             (Some(x), Some(y)) => window::Position::Specific(iced::Point::new(x, y)),
             _ => window::Position::Centered,
         },
         min_size: Some(Size::new(900.0, 560.0)),
+        icon: window_icon(),
         ..window::Settings::default()
     };
+
+    #[cfg(target_os = "linux")]
+    {
+        window_settings.platform_specific.application_id = APPLICATION_ID.to_owned();
+    }
 
     iced::application(
         move || {
@@ -117,6 +142,46 @@ fn main() -> iced::Result {
     // Closing is intercepted so the window geometry is written first.
     .exit_on_close_request(false)
     .run()
+}
+
+/// Decodes the embedded icon into something the window system will take.
+///
+/// Only Windows and X11 act on this. macOS has no per-window icon at all — it
+/// reads the Dock icon from the `.app` bundle — and Wayland matches the
+/// window's `app_id` against an installed `.desktop` file instead. Both of
+/// those live in `packaging/`.
+///
+/// Never fatal: an icon is not worth refusing to start over.
+fn window_icon() -> Option<window::Icon> {
+    fn decode() -> Result<window::Icon, Box<dyn std::error::Error>> {
+        // png 0.18 wants `BufRead + Seek`, which a bare `&[u8]` is not.
+        let mut reader = png::Decoder::new(std::io::Cursor::new(WINDOW_ICON)).read_info()?;
+        let capacity = reader
+            .output_buffer_size()
+            .ok_or("icon is too large to decode")?;
+
+        let mut rgba = vec![0; capacity];
+        let info = reader.next_frame(&mut rgba)?;
+
+        if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+            return Err(format!(
+                "expected 8-bit RGBA, got {:?} at {:?}",
+                info.color_type, info.bit_depth
+            )
+            .into());
+        }
+
+        rgba.truncate(info.buffer_size());
+        Ok(window::icon::from_rgba(rgba, info.width, info.height)?)
+    }
+
+    match decode() {
+        Ok(icon) => Some(icon),
+        Err(error) => {
+            tracing::warn!("could not decode the window icon: {error}");
+            None
+        }
+    }
 }
 
 fn boot(

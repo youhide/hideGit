@@ -17,11 +17,20 @@ hidegit-core.workspace = true
 hidegit-ui.workspace = true
 directories = "6"
 iced.workspace = true
+# Decodes the embedded window icon. iced 0.14 only offers `icon::from_rgba`,
+# and enabling its `image` feature would pull a whole image pipeline into the
+# shipped binary to read one 256px PNG.
+png = "0.18"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Embeds the icon and version metadata into the Windows executable. A no-op on
+# every other target, so it costs the macOS and Linux builds nothing.
+[build-dependencies]
+embed-resource = "3"
 
 [dev-dependencies]
 tempfile = "3"
