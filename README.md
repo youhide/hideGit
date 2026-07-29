@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/generated/icon-512.png" alt="" width="128" height="128">
+</p>
+
 # hideGit
 
 A cross-platform desktop Git client written in Rust, with pull request alerts built in.
@@ -65,7 +69,9 @@ The full reasoning, including how this changes as gitoxide matures, is in
 ## Installing
 
 Pre-built installers (`.dmg`, `.msi`, AppImage, Flatpak) arrive at
-[M6](./docs/ROADMAP.md#m6--polish--release). Until then, build from source.
+[M6](./docs/ROADMAP.md#m6--polish--release). Until then, build from source — and if you want hideGit
+to behave like an installed application rather than a binary in `target/`, see
+[Installing locally](#installing-locally) below.
 
 ## Building from source
 
@@ -79,6 +85,37 @@ cargo run --release -- /path/to/a/repo   # opens a repository straight away
 No C toolchain is needed — a consequence of choosing gitoxide over libgit2. On Linux you will also
 need the usual windowing and font development packages (`libxkbcommon-dev`, `libwayland-dev`,
 `libfontconfig1-dev`, or your distribution's equivalents).
+
+### Installing locally
+
+Neither of these is signed, and neither is a package. They exist so that hideGit gets a real
+application icon and launcher entry while the actual installers are still ahead at
+[M6](./docs/ROADMAP.md#m6--polish--release).
+
+**macOS.** A window icon does nothing here — macOS has no per-window icons and reads the Dock icon
+from an application bundle — so there is a task that builds one:
+
+```sh
+cargo build --release
+cargo run -p xtask -- bundle-macos       # target/release/bundle/hideGit.app
+```
+
+Being unsigned, Gatekeeper will want a right-click → Open the first time.
+
+**Linux.** Installs the binary, a `.desktop` entry and the hicolor icon set. `PREFIX` defaults to
+`/usr/local`; point it at `~/.local` to avoid needing root, and pass `uninstall` to reverse it:
+
+```sh
+cargo build --release
+PREFIX=~/.local ./packaging/linux/install.sh
+```
+
+The `.desktop` entry matters more than it sounds: Wayland ignores window icons and identifies an
+application by matching its `app_id` against an installed entry, so on Wayland this is what puts the
+icon in the overview and the dock.
+
+**Windows.** The icon is linked into `hidegit.exe` at build time, so `cargo build --release` is
+enough for Explorer, the taskbar and Alt-Tab to show it. There is nothing else to install.
 
 ## Built with
 

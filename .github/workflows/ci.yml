@@ -61,5 +61,7 @@ jobs:
           git config --global user.email "ci@hidegit.invalid"
           git config --global init.defaultBranch main
 
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+        # --workspace, because the workspace sets default-members to exclude
+        # xtask from ordinary builds — and dev tooling still has to lint.
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features

@@ -74,9 +74,17 @@ pool and return via a `Message`. PR polling is a long-lived `Subscription`.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo run
+```
+
+`xtask` is dev tooling, excluded from `default-members`, so lint it explicitly with `--workspace`.
+It regenerates the icons and assembles the macOS bundle — see [assets/README.md](./assets/README.md):
+
+```sh
+cargo run -p xtask -- icons
+cargo run -p xtask -- bundle-macos
 ```
 
 Clippy warnings are errors. `cargo bench -p hidegit-core` times the graph layout against a

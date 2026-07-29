@@ -1,0 +1,21 @@
+[package]
+name = "xtask"
+description = "Development tasks for hideGit: icon generation and the macOS app bundle."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# Build tooling, not shipped, so these live here rather than in the workspace
+# dependency table. All three are pure Rust — the "no C toolchain" promise in
+# the README applies to contributors regenerating icons too.
+[dependencies]
+icns = "0.4"
+ico = "0.5"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints]
+workspace = true

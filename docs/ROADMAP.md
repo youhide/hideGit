@@ -199,6 +199,12 @@ Everything between "works" and "someone who does not write Rust can install it".
 - Crash reporting that is local and opt-in
 - **Packaging:** signed and notarised `.dmg` (macOS), `.msi` (Windows), AppImage and Flatpak
   (Linux); an update-available check that never auto-installs
+
+  Landed early, because an application icon is not something to bolt on at the end: the icon
+  itself in every platform format, the Windows executable resource, an unsigned macOS `.app`
+  (`cargo run -p xtask -- bundle-macos`), and a Linux `.desktop` entry with a hicolor icon set
+  (`packaging/linux/install.sh`). What remains here is signing, notarisation, and the installers
+  themselves.
 - Benchmarks in CI so a performance regression fails a build rather than being noticed by a user
 
 **Done when:** a person who has never installed Rust can download an installer for their platform,

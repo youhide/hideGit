@@ -4,6 +4,16 @@ members = [
     "crates/hidegit-core",
     "crates/hidegit-forge",
     "crates/hidegit-ui",
+    "xtask",
+]
+# `xtask` is build tooling, invoked explicitly with `-p xtask`. Excluding it
+# from the default set keeps a bare `cargo build` from compiling an image
+# pipeline nobody asked for.
+default-members = [
+    "crates/hidegit",
+    "crates/hidegit-core",
+    "crates/hidegit-forge",
+    "crates/hidegit-ui",
 ]
 resolver = "3"
 

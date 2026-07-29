@@ -82,6 +82,15 @@ cargo bench -p hidegit-core
 The numbers to beat are recorded in [COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance). CI gains
 a regression gate at M6; until then it is on you to look.
 
+If you change `assets/icon.png`, regenerate everything derived from it and commit the result — the
+Windows build reads the generated `.ico` at build time, so a checkout has to contain it:
+
+```sh
+cargo run -p xtask -- icons
+```
+
+See [assets/README.md](./assets/README.md) for what that produces and why each format exists.
+
 ## Testing expectations
 
 | Layer | What is expected |

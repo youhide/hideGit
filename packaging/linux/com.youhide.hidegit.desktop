@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=hideGit
+GenericName=Git Client
+Comment=A desktop Git client with pull request alerts built in
+Exec=hidegit %f
+Icon=com.youhide.hidegit
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;version control;repository;commit;diff;
+# Lets a folder be dropped onto the launcher to open it as a repository.
+MimeType=inode/directory;
+# Wayland matches a window's app_id against this file's basename, and X11 uses
+# StartupWMClass; both have to stay identical to APPLICATION_ID in
+# crates/hidegit/src/main.rs or the window shows a blank icon.
+StartupWMClass=com.youhide.hidegit
+StartupNotify=true

@@ -1,0 +1,39 @@
+// Windows resource script, as a template. `crates/hidegit/build.rs` fills in
+// the icon path and the version, then writes the result to OUT_DIR — so the
+// version here never drifts from Cargo.toml. The placeholders are the
+// at-sign-delimited names below.
+//
+// Without this, the executable gets the generic Windows application icon in
+// Explorer, the taskbar and Alt-Tab, regardless of what the running window sets.
+
+#include <winver.h>
+
+// The lowest-numbered icon resource is the one Explorer uses for the file.
+1 ICON "@ICON_PATH@"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     @VERSION_COMMAS@
+PRODUCTVERSION  @VERSION_COMMAS@
+FILEOS          VOS__WINDOWS32
+FILETYPE        VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 0409 = US English, 04B0 = Unicode.
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "hideGit contributors"
+            VALUE "FileDescription",  "A cross-platform desktop Git client with pull request alerts built in."
+            VALUE "FileVersion",      "@VERSION@"
+            VALUE "InternalName",     "hidegit"
+            VALUE "LegalCopyright",   "GPL-3.0-only \251 hideGit contributors"
+            VALUE "OriginalFilename", "hidegit.exe"
+            VALUE "ProductName",      "hideGit"
+            VALUE "ProductVersion",   "@VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
