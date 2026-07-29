@@ -60,6 +60,13 @@ impl Fixture {
         this.git(["config", "user.name", "hideGit Fixture"]);
         this.git(["config", "user.email", "fixture@hidegit.invalid"]);
         this.git(["config", "commit.gpgsign", "false"]);
+        // Windows installs default `core.autocrlf` to true, which rewrites line
+        // endings on checkout: a file restored from the index comes back as
+        // CRLF and a byte comparison against what the test wrote fails. That is
+        // Git doing its job — honouring the user's configuration is half the
+        // point of delegating writes to it — so the fixture opts out rather
+        // than the assertions going vague about what they expect.
+        this.git(["config", "core.autocrlf", "false"]);
 
         this
     }
