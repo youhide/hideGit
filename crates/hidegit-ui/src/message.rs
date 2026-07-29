@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{
-    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, StashEntry,
+    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
     WorktreeStatus,
 };
 use hidegit_core::ops::{
@@ -67,6 +67,7 @@ pub struct OpenedRepository {
     pub state: RepoState,
     pub status: WorktreeStatus,
     pub stashes: Vec<StashEntry>,
+    pub remotes: Vec<Remote>,
     pub total: usize,
     pub first_page: Vec<Commit>,
 }
@@ -104,6 +105,17 @@ pub enum Message {
     PromptDismissed,
     OpenRepository(PathBuf),
     RepositoryOpened(Box<Result<OpenedRepository, UiError>>),
+    /// A URL to clone. The destination is asked for next, with the platform's own
+    /// picker — pointing at a folder beats typing a path.
+    CloneRequested(String),
+    /// The URL and the folder the user picked. `None` means they cancelled.
+    CloneDestinationPicked(String, Option<PathBuf>),
+    /// Progress from the clone in flight.
+    CloneProgress(ProgressUpdate),
+    /// The clone ended. On success its path is opened.
+    CloneFinished(Box<Result<PathBuf, UiError>>),
+    /// The Cancel button on the clone banner.
+    CloneCancelled,
     CloseRepository(usize),
     Repo(usize, RepoMessage),
     ToastDismissed(u64),
@@ -219,6 +231,35 @@ pub enum RepoMessage {
     /// The confirmation was accepted. Only ever sent by the dialog.
     StashDropConfirmed(usize),
 
+    // ---- remotes and tags ----
+    RemoteAddRequested {
+        name: String,
+        url: String,
+    },
+    RemoteUrlChangeRequested {
+        name: String,
+        url: String,
+    },
+    /// Asks to remove, which confirms rather than acting.
+    RemoteRemoveRequested(String),
+    /// The confirmation was accepted. Only ever sent by the dialog.
+    RemoteRemoveConfirmed(String),
+    TagCreateRequested {
+        name: String,
+        at: StartPoint,
+        /// `Some` makes it annotated.
+        message: Option<String>,
+    },
+    /// Asks to delete, which confirms rather than acting.
+    TagDeleteRequested(String),
+    /// The confirmation was accepted. Only ever sent by the dialog.
+    TagDeleteConfirmed(String),
+    /// Pushes one tag to a remote, through the ordinary push path.
+    TagPushRequested {
+        remote: String,
+        name: String,
+    },
+
     // ---- async results ----
     CommitsLoaded(Box<Result<Page, UiError>>),
     /// The O(n) pass that makes scrolling to an arbitrary row cheap.
@@ -274,6 +315,7 @@ pub struct Refreshed {
     pub state: RepoState,
     pub status: WorktreeStatus,
     pub stashes: Vec<StashEntry>,
+    pub remotes: Vec<Remote>,
     pub total: usize,
     pub first_page: Vec<Commit>,
 }

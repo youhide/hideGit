@@ -14,7 +14,7 @@ use hidegit_core::fixture::{Repo, fixture};
 use hidegit_core::model::{DiffTarget, Divergence, Head, RevSpec};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, FetchOpts, ForceMode, NoProgress, ProgressSink, ProgressUpdate,
-    PullOpts, PullOutcome, PushSpec, StartPoint, StashOp, StashOutcome,
+    PullOpts, PullOutcome, PushSpec, StartPoint, StashOp, StashOutcome, TagSpec,
 };
 use hidegit_core::{GitError, ObjectId};
 
@@ -1349,6 +1349,302 @@ fn stashing_refuses_while_the_index_is_locked() {
         .stash(&StashOp::Push {
             message: None,
             include_untracked: false,
+        })
+        .expect_err("another process holds the index");
+
+    assert!(matches!(error, GitError::IndexLocked(_)), "got {error:?}");
+    assert!(lock.exists(), "the lock is reported, never deleted");
+}
+
+// ---- named remotes -------------------------------------------------------
+
+#[test]
+fn a_remote_that_has_never_been_fetched_is_still_a_remote() {
+    // The reason `remotes()` exists separately from `Refs::remotes`: this one has
+    // no tracking refs at all, and leaving it out would say it does not exist.
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+
+    backend
+        .add_remote("upstream", "https://example.invalid/repo.git")
+        .expect("adding a remote");
+
+    let remotes = backend.remotes().expect("readable");
+    assert_eq!(remotes.len(), 1);
+    assert_eq!(remotes[0].name, "upstream");
+    assert_eq!(remotes[0].fetch_url, "https://example.invalid/repo.git");
+    assert!(
+        backend.refs().expect("readable").remotes.is_empty(),
+        "and it has no tracking refs to be found under"
+    );
+}
+
+#[test]
+fn remotes_are_listed_by_name_in_order() {
+    let repo = fixture().commit("A").with_remote("origin").build();
+    let backend = repo.backend();
+    backend
+        .add_remote("fork", "https://example.invalid/fork.git")
+        .expect("adding a remote");
+
+    let remotes = backend.remotes().expect("readable");
+    let names: Vec<&str> = remotes.iter().map(|r| r.name.as_str()).collect();
+
+    assert_eq!(names, vec!["fork", "origin"]);
+}
+
+#[test]
+fn a_push_url_is_reported_only_when_it_actually_differs() {
+    // gitoxide reports the fetch URL for both directions when no `pushurl` is set,
+    // and showing the same string twice would imply a distinction that is not
+    // there.
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+    backend
+        .add_remote("origin", "https://example.invalid/repo.git")
+        .expect("adding a remote");
+
+    assert_eq!(
+        backend.remotes().expect("readable")[0].push_url,
+        None,
+        "one URL, so nothing to distinguish"
+    );
+
+    repo.git([
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "ssh://git@example.invalid/repo.git",
+    ]);
+    backend.invalidate();
+
+    let remote = &backend.remotes().expect("readable")[0];
+    assert_eq!(remote.fetch_url, "https://example.invalid/repo.git");
+    assert_eq!(
+        remote.push_url.as_deref(),
+        Some("ssh://git@example.invalid/repo.git")
+    );
+}
+
+#[test]
+fn changing_a_remotes_url_is_visible_to_the_next_read() {
+    // A `remote set-url` rewrites config, which gitoxide caches from the moment
+    // the repository was opened — the same trap a rename fell into.
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+    backend
+        .add_remote("origin", "https://example.invalid/old.git")
+        .expect("adding");
+
+    backend
+        .set_remote_url("origin", "https://example.invalid/new.git")
+        .expect("changing the URL");
+
+    assert_eq!(
+        backend.remotes().expect("readable")[0].fetch_url,
+        "https://example.invalid/new.git",
+        "without the backend being reopened"
+    );
+}
+
+#[test]
+fn removing_a_remote_takes_its_tracking_refs_with_it() {
+    let repo = fixture().commit("A").with_remote("origin").build();
+    let backend = repo.backend();
+    assert!(!backend.refs().expect("readable").remotes.is_empty());
+
+    backend.remove_remote("origin").expect("removing a remote");
+
+    assert!(backend.remotes().expect("readable").is_empty());
+    assert!(
+        backend.refs().expect("readable").remotes.is_empty(),
+        "the tracking refs went too"
+    );
+    assert!(
+        backend.divergence().expect("readable").is_empty(),
+        "and nothing claims to be ahead of a remote that is gone"
+    );
+}
+
+#[test]
+fn a_remote_url_that_looks_like_a_flag_is_recorded_as_a_url() {
+    // `git remote add` does not validate a URL, it records one — so the invariant
+    // is not that this is rejected but that it lands in config *as a URL* rather
+    // than being read as `git remote add --upload-pack=…`, which is what `--`
+    // before the operands buys.
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+    let hostile = "--upload-pack=touch /tmp/pwned-remote";
+
+    backend
+        .add_remote("origin", hostile)
+        .expect("a URL is data, not an option");
+
+    assert_eq!(
+        backend.remotes().expect("readable")[0].fetch_url,
+        hostile,
+        "stored verbatim"
+    );
+    assert_eq!(
+        repo.git(["config", "--get", "remote.origin.url"]),
+        hostile,
+        "and git agrees it is the URL"
+    );
+    assert!(
+        !std::path::Path::new("/tmp/pwned-remote").exists(),
+        "nothing was executed"
+    );
+}
+
+// ---- tags ----------------------------------------------------------------
+
+#[test]
+fn a_lightweight_tag_is_just_a_ref() {
+    let repo = fixture().commit("A").commit("B").build();
+    let backend = repo.backend();
+
+    backend
+        .create_tag(&TagSpec {
+            name: "v0.1.0".to_owned(),
+            at: StartPoint::Head,
+            message: None,
+        })
+        .expect("creating a tag");
+
+    let tags = backend.refs().expect("readable").tags;
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].name.short, "v0.1.0");
+    assert_eq!(tags[0].target, repo.id("B"));
+    assert!(!tags[0].annotated, "no object of its own");
+}
+
+#[test]
+fn an_annotated_tag_carries_its_message() {
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+
+    backend
+        .create_tag(&TagSpec {
+            name: "v1.0.0".to_owned(),
+            at: StartPoint::Head,
+            message: Some("the first real release".to_owned()),
+        })
+        .expect("creating an annotated tag");
+
+    let tags = backend.refs().expect("readable").tags;
+    assert!(tags[0].annotated, "an annotated tag has its own object");
+    assert!(
+        repo.git(["tag", "-n99", "--list", "v1.0.0"])
+            .contains("the first real release"),
+        "and git can read the message back"
+    );
+}
+
+#[test]
+fn a_tag_message_starting_with_a_hash_is_kept() {
+    // Git strips comment lines from a message read from a file. hideGit's editor
+    // is not Git's, so a line the user typed is theirs to keep.
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+
+    backend
+        .create_tag(&TagSpec {
+            name: "v1.0.0".to_owned(),
+            at: StartPoint::Head,
+            message: Some("#1234 shipped".to_owned()),
+        })
+        .expect("creating a tag");
+
+    assert!(
+        repo.git(["tag", "-n99", "--list", "v1.0.0"])
+            .contains("#1234 shipped"),
+        "got {}",
+        repo.git(["tag", "-n99", "--list", "v1.0.0"])
+    );
+}
+
+#[test]
+fn a_tag_can_be_created_somewhere_other_than_head() {
+    let repo = fixture().commit("A").commit("B").build();
+    let backend = repo.backend();
+
+    backend
+        .create_tag(&TagSpec {
+            name: "v0.0.1".to_owned(),
+            at: StartPoint::Commit(repo.id("A")),
+            message: None,
+        })
+        .expect("tagging an older commit");
+
+    assert_eq!(
+        backend.refs().expect("readable").tags[0].target,
+        repo.id("A")
+    );
+}
+
+#[test]
+fn deleting_a_tag_removes_it() {
+    let repo = fixture().commit("A").tag("v0.1.0").build();
+    let backend = repo.backend();
+    assert_eq!(backend.refs().expect("readable").tags.len(), 1);
+
+    backend.delete_tag("v0.1.0").expect("deleting a tag");
+
+    assert!(backend.refs().expect("readable").tags.is_empty());
+}
+
+#[test]
+fn a_tag_can_be_pushed_and_deleted_on_the_remote() {
+    // Tags are pushed through the ordinary push path, with a fully qualified
+    // refspec — which is what stops a tag and a branch of the same name from
+    // being confused for each other.
+    let repo = fixture().commit("A").with_remote("origin").build();
+    let backend = repo.backend();
+    backend
+        .create_tag(&TagSpec {
+            name: "v0.1.0".to_owned(),
+            at: StartPoint::Head,
+            message: None,
+        })
+        .expect("tagging");
+
+    backend
+        .push(
+            "origin",
+            &PushSpec {
+                refspec: "refs/tags/v0.1.0:refs/tags/v0.1.0".to_owned(),
+                force: ForceMode::None,
+                set_upstream: false,
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("pushing a tag");
+
+    assert_eq!(
+        Repo::git_in(
+            repo.remote_path("origin"),
+            ["rev-parse", "refs/tags/v0.1.0"]
+        ),
+        repo.id("A").to_hex(),
+        "the remote has the tag"
+    );
+}
+
+#[test]
+fn creating_a_tag_refuses_while_the_index_is_locked() {
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+
+    let lock = backend.git_dir().join("index.lock");
+    std::fs::write(&lock, b"").expect("a writable git directory");
+
+    let error = backend
+        .create_tag(&TagSpec {
+            name: "v0.1.0".to_owned(),
+            at: StartPoint::Head,
+            message: None,
         })
         .expect_err("another process holds the index");
 

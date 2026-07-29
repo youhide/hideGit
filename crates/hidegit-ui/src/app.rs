@@ -13,7 +13,7 @@ use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RevSpec};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, Patch, ProgressSink,
-    ProgressUpdate, PullOpts, PullOutcome, PushSpec, StashOp,
+    ProgressUpdate, PullOpts, PullOutcome, PushSpec, StashOp, TagSpec,
 };
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
@@ -42,6 +42,11 @@ pub struct Hidegit {
     /// Monotonic, so a cancelled operation's late messages can be told from the
     /// operation that replaced it.
     next_operation_id: u64,
+    /// The clone in flight, if any.
+    ///
+    /// Held on the application rather than on a repository, because a clone happens
+    /// before there is one to hold it.
+    cloning: Option<Operation>,
 }
 
 /// Runs `f` on tokio's blocking pool and delivers its result as a message.
@@ -274,6 +279,104 @@ impl Hidegit {
                 Task::none()
             }
 
+            // Asking for the folder with the platform's own picker rather than a
+            // second text field: pointing at a directory beats typing a path, and
+            // the picker is the one part of this the OS does better.
+            Message::CloneRequested(url) => Task::perform(
+                async move {
+                    let picked = rfd::AsyncFileDialog::new()
+                        .set_title("Clone into…")
+                        .pick_folder()
+                        .await
+                        .map(|handle| handle.path().to_path_buf());
+                    (url, picked)
+                },
+                |(url, picked)| Message::CloneDestinationPicked(url, picked),
+            ),
+
+            Message::CloneDestinationPicked(url, Some(parent)) => {
+                if self.cloning.is_some() {
+                    return Task::none();
+                }
+
+                // The repository lands in a folder named after it, inside the one
+                // that was picked — cloning straight into a directory the user
+                // chose for other reasons is how a home folder gets a `.git`.
+                let into = parent.join(repository_name(&url));
+                let cancel = CancelToken::new();
+                self.cloning = Some(Operation {
+                    id: 0,
+                    label: format!("Cloning into {}", into.display()),
+                    cancel: cancel.clone(),
+                    progress: None,
+                });
+
+                let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+                let worker = tokio::task::spawn_blocking(move || {
+                    let sink = ChannelSink(sender);
+                    hidegit_core::clone_repository(&url, &into, &sink, &cancel)
+                });
+
+                Task::stream(iced::futures::stream::unfold(
+                    Some((receiver, worker)),
+                    |state| async move {
+                        use iced::futures::StreamExt as _;
+                        let (mut receiver, worker) = state?;
+
+                        match receiver.next().await {
+                            Some(update) => {
+                                Some((Message::CloneProgress(update), Some((receiver, worker))))
+                            }
+                            None => {
+                                let result = match worker.await {
+                                    Ok(result) => result.map_err(UiError::from),
+                                    Err(join) => Err(UiError {
+                                        summary: "the clone panicked".to_owned(),
+                                        details: join.to_string(),
+                                    }),
+                                };
+                                Some((Message::CloneFinished(Box::new(result)), None))
+                            }
+                        }
+                    },
+                ))
+            }
+
+            // A cancelled picker is not an event worth reporting.
+            Message::CloneDestinationPicked(_, None) => Task::none(),
+
+            Message::CloneProgress(update) => {
+                if let Some(cloning) = &mut self.cloning {
+                    cloning.progress = Some(update);
+                }
+                Task::none()
+            }
+
+            Message::CloneFinished(result) => {
+                self.cloning = None;
+                match *result {
+                    // The reward for cloning is the repository, so it opens.
+                    Ok(path) => Task::done(Message::OpenRepository(path)),
+                    Err(error) => {
+                        // Cancelling is what was asked for. A partial clone is left
+                        // on disk rather than deleted: hideGit did not create the
+                        // folder the user picked and will not go removing things
+                        // inside it.
+                        if !error.summary.contains("cancelled") {
+                            self.app.toast(&error);
+                        }
+                        Task::none()
+                    }
+                }
+            }
+
+            Message::CloneCancelled => {
+                if let Some(cloning) = &self.cloning {
+                    cloning.cancel.cancel();
+                }
+                Task::none()
+            }
+
             Message::Repo(index, message) => self.update_repo(index, message),
         }
     }
@@ -283,10 +386,30 @@ impl Hidegit {
     /// This is what `Confirmation` cannot do: its action is a fixed `Message`, and
     /// an action that depends on what was typed has to be built after the typing.
     ///
-    /// Always about the active repository — a prompt is modal, so nothing can
-    /// change which one that is while it is up.
+    /// Every kind but two is about the active repository — a prompt is modal, so
+    /// nothing can change which one that is while it is up. Cloning *creates* a
+    /// repository, and stashing may be accepted with nothing typed, so both are
+    /// resolved before the rest.
     fn prompt_action(&self, prompt: &Prompt) -> Option<Message> {
+        // Handled first: there need not be a repository open to clone one.
+        if let PromptKind::Clone = &prompt.kind {
+            return Some(Message::CloneRequested(prompt.first()?.to_owned()));
+        }
+
         let index = self.app.active?;
+
+        // Handled before the rest for the opposite reason: an empty message means
+        // "let Git write its own `WIP on …`", so this kind must not require one.
+        if let PromptKind::StashPush { include_untracked } = &prompt.kind {
+            return Some(Message::Repo(
+                index,
+                RepoMessage::StashRequested(StashOp::Push {
+                    message: prompt.first().map(str::to_owned),
+                    include_untracked: *include_untracked,
+                }),
+            ));
+        }
+
         let value = prompt.first()?.to_owned();
 
         let message = match &prompt.kind {
@@ -317,6 +440,28 @@ impl Hidegit {
                     to: value,
                 }
             }
+            PromptKind::NewTag { at, annotated } => RepoMessage::TagCreateRequested {
+                name: value,
+                at: at.clone(),
+                // A second field only exists on an annotated tag, and an empty
+                // message there means the user changed their mind about annotating
+                // rather than that they want an empty annotation.
+                message: if *annotated {
+                    prompt.field(1).map(str::to_owned)
+                } else {
+                    None
+                },
+            },
+            PromptKind::AddRemote => RepoMessage::RemoteAddRequested {
+                name: value,
+                url: prompt.field(1)?.to_owned(),
+            },
+            PromptKind::EditRemote { name } => RepoMessage::RemoteUrlChangeRequested {
+                name: name.clone(),
+                url: value,
+            },
+            // Both resolved above, before a repository or a value was required.
+            PromptKind::StashPush { .. } | PromptKind::Clone => return None,
         };
 
         Some(Message::Repo(index, message))
@@ -344,6 +489,7 @@ impl Hidegit {
             state: opened.state,
             status: opened.status,
             stashes: opened.stashes,
+            remotes: opened.remotes,
             divergence: HashMap::new(),
             pending: None,
             graph,
@@ -1021,6 +1167,81 @@ impl Hidegit {
                 write_task(index, move || backend.stash(&StashOp::Drop(at)).map(|_| ()))
             }
 
+            // ---- remotes and tags ----
+            RepoMessage::RemoteAddRequested { name, url } => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.add_remote(&name, &url))
+            }
+
+            RepoMessage::RemoteUrlChangeRequested { name, url } => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.set_remote_url(&name, &url))
+            }
+
+            RepoMessage::RemoteRemoveRequested(name) => {
+                self.app.confirming = Some(Confirmation {
+                    title: format!("Remove {name}?"),
+                    body: format!(
+                        "Its remote-tracking branches go too, and any local branch \
+                         that tracks {name} stops knowing where it came from. \
+                         Nothing on the remote itself is touched."
+                    ),
+                    confirm_label: "Remove".to_owned(),
+                    action: Box::new(Message::Repo(
+                        index,
+                        RepoMessage::RemoteRemoveConfirmed(name),
+                    )),
+                });
+                Task::none()
+            }
+
+            RepoMessage::RemoteRemoveConfirmed(name) => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.remove_remote(&name))
+            }
+
+            RepoMessage::TagCreateRequested { name, at, message } => {
+                let backend = Arc::clone(&repo.backend);
+                let spec = TagSpec { name, at, message };
+                write_task(index, move || backend.create_tag(&spec))
+            }
+
+            RepoMessage::TagDeleteRequested(name) => {
+                self.app.confirming = Some(Confirmation {
+                    title: format!("Delete {name}?"),
+                    body: format!(
+                        "{name} is removed here only. A remote that already has it \
+                         keeps it until the deletion is pushed."
+                    ),
+                    confirm_label: "Delete".to_owned(),
+                    action: Box::new(Message::Repo(index, RepoMessage::TagDeleteConfirmed(name))),
+                });
+                Task::none()
+            }
+
+            RepoMessage::TagDeleteConfirmed(name) => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.delete_tag(&name))
+            }
+
+            RepoMessage::TagPushRequested { remote, name } => {
+                let backend = Arc::clone(&repo.backend);
+                // Fully qualified on both sides, so a tag and a branch of the same
+                // name cannot be confused for one another on either end.
+                let spec = PushSpec {
+                    refspec: format!("refs/tags/{name}:refs/tags/{name}"),
+                    force: ForceMode::None,
+                    set_upstream: false,
+                };
+                let label = format!("Pushing {name} to {remote}");
+
+                self.start_operation(index, label, move |progress, cancel| {
+                    backend
+                        .push(&remote, &spec, progress, cancel)
+                        .map(OperationOutcome::Pushed)
+                })
+            }
+
             RepoMessage::DivergenceLoaded(result) => {
                 match *result {
                     Ok(divergence) => repo.divergence = divergence,
@@ -1189,6 +1410,7 @@ impl Hidegit {
                 repo.state = refreshed.state;
                 repo.status = refreshed.status;
                 repo.stashes = refreshed.stashes;
+                repo.remotes = refreshed.remotes;
 
                 // Restored by commit id rather than row index: a new commit at
                 // HEAD shifts every row down, and a refresh must not silently
@@ -1238,7 +1460,17 @@ impl Hidegit {
     pub fn view(&self) -> IcedElement<'_, Message> {
         let palette = &self.app.theme.palette;
 
-        let base = self.screen();
+        // A clone has no repository to hang a banner off, so it goes above the
+        // whole screen — including the welcome screen it was started from.
+        let base = match &self.cloning {
+            Some(cloning) => iced::widget::column![
+                widget::overlay::clone_banner(cloning, palette),
+                self.screen(),
+            ]
+            .into(),
+            None => self.screen(),
+        };
+
         widget::overlay::wrap(
             base,
             widget::overlay::Layers {
@@ -1361,6 +1593,18 @@ fn shortcut(
     match key {
         Key::Named(Named::Enter) if command => repo(RepoMessage::CommitRequested),
         Key::Named(Named::Backspace) if command => repo(RepoMessage::DiscardSelectedRequested),
+        // Checked before the unshifted `o`, or `Cmd+Shift+O` would open a picker.
+        Key::Character(c) if command && shift && c.eq_ignore_ascii_case("o") => {
+            Message::PromptRequested(Box::new(Prompt {
+                kind: PromptKind::Clone,
+                title: "Clone a repository".to_owned(),
+                confirm_label: "Choose a folder…".to_owned(),
+                fields: vec![crate::state::PromptField::new(
+                    "URL",
+                    "https://github.com/owner/repo.git",
+                )],
+            }))
+        }
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
         Key::Character(c) if command && c.as_str() == "d" => repo(RepoMessage::DiffModeToggled),
 
@@ -1436,6 +1680,7 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
     let state = backend.repo_state()?;
     let status = backend.status()?;
     let stashes = backend.stashes()?;
+    let remotes = backend.remotes()?;
     let total = backend.commit_count(&RevSpec::All)?;
     let first_page = backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?;
 
@@ -1447,6 +1692,7 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
         state,
         status,
         stashes,
+        remotes,
         total,
         first_page,
     })
@@ -1492,6 +1738,26 @@ fn selected_path(repo: &OpenRepo) -> Option<(Section, PathBuf)> {
     Some((row.section, path))
 }
 
+/// The folder name a clone of `url` should land in.
+///
+/// The last path segment with any `.git` suffix removed, which is what `git clone`
+/// itself does. Falls back to `repository` for a URL with nothing usable in it,
+/// rather than cloning into a folder called `""`.
+fn repository_name(url: &str) -> String {
+    let trimmed = url.trim_end_matches('/');
+    let last = trimmed
+        .rsplit(['/', ':'])
+        .find(|segment| !segment.is_empty())
+        .unwrap_or("");
+    let name = last.strip_suffix(".git").unwrap_or(last);
+
+    if name.is_empty() {
+        "repository".to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
 /// Borrows owned paths for the `&[&Path]` the backend takes.
 fn borrowed(paths: &[PathBuf]) -> Vec<&std::path::Path> {
     paths.iter().map(PathBuf::as_path).collect()
@@ -1519,6 +1785,9 @@ fn reread(backend: &dyn GitBackend) -> Result<Refreshed, GitError> {
         // One ref and one reflog, which is cheap enough for the watcher path —
         // unlike ahead/behind, which is a walk per branch and has its own task.
         stashes: backend.stashes()?,
+        // Read here rather than in its own task: it is a config read, not a walk,
+        // and a remote that was just added has to appear at once.
+        remotes: backend.remotes()?,
         total: backend.commit_count(&RevSpec::All)?,
         first_page: backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?,
     })
@@ -1598,6 +1867,7 @@ mod tests {
             state: RepoState::Clean,
             status: WorktreeStatus::default(),
             stashes: Vec::new(),
+            remotes: Vec::new(),
             total: count,
             first_page: history,
         }
@@ -2073,6 +2343,7 @@ mod tests {
                 state: RepoState::Clean,
                 status: dirty(),
                 stashes: Vec::new(),
+                remotes: Vec::new(),
                 total: 100,
                 first_page: commits(100),
             }))),
@@ -2118,6 +2389,7 @@ mod tests {
                 state: RepoState::Clean,
                 status: WorktreeStatus::default(),
                 stashes: Vec::new(),
+                remotes: Vec::new(),
                 total: 101,
                 first_page: grown,
             }))),
@@ -3156,6 +3428,7 @@ mod tests {
                 state: RepoState::Clean,
                 status: WorktreeStatus::default(),
                 stashes: vec![stash_entry(0, "fresh")],
+                remotes: Vec::new(),
                 total: 1,
                 first_page: commits(1),
             }))),
@@ -3164,6 +3437,297 @@ mod tests {
         let stashes = &app.app.repos[0].stashes;
         assert_eq!(stashes.len(), 1);
         assert_eq!(stashes[0].message, "fresh");
+    }
+
+    // ---- remotes, tags and clone ----
+
+    fn remote(name: &str, url: &str) -> hidegit_core::model::Remote {
+        hidegit_core::model::Remote {
+            name: name.to_owned(),
+            fetch_url: url.to_owned(),
+            push_url: None,
+        }
+    }
+
+    fn remote_branch(short: &str) -> hidegit_core::model::Branch {
+        hidegit_core::model::Branch {
+            name: RefName {
+                kind: RefKind::RemoteBranch,
+                full: format!("refs/remotes/{short}"),
+                short: short.to_owned(),
+            },
+            target: ObjectId::from_hex(&"0".repeat(40)).unwrap(),
+            upstream: None,
+        }
+    }
+
+    #[test]
+    fn a_remote_that_has_never_been_fetched_still_appears_in_the_tree() {
+        // Grouping only by tracking-ref name would hide it, and a remote you cannot
+        // see is a remote you cannot fetch from or remove.
+        let mut app = app_with(1);
+        app.app.repos[0].remotes = vec![remote("origin", "https://example.invalid/repo.git")];
+
+        let grouped = app.app.repos[0].remotes_with_branches();
+
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].0.name, "origin");
+        assert!(grouped[0].1.is_empty());
+    }
+
+    #[test]
+    fn branches_group_under_the_remote_they_belong_to() {
+        let mut app = app_with(1);
+        app.app.repos[0].remotes = vec![
+            remote("fork", "https://example.invalid/fork.git"),
+            remote("origin", "https://example.invalid/repo.git"),
+        ];
+        app.app.repos[0].refs = Refs {
+            remotes: vec![
+                remote_branch("origin/main"),
+                remote_branch("fork/main"),
+                remote_branch("origin/feat/graph"),
+            ],
+            ..Refs::default()
+        };
+
+        let grouped = app.app.repos[0].remotes_with_branches();
+        let names = |at: usize| -> Vec<&str> {
+            grouped[at]
+                .1
+                .iter()
+                .map(|b| b.name.short.as_str())
+                .collect()
+        };
+
+        assert_eq!(grouped[0].0.name, "fork");
+        assert_eq!(names(0), vec!["fork/main"]);
+        assert_eq!(grouped[1].0.name, "origin");
+        assert_eq!(names(1), vec!["origin/main", "origin/feat/graph"]);
+    }
+
+    #[test]
+    fn a_remote_does_not_collect_another_whose_name_starts_the_same() {
+        // `origin` must not swallow `origin-mirror/main`, which is why the match is
+        // on the whole first segment.
+        let mut app = app_with(1);
+        app.app.repos[0].remotes = vec![
+            remote("origin", "https://example.invalid/a.git"),
+            remote("origin-mirror", "https://example.invalid/b.git"),
+        ];
+        app.app.repos[0].refs = Refs {
+            remotes: vec![
+                remote_branch("origin/main"),
+                remote_branch("origin-mirror/main"),
+            ],
+            ..Refs::default()
+        };
+
+        let grouped = app.app.repos[0].remotes_with_branches();
+        assert_eq!(grouped[0].1.len(), 1, "origin has exactly its own");
+        assert_eq!(grouped[0].1[0].name.short, "origin/main");
+        assert_eq!(grouped[1].1[0].name.short, "origin-mirror/main");
+    }
+
+    #[test]
+    fn removing_a_remote_asks_first_and_says_what_it_touches_and_what_it_does_not() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::RemoteRemoveRequested("origin".to_owned()),
+        ));
+
+        let confirmation = app.app.confirming.as_ref().expect("removing confirms");
+        assert!(confirmation.title.contains("origin"));
+        assert!(
+            confirmation.body.contains("Nothing on the remote itself"),
+            "the scope has to be stated: {}",
+            confirmation.body
+        );
+    }
+
+    #[test]
+    fn deleting_a_tag_says_the_remote_keeps_it_until_that_is_pushed() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::TagDeleteRequested("v0.1.0".to_owned()),
+        ));
+
+        let confirmation = app.app.confirming.as_ref().expect("deleting confirms");
+        assert!(
+            confirmation.body.contains("keeps it until"),
+            "{}",
+            confirmation.body
+        );
+    }
+
+    #[test]
+    fn a_clone_lands_in_a_folder_named_after_the_repository() {
+        // The same name `git clone` itself picks, so a clone into the folder someone
+        // chose does not scatter a repository across it.
+        for (url, expected) in [
+            ("https://github.com/owner/repo.git", "repo"),
+            ("https://github.com/owner/repo", "repo"),
+            ("https://github.com/owner/repo/", "repo"),
+            ("git@github.com:owner/repo.git", "repo"),
+            ("ssh://git@example.com:22/owner/repo.git", "repo"),
+            ("/srv/git/local-repo.git", "local-repo"),
+            ("../sibling", "sibling"),
+        ] {
+            assert_eq!(repository_name(url), expected, "for {url}");
+        }
+    }
+
+    #[test]
+    fn a_url_with_nothing_usable_in_it_still_gets_a_folder_name() {
+        // Better than cloning into a directory called "".
+        assert_eq!(repository_name(""), "repository");
+        assert_eq!(repository_name("/"), "repository");
+    }
+
+    #[test]
+    fn a_clone_prompt_produces_a_clone_even_with_no_repository_open() {
+        // Cloning is the one action that has to work from the welcome screen, so it
+        // must not be routed through the active repository.
+        let mut app = Hidegit::default();
+        assert!(app.app.active.is_none());
+
+        let _ = app.update(Message::PromptRequested(Box::new(Prompt {
+            kind: PromptKind::Clone,
+            title: "Clone a repository".to_owned(),
+            confirm_label: "Choose a folder…".to_owned(),
+            fields: vec![crate::state::PromptField::new("URL", "…")],
+        })));
+        let _ = app.update(Message::PromptChanged(
+            0,
+            "https://example.invalid/repo.git".to_owned(),
+        ));
+
+        let prompt = app.app.prompt.clone().expect("a prompt is up");
+        match app.prompt_action(&prompt) {
+            Some(Message::CloneRequested(url)) => {
+                assert_eq!(url, "https://example.invalid/repo.git");
+            }
+            other => panic!("expected a clone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_stash_prompt_may_be_accepted_with_nothing_typed() {
+        // Git writes its own `WIP on …`, so requiring a message would be hideGit
+        // inventing a rule Git does not have.
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(Prompt {
+            kind: PromptKind::StashPush {
+                include_untracked: true,
+            },
+            title: "Stash changes".to_owned(),
+            confirm_label: "Stash".to_owned(),
+            fields: vec![crate::state::PromptField::new("Message (optional)", "…")],
+        })));
+
+        let prompt = app.app.prompt.clone().expect("a prompt is up");
+        assert!(
+            prompt.is_ready(),
+            "the button is available with nothing typed"
+        );
+
+        match app.prompt_action(&prompt) {
+            Some(Message::Repo(
+                0,
+                RepoMessage::StashRequested(StashOp::Push {
+                    message,
+                    include_untracked,
+                }),
+            )) => {
+                assert_eq!(message, None, "no message means Git writes its own");
+                assert!(include_untracked);
+            }
+            other => panic!("expected a stash, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_other_prompt_needs_all_of_its_fields() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(Prompt {
+            kind: PromptKind::AddRemote,
+            title: "Add a remote".to_owned(),
+            confirm_label: "Add".to_owned(),
+            fields: vec![
+                crate::state::PromptField::new("Name", "origin"),
+                crate::state::PromptField::new("URL", "…"),
+            ],
+        })));
+        let _ = app.update(Message::PromptChanged(0, "origin".to_owned()));
+
+        let prompt = app.app.prompt.clone().expect("a prompt is up");
+        assert!(
+            !prompt.is_ready(),
+            "a remote with no URL is not a remote to add"
+        );
+
+        let _ = app.update(Message::PromptChanged(
+            1,
+            "https://example.invalid/repo.git".to_owned(),
+        ));
+        let prompt = app.app.prompt.clone().unwrap();
+        assert!(prompt.is_ready());
+
+        match app.prompt_action(&prompt) {
+            Some(Message::Repo(0, RepoMessage::RemoteAddRequested { name, url })) => {
+                assert_eq!(name, "origin");
+                assert_eq!(url, "https://example.invalid/repo.git");
+            }
+            other => panic!("expected an add, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_lightweight_tag_prompt_sends_no_message() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::PromptRequested(Box::new(Prompt {
+            kind: PromptKind::NewTag {
+                at: hidegit_core::ops::StartPoint::Head,
+                annotated: false,
+            },
+            title: "New tag".to_owned(),
+            confirm_label: "Create".to_owned(),
+            fields: vec![crate::state::PromptField::new("Name", "v1.0.0")],
+        })));
+        let _ = app.update(Message::PromptChanged(0, "v1.0.0".to_owned()));
+
+        let prompt = app.app.prompt.clone().unwrap();
+        match app.prompt_action(&prompt) {
+            Some(Message::Repo(0, RepoMessage::TagCreateRequested { name, message, .. })) => {
+                assert_eq!(name, "v1.0.0");
+                assert_eq!(message, None, "lightweight means no object and no message");
+            }
+            other => panic!("expected a tag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cmd_shift_o_clones_rather_than_opening() {
+        // Checked before the unshifted `o`, or the shortcut would open a picker.
+        let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
+        let described = format!(
+            "{:?}",
+            shortcut(&keyboard::Key::Character("o".into()), mods, None, false)
+        );
+        assert!(described.contains("Clone"), "got {described}");
+
+        let plain = format!(
+            "{:?}",
+            shortcut(
+                &keyboard::Key::Character("o".into()),
+                keyboard::Modifiers::COMMAND,
+                None,
+                false
+            )
+        );
+        assert!(plain.contains("OpenDialogRequested"), "got {plain}");
     }
 
     #[test]

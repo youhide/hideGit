@@ -10,6 +10,7 @@ use iced::{Center, Fill, Font, Padding};
 
 use crate::Element;
 use crate::message::Message;
+use crate::state::{Prompt, PromptField, PromptKind};
 use crate::theme::Palette;
 
 pub fn view<'a>(recents: &'a [std::path::PathBuf], palette: &'a Palette) -> Element<'a, Message> {
@@ -32,9 +33,24 @@ pub fn view<'a>(recents: &'a [std::path::PathBuf], palette: &'a Palette) -> Elem
             .style(move |_, status| primary_style(palette_copy, status))
             .on_press(Message::OpenDialogRequested);
 
-    let mut body = column![title, Space::new().height(24), open]
-        .spacing(0)
-        .align_x(Center);
+    // Cloning is the other way to arrive at a repository, and it is secondary
+    // because most sessions start from one that already exists on disk.
+    let clone = button(container(text("Clone…").size(14.0)).padding(Padding::from([10, 20])))
+        .style(move |_, status| secondary_style(palette_copy, status))
+        .on_press(Message::PromptRequested(Box::new(Prompt {
+            kind: PromptKind::Clone,
+            title: "Clone a repository".to_owned(),
+            confirm_label: "Choose a folder…".to_owned(),
+            fields: vec![PromptField::new("URL", "https://github.com/owner/repo.git")],
+        })));
+
+    let mut body = column![
+        title,
+        Space::new().height(24),
+        row![open, clone].spacing(10).align_y(Center),
+    ]
+    .spacing(0)
+    .align_x(Center);
 
     if recents.is_empty() {
         body = body.push(Space::new().height(20));
@@ -61,7 +77,6 @@ pub fn view<'a>(recents: &'a [std::path::PathBuf], palette: &'a Palette) -> Elem
         body = body.push(scrollable(list).height(iced::Length::Fixed(240.0)));
     }
 
-    // Cloning is M3, so there is no clone button pretending otherwise.
     container(container(body).max_width(560))
         .width(Fill)
         .height(Fill)
@@ -114,6 +129,32 @@ fn recent_row<'a>(path: &Path, palette: Palette) -> Element<'a, Message> {
     })
     .on_press(Message::OpenRepository(target))
     .into()
+}
+
+/// The secondary action next to the primary one: outlined rather than filled, so
+/// there is one obvious thing to click and one alternative.
+fn secondary_style(palette: Palette, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => Some(
+            iced::Color {
+                a: 0.10,
+                ..palette.text
+            }
+            .into(),
+        ),
+        _ => None,
+    };
+
+    button::Style {
+        background,
+        text_color: palette.text,
+        border: iced::Border {
+            color: palette.border,
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..button::Style::default()
+    }
 }
 
 fn primary_style(palette: Palette, status: button::Status) -> button::Style {

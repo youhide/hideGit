@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
 use hidegit_core::model::{
-    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, RepoState, StashEntry,
+    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
     WorktreeStatus,
 };
 use hidegit_core::ops::{CancelToken, ProgressUpdate, StartPoint};
@@ -288,6 +288,17 @@ pub enum PromptKind {
     NewBranch { from: StartPoint, checkout: bool },
     /// One field: the new name.
     RenameBranch { from: String },
+    /// One field: the tag's name. A message makes it annotated.
+    NewTag { at: StartPoint, annotated: bool },
+    /// Two fields: name, then URL.
+    AddRemote,
+    /// One field: the new URL.
+    EditRemote { name: String },
+    /// One field: the message. Optional — an empty one is Git's own `WIP on …`.
+    StashPush { include_untracked: bool },
+    /// One field: the URL. The destination is chosen with the platform's picker
+    /// afterwards, because typing a path is worse than pointing at one.
+    Clone,
 }
 
 impl Prompt {
@@ -296,13 +307,24 @@ impl Prompt {
     /// Trimmed because a branch name with a trailing space is a name Git will
     /// refuse, and the refusal would be about whitespace the user cannot see.
     pub fn first(&self) -> Option<&str> {
-        let value = self.fields.first()?.value.trim();
+        self.field(0)
+    }
+
+    /// A field's value, trimmed, or `None` when it is empty.
+    pub fn field(&self, at: usize) -> Option<&str> {
+        let value = self.fields.get(at)?.value.trim();
         (!value.is_empty()).then_some(value)
     }
 
     /// Is there enough here to act on?
+    ///
+    /// Every field is required except a stash's message, which Git will invent —
+    /// so that one prompt can be accepted empty and the others cannot.
     pub fn is_ready(&self) -> bool {
-        self.first().is_some()
+        match self.kind {
+            PromptKind::StashPush { .. } => true,
+            _ => (0..self.fields.len()).all(|at| self.field(at).is_some()),
+        }
     }
 }
 
@@ -489,6 +511,11 @@ pub struct OpenRepo {
     /// Read as part of a refresh, unlike `divergence`: it is one ref and one
     /// reflog, which is cheap enough for the watcher path.
     pub stashes: Vec<StashEntry>,
+    /// Every configured remote, with its URLs.
+    ///
+    /// Read alongside `refs`, because a remote that has never been fetched has no
+    /// tracking refs and would otherwise be invisible.
+    pub remotes: Vec<Remote>,
     /// Ahead/behind per local branch, keyed by full ref name.
     ///
     /// Loaded by its own task rather than as part of a refresh: it costs a commit
@@ -575,12 +602,19 @@ impl OpenRepo {
     /// something else still works. Derived from remote-tracking refs, which is all
     /// `refs` carries — `remotes()` arrives with the rest of remote management.
     pub fn default_remote(&self) -> Option<String> {
-        let mut names: Vec<&str> = self
-            .refs
-            .remotes
-            .iter()
-            .filter_map(|b| b.name.short.split_once('/').map(|(remote, _)| remote))
-            .collect();
+        let mut names: Vec<&str> = self.remotes.iter().map(|r| r.name.as_str()).collect();
+
+        // Falls back to the names implied by tracking refs, so this still answers
+        // before `remotes` has been read — and for a repository whose config
+        // gitoxide could not parse.
+        if names.is_empty() {
+            names = self
+                .refs
+                .remotes
+                .iter()
+                .filter_map(|b| b.name.short.split_once('/').map(|(remote, _)| remote))
+                .collect();
+        }
         names.sort_unstable();
         names.dedup();
 
@@ -588,6 +622,28 @@ impl OpenRepo {
             return Some("origin".to_owned());
         }
         names.first().map(|n| (*n).to_owned())
+    }
+
+    /// Remote-tracking branches grouped under the remote they belong to.
+    ///
+    /// Every configured remote appears, fetched or not, so the sidebar cannot imply
+    /// that a remote which has never been fetched does not exist.
+    pub fn remotes_with_branches(&self) -> Vec<(&Remote, Vec<&hidegit_core::model::Branch>)> {
+        self.remotes
+            .iter()
+            .map(|remote| {
+                let prefix = format!("{}/", remote.name);
+                let branches = self
+                    .refs
+                    .remotes
+                    .iter()
+                    // Matched on the whole first segment, so `origin` does not
+                    // collect `origin-mirror/main`.
+                    .filter(|b| b.name.short.starts_with(&prefix))
+                    .collect();
+                (remote, branches)
+            })
+            .collect()
     }
 
     /// Where a push from the current branch would go.

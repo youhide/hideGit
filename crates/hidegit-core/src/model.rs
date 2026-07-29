@@ -174,6 +174,19 @@ pub struct Remote {
     pub push_url: Option<String>,
 }
 
+impl Remote {
+    /// The remote in one line, for a heading.
+    ///
+    /// Names both URLs when they differ, because "why did my push go somewhere
+    /// else" is exactly the question a separate `pushurl` answers.
+    pub fn url_summary(&self) -> String {
+        match &self.push_url {
+            Some(push) => format!("{} → {} (push {push})", self.name, self.fetch_url),
+            None => format!("{} → {}", self.name, self.fetch_url),
+        }
+    }
+}
+
 /// One entry on the stash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StashEntry {

@@ -60,6 +60,48 @@ pub fn wrap<'a>(
     stacked.into()
 }
 
+/// What a clone is doing, and the only action that applies to it.
+///
+/// Above the whole screen rather than inside a repository's toolbar, because a
+/// clone runs before there is a repository to put it in.
+pub fn clone_banner<'a>(
+    cloning: &'a crate::state::Operation,
+    palette: &'a Palette,
+) -> Element<'a, Message> {
+    let palette = *palette;
+    let accent = palette.accent;
+
+    container(
+        row![
+            text(cloning.label.as_str())
+                .size(12.0)
+                .color(accent)
+                .font(Font {
+                    weight: iced::font::Weight::Semibold,
+                    ..Font::DEFAULT
+                }),
+            text(cloning.detail()).size(12.0).color(palette.muted),
+            Space::new().width(Fill),
+            button(
+                container(text("Cancel").size(12.0).color(palette.text))
+                    .padding(Padding::from([3, 10]))
+            )
+            .padding(0)
+            .style(move |_, status| quiet_style(palette, status))
+            .on_press(Message::CloneCancelled),
+        ]
+        .spacing(10)
+        .align_y(Center),
+    )
+    .width(Fill)
+    .padding(Padding::from([6, 14]))
+    .style(move |_| container::Style {
+        background: Some(iced::Color { a: 0.12, ..accent }.into()),
+        ..container::Style::default()
+    })
+    .into()
+}
+
 /// The list of things that can be done to one item.
 fn action_sheet<'a>(sheet: &'a ActionSheet, palette: &'a Palette) -> Element<'a, Message> {
     let palette = *palette;

@@ -9,7 +9,7 @@
 //! glyph rather than a menu, the same way a staging row carries `+`, `−` and `✕` —
 //! and a `⋯` that opens the action sheet for everything that does not fit.
 
-use hidegit_core::model::{Branch, Divergence, Head, StashEntry, Tag};
+use hidegit_core::model::{Branch, Divergence, Head, Remote, StashEntry, Tag};
 use hidegit_core::ops::{CheckoutTarget, StartPoint, StashOp};
 use iced::widget::{Space, button, column, container, row, scrollable, text, tooltip};
 use iced::{Center, Fill, Font, Length, Padding};
@@ -30,8 +30,7 @@ const ITEM_SIZE: f32 = 13.0;
 pub fn view<'a>(repo: &'a OpenRepo, index: usize, palette: &'a Palette) -> Element<'a, Message> {
     let mut sections = column![].spacing(2).padding(Padding::from([8, 0]));
 
-    sections =
-        sections.push(working_directory(repo, palette).map(move |m| Message::Repo(index, m)));
+    sections = sections.push(working_directory(repo, index, palette));
     sections = sections.push(Space::new().height(8));
 
     sections = sections.push(section_heading(
@@ -47,30 +46,54 @@ pub fn view<'a>(repo: &'a OpenRepo, index: usize, palette: &'a Palette) -> Eleme
         sections = sections.push(local_branch_row(repo, branch, index, palette));
     }
 
-    if !repo.refs.remotes.is_empty() {
-        sections = sections.push(Space::new().height(8));
-        sections = sections.push(section_heading(
-            "REMOTES",
-            repo.refs.remotes.len(),
-            None,
-            palette,
-        ));
-        for branch in &repo.refs.remotes {
+    // Two levels: the remote, then the branches on it. Every *configured* remote
+    // appears, fetched or not — a remote with no tracking refs is still a remote,
+    // and grouping only by ref name would hide it.
+    let grouped = repo.remotes_with_branches();
+    sections = sections.push(Space::new().height(8));
+    sections = sections.push(section_heading(
+        "REMOTES",
+        grouped.len(),
+        Some((
+            "Add a remote…",
+            Message::PromptRequested(Box::new(Prompt {
+                kind: PromptKind::AddRemote,
+                title: "Add a remote".to_owned(),
+                confirm_label: "Add".to_owned(),
+                fields: vec![
+                    PromptField::new("Name", "origin"),
+                    PromptField::new("URL", "https://example.com/repo.git"),
+                ],
+            })),
+        )),
+        palette,
+    ));
+    for (remote, branches) in &grouped {
+        sections = sections.push(remote_row(remote, branches.len(), index, palette));
+        for branch in branches {
             sections = sections.push(remote_branch_row(branch, index, palette));
         }
     }
 
-    if !repo.refs.tags.is_empty() {
-        sections = sections.push(Space::new().height(8));
-        sections = sections.push(section_heading("TAGS", repo.refs.tags.len(), None, palette));
-        for tag in &repo.refs.tags {
-            sections = sections.push(tag_row(tag, palette).map(move |m| Message::Repo(index, m)));
-        }
+    sections = sections.push(Space::new().height(8));
+    sections = sections.push(section_heading(
+        "TAGS",
+        repo.refs.tags.len(),
+        Some((
+            "New tag at HEAD…",
+            Message::PromptRequested(Box::new(new_tag_prompt(StartPoint::Head, false))),
+        )),
+        palette,
+    ));
+    for tag in &repo.refs.tags {
+        sections = sections.push(tag_row(repo, tag, index, palette));
     }
 
-    // Only when there is one. An empty "STASHES" heading reads as "you have no
-    // stashes" — which until M3 would have been a lie about a missing feature, and
-    // now would be a lie about the repository.
+    // Only when there is one, unlike the sections above. `LOCAL`, `REMOTES` and
+    // `TAGS` show empty because their heading carries the `+` that creates the
+    // first one, and "you have no remotes" is a true and useful thing to read. A
+    // stash is not created from a heading — it comes from the working directory —
+    // so an empty `STASHES` would be chrome with nothing behind it.
     if !repo.stashes.is_empty() {
         sections = sections.push(Space::new().height(8));
         sections = sections.push(section_heading(
@@ -192,7 +215,7 @@ pub(crate) fn heading<'a>(
         .into()
 }
 
-fn working_directory<'a>(repo: &OpenRepo, palette: &Palette) -> Element<'a, RepoMessage> {
+fn working_directory<'a>(repo: &OpenRepo, index: usize, palette: &Palette) -> Element<'a, Message> {
     let selected = matches!(repo.selection, Some(Selection::WorkingDirectory));
     let palette = *palette;
 
@@ -217,12 +240,75 @@ fn working_directory<'a>(repo: &OpenRepo, palette: &Palette) -> Element<'a, Repo
     ]
     .align_y(Center);
 
-    button(container(label).padding(Padding::from([4, 12])))
+    let row = button(container(label).padding(Padding::from([4, 12])))
         .width(Fill)
         .padding(0)
         .style(move |_, status| item_style(palette, selected, status))
-        .on_press(RepoMessage::Selected(Selection::WorkingDirectory))
-        .into()
+        .on_press(Message::Repo(
+            index,
+            RepoMessage::Selected(Selection::WorkingDirectory),
+        ));
+
+    // Stashing comes from here rather than from a STASHES heading, because a stash
+    // is made *out of* the working directory — and there is nothing to stash when
+    // it is clean, so the control is absent rather than present and refusing.
+    if repo.status.is_clean() {
+        return row.into();
+    }
+
+    let untracked = !repo.status.untracked.is_empty();
+    let sheet = ActionSheet::new(format!(
+        "{} change(s) in the working directory",
+        repo.status.change_count()
+    ))
+    .item(
+        "Stash changes…",
+        Message::PromptRequested(Box::new(stash_prompt(false))),
+    )
+    .item(
+        if untracked {
+            "Stash changes and untracked files…"
+        } else {
+            // Offered even with nothing untracked, because "include untracked" is
+            // about what the stash *would* take and the user may be about to add
+            // something. Saying so keeps the two options from looking identical.
+            "Stash changes, including any untracked files…"
+        },
+        Message::PromptRequested(Box::new(stash_prompt(true))),
+    );
+
+    row![
+        row,
+        action_button(
+            "⋯",
+            "Actions for the working directory".to_owned(),
+            sheet,
+            palette
+        ),
+    ]
+    .align_y(Center)
+    .into()
+}
+
+/// The prompt that collects a stash's message.
+///
+/// The one prompt that can be accepted empty: Git writes its own `WIP on …` when no
+/// message is given, and refusing to stash without one would be hideGit inventing a
+/// requirement Git does not have.
+fn stash_prompt(include_untracked: bool) -> Prompt {
+    Prompt {
+        kind: PromptKind::StashPush { include_untracked },
+        title: if include_untracked {
+            "Stash changes and untracked files".to_owned()
+        } else {
+            "Stash changes".to_owned()
+        },
+        confirm_label: "Stash".to_owned(),
+        fields: vec![PromptField::new(
+            "Message (optional)",
+            "what you were in the middle of",
+        )],
+    }
 }
 
 /// A local branch: where it is, how far it has drifted, and what can be done.
@@ -350,6 +436,87 @@ fn branch_sheet(branch: &Branch, index: usize, is_head: bool, local_count: usize
     }
 
     sheet
+}
+
+/// The prompt that collects a tag's name, and its message when annotated.
+fn new_tag_prompt(at: StartPoint, annotated: bool) -> Prompt {
+    let where_at = match &at {
+        StartPoint::Head => "the current commit".to_owned(),
+        StartPoint::Commit(id) => id.short(7),
+        StartPoint::Ref(name) => name.clone(),
+    };
+
+    let mut fields = vec![PromptField::new(format!("Name, at {where_at}"), "v1.0.0")];
+    if annotated {
+        // An annotated tag is an object with a message; a lightweight one is only a
+        // ref. Which it is, is decided before the prompt opens rather than by
+        // whether the message happens to be filled in.
+        fields.push(PromptField::new("Message", "what this release is"));
+    }
+
+    Prompt {
+        kind: PromptKind::NewTag { at, annotated },
+        title: if annotated {
+            "New annotated tag".to_owned()
+        } else {
+            "New tag".to_owned()
+        },
+        confirm_label: "Create".to_owned(),
+        fields,
+    }
+}
+
+/// A named remote and its URL.
+fn remote_row<'a>(
+    remote: &Remote,
+    branch_count: usize,
+    index: usize,
+    palette: &Palette,
+) -> Element<'a, Message> {
+    let palette = *palette;
+    let name = remote.name.clone();
+
+    // The URL is what distinguishes two remotes with similar names, and it is the
+    // thing people check when a push goes somewhere unexpected.
+    let label = row![
+        text("☁").size(ITEM_SIZE).color(palette.muted),
+        text(name.clone()).size(ITEM_SIZE).color(palette.text),
+        Space::new().width(Fill),
+        // A remote that has never been fetched has no branches, and saying so is
+        // more useful than an empty space.
+        text(if branch_count == 0 {
+            "not fetched".to_owned()
+        } else {
+            branch_count.to_string()
+        })
+        .size(HEADING_SIZE)
+        .color(palette.muted),
+    ]
+    .spacing(6)
+    .align_y(Center);
+
+    let sheet = ActionSheet::new(remote.url_summary())
+        .item("Fetch", Message::Repo(index, RepoMessage::FetchRequested))
+        .item(
+            "Edit URL…",
+            Message::PromptRequested(Box::new(Prompt {
+                kind: PromptKind::EditRemote { name: name.clone() },
+                title: format!("URL for {name}"),
+                confirm_label: "Save".to_owned(),
+                fields: vec![PromptField::prefilled("URL", remote.fetch_url.clone())],
+            })),
+        )
+        .destructive(
+            "Remove",
+            Message::Repo(index, RepoMessage::RemoteRemoveRequested(name.clone())),
+        );
+
+    row![
+        container(label).width(Fill).padding(Padding::from([4, 12])),
+        action_button("⋯", format!("Actions for {name}"), sheet, palette),
+    ]
+    .align_y(Center)
+    .into()
 }
 
 /// A remote-tracking branch. Checking one out means creating a local branch that
@@ -508,28 +675,77 @@ fn hinted<'a>(
     .into()
 }
 
-fn tag_row<'a>(tag: &Tag, palette: &Palette) -> Element<'a, RepoMessage> {
+fn tag_row<'a>(
+    repo: &OpenRepo,
+    tag: &Tag,
+    index: usize,
+    palette: &Palette,
+) -> Element<'a, Message> {
     let palette = *palette;
     // Annotated and lightweight tags look different, because they are.
     let glyph = if tag.annotated { "◆" } else { "◇" };
+    let short = tag.name.short.clone();
 
-    button(
-        container(
-            row![
-                text(glyph).size(ITEM_SIZE).color(palette.warning),
-                text(tag.name.short.clone())
-                    .size(ITEM_SIZE)
-                    .color(palette.muted),
-            ]
-            .spacing(6)
-            .align_y(Center),
-        )
-        .padding(Padding::from([3, 12])),
+    let label = row![
+        text(glyph).size(ITEM_SIZE).color(palette.warning),
+        text(short.clone()).size(ITEM_SIZE).color(palette.muted),
+    ]
+    .spacing(6)
+    .align_y(Center);
+
+    let mut sheet = ActionSheet::new(format!(
+        "{short} · {}",
+        if tag.annotated {
+            "annotated"
+        } else {
+            "lightweight"
+        }
+    ))
+    .item(
+        "Checkout (detaches HEAD)",
+        Message::Repo(
+            index,
+            RepoMessage::CheckoutRequested(CheckoutTarget::Commit(tag.target)),
+        ),
     )
-    .width(Fill)
-    .padding(0)
-    .style(move |_, status| item_style(palette, false, status))
-    .on_press(RepoMessage::Selected(Selection::Commit(tag.target)))
+    .item(
+        "New branch from here…",
+        Message::PromptRequested(Box::new(new_branch_prompt(StartPoint::Ref(
+            tag.name.full.clone(),
+        )))),
+    );
+
+    // Pushing a tag needs somewhere to push it to.
+    if let Some(remote) = repo.default_remote() {
+        sheet = sheet.item(
+            format!("Push to {remote}"),
+            Message::Repo(
+                index,
+                RepoMessage::TagPushRequested {
+                    remote,
+                    name: short.clone(),
+                },
+            ),
+        );
+    }
+
+    sheet = sheet.destructive(
+        "Delete",
+        Message::Repo(index, RepoMessage::TagDeleteRequested(short.clone())),
+    );
+
+    row![
+        button(container(label).padding(Padding::from([3, 12])))
+            .width(Fill)
+            .padding(0)
+            .style(move |_, status| item_style(palette, false, status))
+            .on_press(Message::Repo(
+                index,
+                RepoMessage::Selected(Selection::Commit(tag.target)),
+            )),
+        action_button("⋯", format!("Actions for {short}"), sheet, palette),
+    ]
+    .align_y(Center)
     .into()
 }
 

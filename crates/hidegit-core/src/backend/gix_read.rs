@@ -16,7 +16,7 @@ use crate::error::GitError;
 use crate::model::{
     Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
     DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind,
-    ObjectId, RefKind, RefName, Refs, RepoState, RevSpec, Signature, StashEntry, Tag,
+    ObjectId, RefKind, RefName, Refs, Remote, RepoState, RevSpec, Signature, StashEntry, Tag,
     WorktreeStatus,
 };
 
@@ -260,6 +260,52 @@ pub(crate) fn divergence(repo: &gix::Repository) -> Result<HashMap<String, Diver
         );
     }
 
+    Ok(out)
+}
+
+/// Every named remote, with its URLs.
+///
+/// Separate from [`Refs::remotes`], which holds remote-*tracking* branches: a
+/// remote that has been added but never fetched has no tracking refs at all, and
+/// leaving it out of the sidebar would be saying it does not exist.
+pub(crate) fn remotes(repo: &gix::Repository) -> Result<Vec<Remote>, GitError> {
+    let mut out = Vec::new();
+
+    for name in repo.remote_names() {
+        let name = name.as_bstr().to_str_lossy().into_owned();
+
+        // A remote whose URL will not parse is still a remote the user configured,
+        // and hiding it would make "why is my push failing" unanswerable. It is
+        // listed with whatever is there.
+        let Some(Ok(remote)) = repo.try_find_remote(name.as_str()) else {
+            tracing::warn!(%name, "listing a remote whose configuration would not parse");
+            out.push(Remote {
+                name,
+                fetch_url: String::new(),
+                push_url: None,
+            });
+            continue;
+        };
+
+        let url = |direction| {
+            remote
+                .url(direction)
+                .map(|url| url.to_bstring().to_str_lossy().into_owned())
+        };
+        let fetch_url = url(gix::remote::Direction::Fetch).unwrap_or_default();
+        let push = url(gix::remote::Direction::Push);
+
+        out.push(Remote {
+            name,
+            // Only set when it actually differs: gitoxide reports the fetch URL
+            // for both directions when no `pushurl` is configured, and showing
+            // the same string twice would imply a distinction that is not there.
+            push_url: push.filter(|push| *push != fetch_url),
+            fetch_url,
+        });
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
 }
 

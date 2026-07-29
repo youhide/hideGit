@@ -196,7 +196,7 @@ impl GitBackend for HybridBackend {
     }
 
     fn remotes(&self) -> Result<Vec<Remote>, GitError> {
-        Err(not_implemented("remotes", "M3"))
+        gix_read::remotes(&self.repo())
     }
 
     fn stashes(&self) -> Result<Vec<StashEntry>, GitError> {
@@ -446,24 +446,60 @@ impl GitBackend for HybridBackend {
         self.write(command.operands([name]))
     }
 
-    fn create_tag(&self, _spec: &TagSpec) -> Result<(), GitError> {
-        Err(not_implemented("create-tag", "M3"))
+    fn create_tag(&self, spec: &TagSpec) -> Result<(), GitError> {
+        self.guard_index()?;
+
+        let start = Self::start_point(&spec.at);
+        match &spec.message {
+            // Annotated: it becomes an object of its own, carrying a message and
+            // an identity. The message goes on stdin like a commit's, because
+            // arbitrary user text must never become an argv element.
+            Some(message) => {
+                GitCommand::new("tag")
+                    .args(["--annotate", "--file", "-"])
+                    // Git strips comment lines from a message read from a file.
+                    // hideGit's editor is not Git's, so a line the user typed
+                    // starting with `#` is theirs to keep.
+                    .arg("--cleanup=whitespace")
+                    .operands([spec.name.clone(), start])
+                    .cwd(&self.workdir)
+                    .takes_locks()
+                    .run_with_stdin(Some(message.as_bytes()))?;
+                self.invalidate();
+                Ok(())
+            }
+            // Lightweight: just a ref.
+            None => self.write(GitCommand::new("tag").operands([spec.name.clone(), start])),
+        }
     }
 
-    fn delete_tag(&self, _name: &str) -> Result<(), GitError> {
-        Err(not_implemented("delete-tag", "M3"))
+    fn delete_tag(&self, name: &str) -> Result<(), GitError> {
+        self.guard_index()?;
+        self.write(GitCommand::new("tag").arg("--delete").operands([name]))
     }
 
-    fn add_remote(&self, _name: &str, _url: &str) -> Result<(), GitError> {
-        Err(not_implemented("add-remote", "M3"))
+    fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError> {
+        self.guard_index()?;
+        // A URL comes from whatever the user pasted, so it goes after `--` like
+        // any other operand — one beginning with `-` must not become a flag.
+        self.write(GitCommand::new("remote").arg("add").operands([name, url]))
     }
 
-    fn set_remote_url(&self, _name: &str, _url: &str) -> Result<(), GitError> {
-        Err(not_implemented("set-remote-url", "M3"))
+    fn set_remote_url(&self, name: &str, url: &str) -> Result<(), GitError> {
+        self.guard_index()?;
+        self.write(
+            GitCommand::new("remote")
+                .arg("set-url")
+                .operands([name, url]),
+        )
     }
 
-    fn remove_remote(&self, _name: &str) -> Result<(), GitError> {
-        Err(not_implemented("remove-remote", "M3"))
+    fn remove_remote(&self, name: &str) -> Result<(), GitError> {
+        self.guard_index()?;
+        // Takes the remote's tracking refs and its `branch.*.remote` config with
+        // it, which is why the gitoxide snapshot has to be dropped afterwards —
+        // `write` does that.
+        self.write(GitCommand::new("remote").arg("remove").operands([name]))
     }
 
     fn fetch(
