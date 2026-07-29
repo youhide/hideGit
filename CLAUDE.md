@@ -19,9 +19,10 @@ GUI toolkit, licensed GPL-3.0. Alongside the usual repository operations it prov
 alerts: native desktop notifications for review requests, CI status changes and newly conflicting
 PRs.
 
-**Current status: pre-alpha.** M1 has landed: the workspace, CI, the `gix` read backend, the
-commit graph, and a read-only viewer that opens a repository, scrolls its history and shows any
-commit's diff. Nothing writes yet — staging and commit are M2, remotes are M3. Check
+**Current status: pre-alpha.** M1 and M2 have landed: the workspace, CI, the `gix` read backend,
+the commit graph, a read-only viewer, and the working directory — status, staging by file, hunk
+and line, discard, commit, and a filesystem watcher. Nothing touches a remote yet; that is M3.
+Check
 [ROADMAP.md](./docs/ROADMAP.md) before assuming a feature exists, and check the code before
 referring to a module.
 

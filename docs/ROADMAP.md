@@ -9,7 +9,7 @@ behaviour someone can check, not a feeling of completeness.
 |---|---|---|
 | ✅ | [M0 — Foundation](#m0--foundation) | Decide and document |
 | ✅ | [M1 — Scaffold & read-only viewer](#m1--scaffold--read-only-viewer) | See history |
-| ⬜ | [M2 — Working directory](#m2--working-directory) | Make commits |
+| ✅ | [M2 — Working directory](#m2--working-directory) | Make commits |
 | ⬜ | [M3 — Branches & remotes](#m3--branches--remotes) | Daily driver |
 | ⬜ | [M4 — Pull request alerts](#m4--pull-request-alerts) | Forge integration |
 | ⬜ | [M5 — History operations](#m5--history-operations) | Stop dropping to a terminal |
@@ -90,11 +90,25 @@ The commit loop. After this, hideGit is useful for real work on a single branch.
 - Filesystem watcher driving automatic status refresh, debounced
 - Conflicted-file detection and `RepoState` awareness (actions disabled mid-operation)
 
-**Done when:** you can make a complete commit — including staging only part of a file — without
-leaving the app, and the file list updates on its own when you edit a file in your editor.
+**Status: complete.** You can make a complete commit — including staging only part of a file —
+without leaving the app, and the file list updates on its own when a file changes outside it.
+Verified against real repositories rather than only in tests: staging one hunk of a two-hunk file
+leaves the other in `git diff`, staging two lines of a four-line change leaves exactly the other
+two, and `git add -p` produces the same index.
 
-Hunk staging is the quality bar for this milestone. If it is fiddlier than the best terminal or
-GUI tools people already use, it is not done.
+Two things fell out of building it that the plan did not anticipate.
+
+`RepositoryChanged` used to reopen the repository, and opening *pushes a new entry* — so every
+write appended a second copy of the repository and threw away the user's scroll position. It now
+rereads in place, restoring the viewport by commit id. Left alone, the watcher would have made
+that unbearable.
+
+**`Space` is not bound to stage/unstage**, despite the shortcut table. iced 0.14 keeps text-input
+focus inside the widget — not observable, not settable — and wrapping a field in a `mouse_area` to
+catch the click that grants focus swallows that click, so the field never focuses at all. A global
+binding therefore cannot know the commit message field is being typed into until its first
+keystroke has already arrived, and `Space` is the one bare key whose leak would stage a file. It
+waits for M6's keyboard-navigation work. `j`/`k` stay bound because their leak moves a highlight.
 
 ---
 

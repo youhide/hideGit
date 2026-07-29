@@ -10,6 +10,7 @@ pub mod format;
 pub mod message;
 pub mod state;
 pub mod theme;
+pub mod watcher;
 
 pub mod screen {
     pub mod repository;

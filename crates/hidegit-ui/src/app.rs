@@ -24,7 +24,7 @@ use crate::state::{
     App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo, PAGE_SIZE,
     Pane, ROW_HEIGHT, Screen, Section, Selection,
 };
-use crate::{screen, widget};
+use crate::{screen, watcher, widget};
 
 /// The application, plus the bits of view state that are not domain state.
 #[derive(Debug, Default)]
@@ -745,20 +745,33 @@ impl Hidegit {
                 .is_some_and(|repo| repo.draft.editing),
         );
 
-        keyboard::listen()
-            .with(context)
-            .map(|((active, confirming, editing), event)| {
-                let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-                    return Message::ToastDismissed(u64::MAX);
-                };
-                // A modal question owns the keyboard while it is up. Letting
-                // `Space` stage something behind a "discard?" dialog would be
-                // the worst possible moment to act on a stray key.
-                if confirming {
-                    return modal_shortcut(&key);
-                }
-                shortcut(&key, modifiers, active, editing)
-            })
+        let keys =
+            keyboard::listen()
+                .with(context)
+                .map(|((active, confirming, editing), event)| {
+                    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                        return Message::ToastDismissed(u64::MAX);
+                    };
+                    // A modal question owns the keyboard while it is up. Letting
+                    // `Space` stage something behind a "discard?" dialog would be
+                    // the worst possible moment to act on a stray key.
+                    if confirming {
+                        return modal_shortcut(&key);
+                    }
+                    shortcut(&key, modifiers, active, editing)
+                });
+
+        // One watch per open repository, so a change made in an editor or by a
+        // `git` command in a terminal refreshes the view on its own.
+        let watches = self.app.repos.iter().enumerate().map(|(index, repo)| {
+            watcher::subscribe(
+                index,
+                repo.path.clone(),
+                repo.backend.git_dir().to_path_buf(),
+            )
+        });
+
+        Subscription::batch(std::iter::once(keys).chain(watches))
     }
 }
 

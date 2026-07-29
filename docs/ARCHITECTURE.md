@@ -3,9 +3,9 @@
 How hideGit is put together, and why. Decisions summarised here are argued in full in the
 [ADRs](./adr/README.md).
 
-**Status:** M1 has landed, so the read half of this document describes code that exists. The write
-half — everything from `stage` onward — is still design: those methods are declared and return
-`NotImplementedYet` with the milestone they arrive in.
+**Status:** M1 and M2 have landed, so the reads and the working-directory writes described here
+are code that exists. Everything that touches a remote or rewrites history is still design: those
+methods are declared and return `NotImplementedYet` with the milestone they arrive in.
 
 ## Contents
 
@@ -83,6 +83,7 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `tracing` | 0.1 | Structured logging | M1 |
 | `thiserror` | 2 | Error types in libraries | M1 |
 | `criterion` | 0.7 | Benchmarks (dev only) | M1 |
+| `notify-debouncer-full` | 0.6 | Filesystem watching behind automatic status refresh | M2 |
 | `octocrab` | 0.54 | GitHub API | M4 |
 | `keyring` | — | OS keychain access for forge tokens | M4 |
 | `notify-rust` | — | Native desktop notifications | M4 |
@@ -122,11 +123,11 @@ pub trait GitBackend: Send + Sync + Debug {
     fn invalidate(&self);
 
     // ---- write: git CLI -----------------------------------------------
-    fn stage(&self, paths: &[&Path]) -> Result<(), GitError>;                        // M2
-    fn stage_patch(&self, patch: &Patch) -> Result<(), GitError>;                    // M2
-    fn unstage(&self, paths: &[&Path]) -> Result<(), GitError>;                      // M2
-    fn discard(&self, paths: &[&Path]) -> Result<(), GitError>;                      // M2
-    fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;  // M2
+    fn stage(&self, paths: &[&Path]) -> Result<(), GitError>;
+    fn stage_patch(&self, patch: &Patch) -> Result<(), GitError>;
+    fn unstage(&self, paths: &[&Path]) -> Result<(), GitError>;
+    fn discard(&self, paths: &[&Path]) -> Result<(), GitError>;
+    fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;
     fn checkout(&self, target: &CheckoutTarget) -> Result<(), GitError>;             // M3
     fn fetch(&self, remote: &str, p: &dyn ProgressSink) -> Result<FetchOutcome, GitError>;   // M3
     fn push(&self, remote: &str, spec: &PushSpec, p: &dyn ProgressSink) -> Result<(), GitError>;  // M3
@@ -139,7 +140,12 @@ pub trait GitBackend: Send + Sync + Debug {
 
 The whole surface is declared from M1 so the read/write split is visible in one file, and a method
 whose milestone has not landed returns `GitError::NotImplementedYet { operation, milestone }`
-rather than being absent. The types the write half takes are provisional: each is designed
+rather than being absent.
+
+Every write goes through one helper that does the two things a write owes the rest of the
+application: it refuses to start while `index.lock` exists — reported, never deleted, because
+whatever holds it may still be working — and it drops the memoised walk so the next read sees what
+just happened. The types the write half takes are provisional: each is designed
 properly in the milestone that implements it.
 
 `log` is paged rather than limited because the graph only lays out the rows around the viewport. A
