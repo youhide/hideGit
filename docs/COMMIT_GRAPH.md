@@ -39,10 +39,11 @@ pub struct GraphLayout {
 }
 
 pub struct GraphRow {
-    pub commit: ObjectId,
-    pub lane:   usize,            // column this commit's node sits in
-    pub kind:   NodeKind,         // Normal | Merge | Root | Boundary
-    pub edges:  Vec<Edge>,        // everything drawn in this row's vertical band
+    pub commit:   ObjectId,
+    pub lane:     usize,          // column this commit's node sits in
+    pub kind:     NodeKind,       // Normal | Merge | Root | Boundary
+    pub incoming: bool,           // a lane was already descending into this commit
+    pub edges:    Vec<Edge>,      // everything drawn in this row's vertical band
 }
 
 pub struct Edge {
@@ -58,6 +59,10 @@ pub enum EdgeRole {
     Close,      // a lane terminating here (its awaited commit arrived)
 }
 ```
+
+`incoming` exists because edges describe what *leaves* a node. Without it the top half of a node's
+own lane has nothing describing it, and a renderer would leave a gap above every commit that is not
+a branch tip.
 
 `Boundary` marks a commit whose parents are outside the loaded window — it is drawn with a fade
 rather than a line into nothing, so a partially loaded history does not look like a truncated one.
@@ -171,8 +176,23 @@ cost the arithmetic scroll mapping, which is what keeps scrolling a 100,000-comm
 
 **Target: 60fps scrolling on a 100,000-commit repository.**
 
-That is a target, not a measurement. It must be benchmarked as soon as M1 renders a graph — not
-discovered at M6.
+Measured, not assumed. `cargo bench -p hidegit-core` builds a 100,000-commit repository with
+`git fast-import` and times the layout against it. On an Apple M4 Max, macOS 15, release build:
+
+| What | Time | When it happens |
+|---|---|---|
+| **Lay out one visible window at row 50,000** | **52 µs** | Every frame — 0.3% of a 60fps budget |
+| The same window, with checkpoints skipped | 23.9 ms | Would miss the frame budget outright |
+| Walk and topologically order 100,000 commits | 1.01 s | Once, when a repository opens |
+| Build checkpoints over 100,000 commits | 47.6 ms | Once per loaded page |
+| Hydrate one 2,000-commit page into full commits | 14.8 ms | Once per loaded page |
+
+The first row is the one that decides whether scrolling is smooth. The gap between it and the
+second is the entire justification for checkpoints: without them the per-frame cost grows with how
+far down the history you have scrolled, and by row 50,000 it is 450× over budget.
+
+Everything else runs off the UI thread. The 1.01s ordering pass is the cost of opening a repository
+that size — it is the first-screen latency, and the thing to attack if opening feels slow.
 
 Strategies:
 

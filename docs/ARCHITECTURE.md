@@ -3,8 +3,9 @@
 How hideGit is put together, and why. Decisions summarised here are argued in full in the
 [ADRs](./adr/README.md).
 
-**Status:** this describes the target design. No code exists yet — the workspace is the first
-deliverable of [M1](./ROADMAP.md#m1--scaffold--read-only-viewer).
+**Status:** M1 has landed, so the read half of this document describes code that exists. The write
+half — everything from `stage` onward — is still design: those methods are declared and return
+`NotImplementedYet` with the milestone they arrive in.
 
 ## Contents
 
@@ -70,23 +71,28 @@ data and let `hidegit-ui` decide, not to reach upward.
 
 ### Third-party crates
 
-| Crate | Version | Used for |
-|---|---|---|
-| `iced` | 0.14 | GUI toolkit |
-| `gix` | 0.86 | All Git read operations |
-| `octocrab` | 0.54 | GitHub API |
-| `tokio` | latest | Async runtime; blocking pool for Git work |
-| `keyring` | latest | OS keychain access for forge tokens |
-| `notify-rust` | latest | Native desktop notifications |
-| `rfd` | latest | Native file/folder pickers |
-| `directories` | latest | Platform config, cache and data paths |
-| `serde` + `toml` | latest | Configuration |
-| `tracing` | latest | Structured logging |
-| `thiserror` | latest | Error types in libraries |
+| Crate | Version | Used for | Since |
+|---|---|---|---|
+| `iced` | 0.14 | GUI toolkit | M1 |
+| `gix` | 0.86 | All Git read operations | M1 |
+| `tokio` | 1 | Blocking pool for Git work | M1 |
+| `rfd` | 0.15 | Native file/folder pickers and startup dialogs | M1 |
+| `directories` | 6 | Platform config, cache and data paths | M1 |
+| `serde` + `toml` | 1 / 0.9 | Configuration | M1 |
+| `time` | 0.3 | Commit timestamps with their recorded offset | M1 |
+| `tracing` | 0.1 | Structured logging | M1 |
+| `thiserror` | 2 | Error types in libraries | M1 |
+| `criterion` | 0.7 | Benchmarks (dev only) | M1 |
+| `octocrab` | 0.54 | GitHub API | M4 |
+| `keyring` | — | OS keychain access for forge tokens | M4 |
+| `notify-rust` | — | Native desktop notifications | M4 |
 
-Only the four load-bearing versions are pinned here. The rest are resolved at `cargo add` time in
-M1 — recording numbers now for crates no code imports yet would only produce documentation that is
-wrong before it is used.
+Versions are pinned in the workspace `Cargo.toml` and inherited by every crate, so a bump happens
+in one place. Crates whose milestone has not arrived carry no version here — recording a number
+for something no code imports produces documentation that is wrong before it is used.
+
+`gix` is taken with its default features and **no network transport**: gitoxide is the read half
+only, and everything that talks to a remote shells out to `git`.
 
 **`git2`/libgit2 is deliberately absent.** It was evaluated and rejected; see
 [ADR-0002](./adr/0002-git-backend-hybrid.md). Adding it back is a decision that needs a superseding ADR.
@@ -97,32 +103,55 @@ All Git access goes through one trait. There is exactly one implementation, `Hyb
 routes each method to either `gix` or the `git` binary.
 
 ```rust
-pub trait GitBackend: Send + Sync {
-    // ---- read: gix ----------------------------------------------------
+pub trait GitBackend: Send + Sync + Debug {
     fn open(path: &Path) -> Result<Self, GitError> where Self: Sized;
+
+    // ---- read: gix ----------------------------------------------------
+    fn workdir(&self) -> &Path;
+    fn git_dir(&self) -> &Path;
     fn head(&self) -> Result<Head, GitError>;
     fn refs(&self) -> Result<Refs, GitError>;
-    fn log(&self, spec: &RevSpec, limit: usize) -> Result<Vec<Commit>, GitError>;
+    fn repo_state(&self) -> Result<RepoState, GitError>;
+    fn log(&self, spec: &RevSpec, page: LogPage) -> Result<Vec<Commit>, GitError>;
+    fn commit_count(&self, spec: &RevSpec) -> Result<usize, GitError>;
     fn commit(&self, id: ObjectId) -> Result<CommitDetail, GitError>;
-    fn status(&self) -> Result<WorktreeStatus, GitError>;
-    fn diff(&self, target: DiffTarget) -> Result<Diff, GitError>;
-    fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;
+    fn diff(&self, target: &DiffTarget) -> Result<Diff, GitError>;
     fn read_blob(&self, id: ObjectId) -> Result<Blob, GitError>;
+    fn status(&self) -> Result<WorktreeStatus, GitError>;          // M2
+    fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;  // M6
+    fn invalidate(&self);
 
     // ---- write: git CLI -----------------------------------------------
-    fn stage(&self, paths: &[PathBuf]) -> Result<(), GitError>;
-    fn stage_hunk(&self, patch: &Patch) -> Result<(), GitError>;
-    fn unstage(&self, paths: &[PathBuf]) -> Result<(), GitError>;
-    fn create_commit(&self, msg: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;
-    fn fetch(&self, remote: &str, p: Progress) -> Result<FetchOutcome, GitError>;
-    fn push(&self, remote: &str, spec: &PushSpec, p: Progress) -> Result<(), GitError>;
-    fn merge(&self, from: &RefName, opts: MergeOpts) -> Result<MergeOutcome, GitError>;
-    fn rebase(&self, onto: &RefName, plan: RebasePlan) -> Result<RebaseOutcome, GitError>;
-    fn cherry_pick(&self, ids: &[ObjectId]) -> Result<PickOutcome, GitError>;
-    fn checkout(&self, target: &CheckoutTarget) -> Result<(), GitError>;
-    fn stash(&self, op: StashOp) -> Result<StashOutcome, GitError>;
+    fn stage(&self, paths: &[&Path]) -> Result<(), GitError>;                        // M2
+    fn stage_patch(&self, patch: &Patch) -> Result<(), GitError>;                    // M2
+    fn unstage(&self, paths: &[&Path]) -> Result<(), GitError>;                      // M2
+    fn discard(&self, paths: &[&Path]) -> Result<(), GitError>;                      // M2
+    fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;  // M2
+    fn checkout(&self, target: &CheckoutTarget) -> Result<(), GitError>;             // M3
+    fn fetch(&self, remote: &str, p: &dyn ProgressSink) -> Result<FetchOutcome, GitError>;   // M3
+    fn push(&self, remote: &str, spec: &PushSpec, p: &dyn ProgressSink) -> Result<(), GitError>;  // M3
+    fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError>;                 // M3
+    fn merge(&self, from: &str, opts: &MergeOpts) -> Result<MergeOutcome, GitError>; // M5
+    fn rebase(&self, onto: &str, plan: &RebasePlan) -> Result<SequenceOutcome, GitError>;    // M5
+    fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError>;    // M5
 }
 ```
+
+The whole surface is declared from M1 so the read/write split is visible in one file, and a method
+whose milestone has not landed returns `GitError::NotImplementedYet { operation, milestone }`
+rather than being absent. The types the write half takes are provisional: each is designed
+properly in the milestone that implements it.
+
+`log` is paged rather than limited because the graph only lays out the rows around the viewport. A
+walk's topological order is memoised — it is the expensive part of drawing a graph and it does not
+change until the repository does — and only the requested page is hydrated into full `Commit`
+values. `invalidate` is what says that memo is stale.
+
+**Topological order is computed by hideGit, not by gitoxide.** `gix` offers breadth-first and
+date-ordered traversal but not `--topo-order`, so the date-ordered walk is corrected afterwards by
+Kahn's algorithm with commit date as the tiebreak. Date order alone is not sufficient: clock skew
+and rebases both produce commits whose timestamps predate their children, which would draw edges
+pointing upward.
 
 ### Why a trait with one implementation
 
@@ -205,7 +234,7 @@ pub struct WorktreeStatus {
     pub unstaged: Vec<FileChange>,
     pub untracked: Vec<PathBuf>,
     pub conflicted: Vec<Conflict>,
-    pub state: RepoState,     // Clean | Merging | Rebasing | CherryPicking | Bisecting
+    pub state: RepoState,  // Clean | Merging | Rebasing | CherryPicking | Reverting | Bisecting
 }
 
 pub struct Diff {
@@ -320,9 +349,10 @@ pub enum GitError {
     Conflict(Vec<Conflict>),                       // expected outcome, not a failure
     IndexLocked(PathBuf),
     Auth(AuthError),
-    Command { argv: Vec<String>, status: i32, stderr: String },
-    Gix(#[from] gix::Error),
+    Command { argv: Vec<String>, status: Option<i32>, stderr: String },
+    Gix { context: &'static str, source: Box<dyn Error + Send + Sync> },
     Io(#[from] std::io::Error),
+    NotImplementedYet { operation: &'static str, milestone: &'static str },
 }
 ```
 
@@ -333,7 +363,9 @@ Three of these deserve emphasis:
 - **`GitNotFound`** is checked once at startup, with a clear message pointing at the requirement,
   rather than surfacing as a mystery failure the first time someone pushes.
 - **`Command`** carries the argument vector and raw stderr so a bug report contains what is needed
-  to reproduce it.
+  to reproduce it. `status` is `None` when the process was killed by a signal.
+- **`Gix`** boxes its source and names the operation, because gitoxide has no crate-wide error type
+  — each operation defines its own.
 
 ## Configuration and state
 
@@ -380,5 +412,8 @@ Stated plainly, because a reader should meet these here rather than discover the
    when the second arrives. Expect to revise it.
 4. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
    expected. Isolating iced types to `hidegit-ui` keeps that blast radius to one crate.
-5. **Very large repositories are unproven.** The 60fps-at-100k-commits target is a target, not a
-   measurement. It needs benchmarking as soon as M1 renders a graph, not at M6.
+5. **Opening a very large repository takes about a second.** Ordering 100,000 commits
+   topologically measures at 1.01s, and it happens before the first screen appears. Scrolling is
+   fast once open — laying out a visible window costs 52µs — but the initial pass is real, and
+   nothing yet shows progress during it. Numbers and method in
+   [COMMIT_GRAPH.md](./COMMIT_GRAPH.md#performance).

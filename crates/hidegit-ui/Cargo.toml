@@ -1,0 +1,21 @@
+[package]
+name = "hidegit-ui"
+description = "iced screens, widgets, theme and the commit-graph canvas for hideGit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+hidegit-core = { workspace = true, features = ["fake"] }
+hidegit-forge.workspace = true
+iced = { workspace = true, features = ["canvas", "tokio", "advanced"] }
+rfd = "0.15"
+tokio = { version = "1", features = ["rt"] }
+time = { workspace = true, features = ["formatting", "local-offset", "macros"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

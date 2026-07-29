@@ -19,9 +19,11 @@ GUI toolkit, licensed GPL-3.0. Alongside the usual repository operations it prov
 alerts: native desktop notifications for review requests, CI status changes and newly conflicting
 PRs.
 
-**Current status: pre-alpha, documentation only.** There is no `Cargo.toml` and no Rust code yet.
-The workspace is the first deliverable of M1 in [ROADMAP.md](./docs/ROADMAP.md). Do not assume
-code exists — check before referring to a module or a command.
+**Current status: pre-alpha.** M1 has landed: the workspace, CI, the `gix` read backend, the
+commit graph, and a read-only viewer that opens a repository, scrolls its history and shows any
+commit's diff. Nothing writes yet — staging and commit are M2, remotes are M3. Check
+[ROADMAP.md](./docs/ROADMAP.md) before assuming a feature exists, and check the code before
+referring to a module.
 
 ## Read before making architectural changes
 
@@ -76,8 +78,9 @@ cargo test --workspace
 cargo run
 ```
 
-Clippy warnings are errors. All four will work once the M1 workspace lands; today they fail
-because there is nothing to build.
+Clippy warnings are errors. `cargo bench -p hidegit-core` times the graph layout against a
+100,000-commit repository; the numbers to beat are in
+[COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance).
 
 ## Conventions
 
