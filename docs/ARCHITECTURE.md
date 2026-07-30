@@ -85,6 +85,7 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `thiserror` | 2 | Error types in libraries | M1 |
 | `criterion` | 0.7 | Benchmarks (dev only) | M1 |
 | `notify-debouncer-full` | 0.6 | Filesystem watching behind automatic status refresh | M2 |
+| `async-trait` | 0.1 | `Forge`'s async methods, which have to be dyn-compatible | M4 |
 | `octocrab` | 0.54 | GitHub API | M4 |
 | `keyring` | — | OS keychain access for forge tokens | M4 |
 | `notify-rust` | — | Native desktop notifications | M4 |
@@ -392,14 +393,14 @@ provider.
 
 ```rust
 #[async_trait]
-pub trait Forge: Send + Sync {
+pub trait Forge: Send + Sync + Debug {
     fn id(&self) -> ForgeId;
     fn detect(remote_url: &str) -> Option<RepoRef> where Self: Sized;
 
     async fn authenticate(&self, flow: AuthFlow) -> Result<Identity, ForgeError>;
     async fn current_user(&self) -> Result<Identity, ForgeError>;
 
-    /// `since` carries the cache validator from the previous poll.
+    /// `since` carries the cursor from the previous poll.
     async fn pull_requests(&self, repo: &RepoRef, since: Option<PollCursor>)
         -> Result<PollResult<Vec<PullRequest>>, ForgeError>;
     async fn pull_request(&self, repo: &RepoRef, number: u64)
@@ -407,18 +408,44 @@ pub trait Forge: Send + Sync {
     async fn create_pull_request(&self, repo: &RepoRef, draft: NewPullRequest)
         -> Result<PullRequest, ForgeError>;
 
-    fn web_url(&self, repo: &RepoRef, target: WebTarget) -> Url;
+    fn web_url(&self, repo: &RepoRef, target: WebTarget) -> String;
 }
 
 pub struct PollResult<T> {
     pub data:   Option<T>,     // None ⇒ unchanged since `cursor`
-    pub cursor: PollCursor,    // ETag or equivalent, fed into the next poll
-    pub budget: RateBudget,    // remaining requests and reset time
+    pub cursor: PollCursor,    // opaque, provider-defined; fed into the next poll
+    pub budget: RateBudget,    // remaining budget and reset time
 }
 ```
 
-`PollResult` is shaped this way because rate limits and conditional requests are not details a
-provider can hide — the poll scheduler needs both to behave.
+`PollResult` is shaped this way because rate limits are not a detail a provider can hide — the poll
+scheduler widens its interval on the budget, so it rides on every result rather than being asked
+for separately.
+
+**`PollCursor` is opaque rather than an `ETag` string.** The GitHub implementation polls over
+GraphQL, which has no conditional requests, and always returns an empty cursor; a REST-based forge
+would put an `ETag` in it. Keeping the shape provider-defined is what lets both exist behind one
+trait. See [ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md).
+
+`AuthFlow::Device` carries a callback rather than returning twice, because the flow is not one
+round trip: the user code has to reach the screen before polling for the token starts, and the
+caller is what knows how to put it there. `authenticate` still returns once, with an `Identity`, so
+nothing outside `hidegit-forge` has to know the flow has two halves.
+
+### Detecting a forge repository
+
+`RepoRef` is read out of a remote's fetch URL, covering every shape Git writes one in: `https`,
+`http`, `git` and `ssh` URLs, and the scp-like `git@github.com:owner/repo.git`. That last form is
+why the parser is hand-written rather than delegated to a URL crate — it has no scheme and its
+colon separates a path rather than a port, so a conforming parser rejects it.
+
+**Remote URLs come from repositories that may have been cloned from anywhere**, and an owner or
+repository name read from one is interpolated into an API request. Names are therefore held to a
+narrower character set than any provider's real rule, and anything unrecognised returns `None`
+rather than being sanitised into something acceptable. A path that is not exactly two segments is
+refused too: a GitLab subgroup path is three or more, and silently reading its last two would name
+a repository that does not exist. Any credential embedded in the URL is dropped and never reaches
+a `RepoRef`, which is logged and displayed.
 
 ### Authentication and tokens
 
@@ -436,9 +463,16 @@ with no Secret Service), forge features are disabled rather than falling back to
 
 ### Polling
 
-Only repositories currently open in hideGit are polled. Every request sends `If-None-Match` with
-the previous `ETag`; a `304 Not Modified` does not count against GitHub's rate limit, which is what
-makes a short interval affordable at all.
+Only repositories currently open in hideGit are polled. **One GraphQL query per repository per
+poll** returns every field the sidebar and every notification need — review decision, check rollup,
+mergeable state — whatever the number of open pull requests.
+
+This replaces an earlier design that used conditional REST requests and free `304`s. It had to go
+because a check run completing does not modify the pull request it belongs to, so an `ETag` on the
+pull request stays valid across the entire life of a CI run and `ChecksFailed` would never fire.
+The full reasoning and the rejected alternatives are in
+[ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md), which also records why the query's
+nested page sizes are a rate-limit decision rather than a display one.
 
 | Condition | Interval |
 |---|---|
@@ -446,10 +480,11 @@ makes a short interval affordable at all.
 | Window focused, PR panel open | 60 seconds |
 | Application in background | 15 minutes |
 
-`x-ratelimit-remaining` and `x-ratelimit-reset` are read on every response: below 20% remaining the
-interval widens, below 5% polling stops until reset and says so in the UI. `Retry-After` is
-honoured exactly. Network failures back off exponentially from 30s to a 30-minute ceiling with
-jitter, and never produce a notification — a failed poll updates a status indicator.
+The budget is read from the `rateLimit` block inside each response, and from
+`x-ratelimit-remaining` / `x-ratelimit-reset` alongside it: below 20% remaining the interval
+widens, below 5% polling stops until reset and says so in the UI. `Retry-After` is honoured
+exactly. Network failures back off exponentially from 30s to a 30-minute ceiling with jitter, and
+never produce a notification — a failed poll updates a status indicator.
 
 Notifications fire on *transitions*, not on state, and the first poll after startup establishes a
 baseline silently so launching the app never produces a burst of alerts for things already known.

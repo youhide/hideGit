@@ -8,11 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# M1 ships this crate as a compiling stub: the `Forge` trait and its
-# provider-neutral data model, with no implementation and no network.
-# `octocrab`, `keyring` and the polling subscription arrive in M4.
 [dependencies]
 hidegit-core.workspace = true
+# The UI holds a `dyn Forge`, and native `async fn` in a trait is not
+# dyn-compatible. See the trait's own note in `lib.rs`.
+async-trait = "0.1"
 thiserror.workspace = true
 time.workspace = true
 
