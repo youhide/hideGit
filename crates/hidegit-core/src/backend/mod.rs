@@ -25,18 +25,20 @@ mod fake;
 pub use hybrid::HybridBackend;
 
 #[cfg(any(test, feature = "fake"))]
-pub use fake::FakeBackend;
+pub use fake::{Failure, FakeBackend, WriteCall};
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::error::GitError;
 use crate::model::{
-    Blob, Commit, CommitDetail, Diff, DiffTarget, Head, LogPage, ObjectId, Refs, RepoState,
-    RevSpec, WorktreeStatus,
+    Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, Refs,
+    Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
 };
 use crate::ops::{
-    Blame, CheckoutTarget, CommitOpts, FetchOutcome, MergeOpts, MergeOutcome, Patch, ProgressSink,
-    PushSpec, RebasePlan, SequenceOutcome, StashOp, StashOutcome,
+    Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
+    MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome, PushSpec, RebasePlan,
+    SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
 };
 
 /// Everything hideGit can ask of a repository.
@@ -89,51 +91,117 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
 
     fn read_blob(&self, id: ObjectId) -> Result<Blob, GitError>;
 
-    /// Working directory state. Lands in M2.
+    /// Working directory state.
     fn status(&self) -> Result<WorktreeStatus, GitError>;
+
+    /// The remotes `git remote` would list, with their URLs.
+    ///
+    /// Separate from [`Refs::remotes`], which holds remote-*tracking* branches: a
+    /// remote that has been added but never fetched has no tracking refs, and
+    /// leaving it out would be saying it does not exist.
+    fn remotes(&self) -> Result<Vec<Remote>, GitError>;
+
+    /// The stash, newest entry first.
+    ///
+    /// An empty vector for a repository that has never stashed — `refs/stash`
+    /// simply does not exist, which is not an error.
+    fn stashes(&self) -> Result<Vec<StashEntry>, GitError>;
+
+    /// Ahead/behind for every local branch that has an upstream, keyed by the
+    /// branch's full ref name.
+    ///
+    /// One call rather than one per branch, so the UI spends one task and one
+    /// message on it. Deliberately **not** folded into [`GitBackend::refs`]: this
+    /// costs a commit walk per branch, `refs` is reread on every file save
+    /// through the filesystem watcher, and ahead/behind only changes when a ref
+    /// moves.
+    fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError>;
 
     /// Line-by-line authorship. Lands in M6.
     fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;
 
-    /// Drops any cached traversal, after something changed the repository.
+    /// Drops everything cached about the repository, after something changed it.
     ///
-    /// The history walk is memoised because computing topological order is the
-    /// expensive part of drawing a graph; this is the one call that says the
-    /// memo is stale.
+    /// Two things are cached, and both have to go. The history walk is memoised
+    /// because computing topological order is the expensive part of drawing a
+    /// graph. And gitoxide caches `.git/config` from the moment a repository is
+    /// opened, so a `git` command that rewrites it — a branch rename, a remote
+    /// change, `push --set-upstream` — leaves the read side describing the old
+    /// file. That second one fails quietly: an upstream simply disappears.
     fn invalidate(&self);
 
     // ---- write: git CLI ----------------------------------------------
 
-    /// Lands in M2.
     fn stage(&self, paths: &[&Path]) -> Result<(), GitError>;
 
-    /// Lands in M2.
+    /// Applies a patch to the index, which is how hunk- and line-level staging is
+    /// expressed — and, applied in reverse, how unstaging is.
     fn stage_patch(&self, patch: &Patch) -> Result<(), GitError>;
 
-    /// Lands in M2.
     fn unstage(&self, paths: &[&Path]) -> Result<(), GitError>;
 
-    /// Lands in M2.
     fn discard(&self, paths: &[&Path]) -> Result<(), GitError>;
 
-    /// Lands in M2.
+    /// Returns the new commit's id, read back rather than assumed: a hook or a
+    /// signature can change what was actually recorded.
     fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;
 
-    /// Lands in M3.
+    /// Switches `HEAD`, and the working tree with it.
+    ///
+    /// Fails rather than discarding anything when local changes would be
+    /// overwritten. hideGit does not stash on the user's behalf: that moves their
+    /// work somewhere they did not ask for.
     fn checkout(&self, target: &CheckoutTarget) -> Result<(), GitError>;
 
-    /// Lands in M3.
-    fn fetch(&self, remote: &str, progress: &dyn ProgressSink) -> Result<FetchOutcome, GitError>;
+    /// Creates a branch without switching to it.
+    fn create_branch(&self, name: &str, from: &StartPoint) -> Result<(), GitError>;
 
-    /// Lands in M3.
+    fn rename_branch(&self, from: &str, to: &str) -> Result<(), GitError>;
+
+    /// Deletes a branch. `force` is what allows deleting an unmerged one, and it
+    /// is never a silent retry after the safe form was refused.
+    fn delete_branch(&self, name: &str, force: bool) -> Result<(), GitError>;
+
+    fn create_tag(&self, spec: &TagSpec) -> Result<(), GitError>;
+
+    fn delete_tag(&self, name: &str) -> Result<(), GitError>;
+
+    fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError>;
+
+    fn set_remote_url(&self, name: &str, url: &str) -> Result<(), GitError>;
+
+    fn remove_remote(&self, name: &str) -> Result<(), GitError>;
+
+    /// Updates remote-tracking refs. Reports progress and can be cancelled.
+    ///
+    /// On the CLI side despite gitoxide implementing fetch, because fetch and
+    /// push share credential handling and two authentication paths is not worth
+    /// it. See `docs/adr/0002-git-backend-hybrid.md`.
+    fn fetch(
+        &self,
+        remote: &str,
+        opts: &FetchOpts,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<FetchOutcome, GitError>;
+
+    /// Fetches and integrates, using the user's own `pull.rebase` and `pull.ff`
+    /// configuration rather than a strategy hideGit chose for them.
+    fn pull(
+        &self,
+        opts: &PullOpts,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<PullOutcome, GitError>;
+
     fn push(
         &self,
         remote: &str,
         spec: &PushSpec,
         progress: &dyn ProgressSink,
-    ) -> Result<(), GitError>;
+        cancel: &CancelToken,
+    ) -> Result<PushOutcome, GitError>;
 
-    /// Lands in M3.
     fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError>;
 
     /// Lands in M5.

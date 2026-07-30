@@ -134,6 +134,76 @@ pub struct Branch {
     pub upstream: Option<String>,
 }
 
+/// How far a branch has drifted from the upstream it tracks.
+///
+/// Deliberately not a field on [`Branch`]: computing it costs a commit walk per
+/// branch, and [`crate::GitBackend::refs`] runs on every file save through the
+/// filesystem watcher. Ahead/behind only changes when a ref moves, so it is read
+/// separately and cached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Divergence {
+    /// Commits on the branch that the upstream does not have.
+    pub ahead: usize,
+    /// Commits on the upstream that the branch does not have.
+    pub behind: usize,
+}
+
+impl Divergence {
+    /// True when the branch and its upstream point at the same commit.
+    pub fn is_in_sync(self) -> bool {
+        self.ahead == 0 && self.behind == 0
+    }
+
+    /// True when both sides have commits the other does not — a push will be
+    /// rejected and a pull will have to merge or rebase.
+    pub fn has_diverged(self) -> bool {
+        self.ahead > 0 && self.behind > 0
+    }
+}
+
+/// A named remote, as `git remote` lists it.
+///
+/// Distinct from the remote-tracking branches in [`Refs::remotes`]: a remote
+/// that has been added but never fetched has no tracking refs at all, and
+/// leaving it out of the sidebar would be saying it does not exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remote {
+    pub name: String,
+    pub fetch_url: String,
+    /// Set only when `remote.<name>.pushurl` differs from the fetch URL.
+    pub push_url: Option<String>,
+}
+
+impl Remote {
+    /// The remote in one line, for a heading.
+    ///
+    /// Names both URLs when they differ, because "why did my push go somewhere
+    /// else" is exactly the question a separate `pushurl` answers.
+    pub fn url_summary(&self) -> String {
+        match &self.push_url {
+            Some(push) => format!("{} → {} (push {push})", self.name, self.fetch_url),
+            None => format!("{} → {}", self.name, self.fetch_url),
+        }
+    }
+}
+
+/// One entry on the stash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StashEntry {
+    /// Position from the top, which is the `n` in the `stash@{n}` that every
+    /// stash subcommand takes.
+    pub index: usize,
+    /// The commit the entry is stored as. A stash is a commit, so its contents
+    /// are readable with an ordinary [`DiffTarget::Commit`].
+    pub id: ObjectId,
+    /// What to show in a list: the user's own message when they gave one, and
+    /// otherwise the `WIP on …` line Git wrote.
+    pub message: String,
+    pub time: OffsetDateTime,
+    /// The branch the stash was made on, when the reflog subject names one.
+    pub branch: Option<String>,
+}
+
 /// A tag. Annotated tags carry their own object; lightweight ones do not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
@@ -531,6 +601,29 @@ mod tests {
             bytes,
         };
         assert!(!blob.is_binary());
+    }
+
+    #[test]
+    fn divergence_distinguishes_being_behind_from_having_diverged() {
+        let synced = Divergence::default();
+        assert!(synced.is_in_sync());
+        assert!(!synced.has_diverged());
+
+        let behind = Divergence {
+            ahead: 0,
+            behind: 3,
+        };
+        assert!(!behind.is_in_sync());
+        assert!(
+            !behind.has_diverged(),
+            "being behind fast-forwards; it is not a divergence"
+        );
+
+        let diverged = Divergence {
+            ahead: 2,
+            behind: 3,
+        };
+        assert!(diverged.has_diverged());
     }
 
     #[test]

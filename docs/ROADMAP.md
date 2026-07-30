@@ -10,7 +10,7 @@ behaviour someone can check, not a feeling of completeness.
 | ✅ | [M0 — Foundation](#m0--foundation) | Decide and document |
 | ✅ | [M1 — Scaffold & read-only viewer](#m1--scaffold--read-only-viewer) | See history |
 | ✅ | [M2 — Working directory](#m2--working-directory) | Make commits |
-| ⬜ | [M3 — Branches & remotes](#m3--branches--remotes) | Daily driver |
+| ✅ | [M3 — Branches & remotes](#m3--branches--remotes) | Daily driver |
 | ⬜ | [M4 — Pull request alerts](#m4--pull-request-alerts) | Forge integration |
 | ⬜ | [M5 — History operations](#m5--history-operations) | Stop dropping to a terminal |
 | ⬜ | [M6 — Polish & release](#m6--polish--release) | 1.0 |
@@ -132,6 +132,53 @@ Daily-driver capability for a normal, linear workflow. The first milestone that 
 **Done when:** a full day of ordinary work — branch, commit, push, open a PR in the browser, pull
 — happens without opening a terminal, on all three platforms, including over SSH with a passphrase
 and over HTTPS with a credential helper.
+
+**Status: complete, with one part of that bar unverified.** Everything in the scope above is
+implemented, covered by tests against real repositories, and checked by eye. The one thing that has
+*not* been verified is the last clause: **SSH with a passphrase and HTTPS with a credential helper**.
+Every remote in the test suite is a bare repository on a local path, which needs no authentication,
+and CI cannot hold a credential. `GIT_TERMINAL_PROMPT=0` makes a missing credential fail fast rather
+than hang, and the failure is classified into an actionable `AuthError` — but that classification is
+string matching against Git's stderr, exercised only against synthetic input. Saying M3 is done on
+CI alone would be claiming something nobody has tried, so it is written down here instead: real
+credentials remain a manual check.
+
+Four things fell out of building it that the plan did not anticipate.
+
+**`invalidate` was only half a cache invalidation.** It dropped the memoised commit walk, which is
+what M1 and M2 needed, and left gitoxide's snapshot of `.git/config` alone. Every `git` command that
+rewrites config — a branch rename, adding or removing a remote, `push --set-upstream` — therefore left
+the read side describing the old file. The symptom was quiet rather than loud: after renaming a
+branch its upstream vanished, and with it the `↑1` in the sidebar. `invalidate` now reopens the
+handle. Nothing in M1 or M2 wrote config, so nothing had exposed it.
+
+**`git switch` accepts exactly one reference after `--`.** It takes no paths for `--` to separate, so
+passing a new branch name and a start point as two operands fails with "only one reference
+expected". The name goes in `--create=<name>` instead. `git stash push --message` has the mirror-image
+problem: unlike `git commit --file -` it does *not* read from stdin, and takes `-` as the literal
+message. Both are the same lesson — Git's own commands are not uniform about where user text may go,
+and the only way to find out is to run them.
+
+**Pushing a renamed branch went to the wrong place.** The refspec used the local name on both sides,
+so a branch whose upstream has a different name — precisely what renaming produces — quietly created a
+*second* branch on the remote instead of updating the one it tracks. Nothing failed; there was simply
+an extra branch. The destination now comes from the upstream.
+
+**`git push --porcelain` was tried and reverted.** The machine format is the obvious choice and the
+rule says to prefer it, but it also moves the failure detail off stderr: with it, a rejected push
+leaves only `error: failed to push some refs` where plain `git push` writes
+`! [rejected] main -> main (stale info)` and a hint saying what to do next. Since Git's own message is
+the most useful thing hideGit has to say when a command fails, `push` reads the human summary. The
+reasoning and the rejected alternatives are in
+[ADR-0005](./adr/0005-progress-and-cancellation.md), which also records what cancelling a subprocess
+does *not* solve on Windows.
+
+Two smaller things worth writing down. Ahead/behind is deliberately not part of a refresh — a refresh
+runs on every file save through the watcher, and this costs a commit walk per tracking branch — so it
+loads on its own task and its absence for a branch that tracks nothing is meaningful rather than a
+gap. And the correction to M2's retro: iced 0.14 focus is not observable, but it *is* settable, which
+is why a prompt can open with the cursor already in its field. It does not unblock `Space`; knowing
+where focus *is* remains the missing half.
 
 ---
 

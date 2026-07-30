@@ -3,9 +3,10 @@
 How hideGit is put together, and why. Decisions summarised here are argued in full in the
 [ADRs](./adr/README.md).
 
-**Status:** M1 and M2 have landed, so the reads and the working-directory writes described here
-are code that exists. Everything that touches a remote or rewrites history is still design: those
-methods are declared and return `NotImplementedYet` with the milestone they arrive in.
+**Status:** M1, M2 and M3 have landed, so the reads, the working-directory writes, and everything
+that touches a remote described here are code that exists. History rewriting — merge, rebase,
+cherry-pick — is still design: those methods are declared and return `NotImplementedYet` with the
+milestone they arrive in.
 
 ## Contents
 
@@ -119,6 +120,9 @@ pub trait GitBackend: Send + Sync + Debug {
     fn diff(&self, target: &DiffTarget) -> Result<Diff, GitError>;
     fn read_blob(&self, id: ObjectId) -> Result<Blob, GitError>;
     fn status(&self) -> Result<WorktreeStatus, GitError>;
+    fn remotes(&self) -> Result<Vec<Remote>, GitError>;
+    fn stashes(&self) -> Result<Vec<StashEntry>, GitError>;
+    fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError>;
     fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;  // M6
     fn invalidate(&self);
 
@@ -128,10 +132,22 @@ pub trait GitBackend: Send + Sync + Debug {
     fn unstage(&self, paths: &[&Path]) -> Result<(), GitError>;
     fn discard(&self, paths: &[&Path]) -> Result<(), GitError>;
     fn create_commit(&self, message: &str, opts: CommitOpts) -> Result<ObjectId, GitError>;
-    fn checkout(&self, target: &CheckoutTarget) -> Result<(), GitError>;             // M3
-    fn fetch(&self, remote: &str, p: &dyn ProgressSink) -> Result<FetchOutcome, GitError>;   // M3
-    fn push(&self, remote: &str, spec: &PushSpec, p: &dyn ProgressSink) -> Result<(), GitError>;  // M3
-    fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError>;                 // M3
+    fn checkout(&self, target: &CheckoutTarget) -> Result<(), GitError>;
+    fn create_branch(&self, name: &str, from: &StartPoint) -> Result<(), GitError>;
+    fn rename_branch(&self, from: &str, to: &str) -> Result<(), GitError>;
+    fn delete_branch(&self, name: &str, force: bool) -> Result<(), GitError>;
+    fn create_tag(&self, spec: &TagSpec) -> Result<(), GitError>;
+    fn delete_tag(&self, name: &str) -> Result<(), GitError>;
+    fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError>;
+    fn set_remote_url(&self, name: &str, url: &str) -> Result<(), GitError>;
+    fn remove_remote(&self, name: &str) -> Result<(), GitError>;
+    fn fetch(&self, remote: &str, opts: &FetchOpts,
+             p: &dyn ProgressSink, c: &CancelToken) -> Result<FetchOutcome, GitError>;
+    fn pull(&self, opts: &PullOpts,
+            p: &dyn ProgressSink, c: &CancelToken) -> Result<PullOutcome, GitError>;
+    fn push(&self, remote: &str, spec: &PushSpec,
+            p: &dyn ProgressSink, c: &CancelToken) -> Result<PushOutcome, GitError>;
+    fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError>;
     fn merge(&self, from: &str, opts: &MergeOpts) -> Result<MergeOutcome, GitError>; // M5
     fn rebase(&self, onto: &str, plan: &RebasePlan) -> Result<SequenceOutcome, GitError>;    // M5
     fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError>;    // M5
@@ -142,11 +158,24 @@ The whole surface is declared from M1 so the read/write split is visible in one 
 whose milestone has not landed returns `GitError::NotImplementedYet { operation, milestone }`
 rather than being absent.
 
+**`clone` is deliberately not on the trait.** There is no repository for it to be a method *on*, and
+keeping it out preserves what the trait means — the things you can ask of an already-open
+repository. It is a free function, `clone_repository(url, into, progress, cancel)`.
+
 Every write goes through one helper that does the two things a write owes the rest of the
 application: it refuses to start while `index.lock` exists — reported, never deleted, because
-whatever holds it may still be working — and it drops the memoised walk so the next read sees what
-just happened. The types the write half takes are provisional: each is designed
-properly in the milestone that implements it.
+whatever holds it may still be working — and it invalidates the read side so the next read sees what
+just happened.
+
+**Invalidating means reopening the gitoxide handle, not just clearing the walk cache.** gitoxide
+reads `.git/config` when a repository is opened and caches it, so a `git` command that rewrites
+config — renaming a branch, adding or removing a remote, `push --set-upstream` — leaves the handle
+answering from the old file. The symptom is quiet rather than loud: a renamed branch appears to
+track nothing, and its ahead/behind simply vanishes.
+
+`divergence` is a separate read rather than a field on `Branch` because it costs a commit walk per
+tracking branch, and `refs` is reread on every file save through the filesystem watcher. The UI
+loads it on its own task for the same reason.
 
 `log` is paged rather than limited because the graph only lays out the rows around the viewport. A
 walk's topological order is memoised — it is the expensive part of drawing a graph and it does not
@@ -173,7 +202,10 @@ Not speculative abstraction. It exists for three concrete reasons:
 
 `fetch` sits on the CLI side despite gitoxide implementing it, because fetch and push share
 credential handling and it is not worth having two authentication paths. That is a judgement call
-and it is the first thing to revisit if fetch performance disappoints.
+and it is the first thing to revisit if fetch performance disappoints — though the reason it has not
+been revisited is authentication rather than speed. See
+[ADR-0005](./adr/0005-progress-and-cancellation.md), which records what the CLI side costs: one
+human-output parser, and no structured progress.
 
 ## Shelling out safely
 
@@ -188,14 +220,34 @@ helper wraps every invocation and enforces:
 | `GIT_TERMINAL_PROMPT=0` | A subprocess blocking on a hidden prompt is an app that appears to hang |
 | `GIT_OPTIONAL_LOCKS=0` for read-adjacent commands | Background invocations never contend for `index.lock` |
 | `LC_ALL=C` | Git's output does not shift under the user's locale |
-| Machine formats only: `--porcelain=v2`, `-z`, `--null` | Human output is not a stable interface |
+| Machine formats where they exist: `--porcelain=v2`, `-z`, `--null` | Human output is not a stable interface |
 | Controlled environment, not inherited wholesale | Fewer surprises from the user's shell configuration |
 | `stderr` surfaced to the user **verbatim** on failure | Git's error messages are good. Paraphrasing them destroys information |
 | Every invocation logged at `debug` with its full argument vector | Bug reports become diagnosable |
+| Arbitrary user text on **stdin**, or attached to its option as `--opt=value` | A commit message or a branch name can never become a separate argument, whatever it starts with |
 
-Long-running commands stream progress by parsing `--progress` output on stderr and are cancellable
-by killing the child process — with the caveat that a killed `git` may leave `index.lock` behind,
-so cancellation checks for and reports a stale lock rather than silently deleting it.
+That last row has two shapes because Git's own commands do. `git commit --file -` and
+`git tag --annotate --file -` read from stdin; `git stash push --message` does not — it takes `-` as
+the literal message — and `git switch --create` needs its name attached because `switch` accepts
+exactly one reference after `--`. Either way the text is one element of the argument vector and can
+never be reinterpreted.
+
+### Long-running commands
+
+Progress is parsed from `--progress` output on stderr, read incrementally on its own thread, and
+cancellation kills the child process. A killed `git` may leave `index.lock` behind, so cancellation
+checks for a stale lock and **reports** it rather than deleting it. The full reasoning, the rejected
+alternatives, and the known gap on Windows are in
+[ADR-0005](./adr/0005-progress-and-cancellation.md).
+
+**One deliberate exception to preferring machine formats.** `git push --porcelain` puts a stable
+tab-separated result on stdout — and moves the failure detail off stderr with it, leaving only
+`error: failed to push some refs` where plain `git push` would have written
+`! [rejected] main -> main (stale info)` and a hint saying what to do. Since Git's own message is
+the most useful thing hideGit has to say when a command fails, `push` reads the human summary
+instead. Both `fetch` and `push` summaries are parsed by hand and fail soft: an unrecognised line
+costs a summary entry, never the operation. (`git fetch --porcelain` was never an option regardless —
+it arrived in 2.41, past the 2.30 minimum.)
 
 ## Concurrency model
 
@@ -204,8 +256,8 @@ iced's `update` runs on the UI thread. Blocking it drops frames, so nothing bloc
 | Work | Mechanism |
 |---|---|
 | `gix` calls (blocking) | `Task::perform` onto `tokio`'s blocking pool |
-| `git` subprocesses | Spawned async, awaited off the UI thread |
-| Long operations (clone, fetch, push) | Channel-backed `Subscription` emitting progress `Message`s; cancellable |
+| `git` subprocesses | Run on the blocking pool, awaited off the UI thread |
+| Long operations (clone, fetch, pull, push) | `Task::stream` yielding progress `Message`s and then the outcome; cancellable |
 | PR polling | Long-lived `Subscription` in `hidegit-forge` |
 | Filesystem watching | `Subscription` over a debounced watcher, triggering status refresh |
 
@@ -213,9 +265,18 @@ The flow is uniform: `Message` → `update` returns a `Task` → work happens of
 or failure arrives as another `Message`. A repository handle is cheap to clone and moves into the
 task; the UI never holds a lock across an await.
 
+A long operation is a **`Task::stream`, not a `Subscription`**: it is a one-shot that ends when the
+work does, whereas a `Subscription` is for something that outlives any single request. The bridge is
+a `ProgressSink` that pushes into a channel; the sink is moved into the blocking closure, so its
+sender drops exactly when the work returns, which is what tells the stream to stop waiting and
+collect the result. Operations carry a monotonic id, because a cancelled one's last report can arrive
+after the operation that replaced it has started and must not redraw its banner.
+
 Every operation that mutates the repository ends by emitting `RepositoryChanged`, which triggers a
-refresh of status and refs. One code path for "something changed", rather than each operation
-remembering to update the views it happens to affect.
+refresh of status, refs, remotes and the stash. One code path for "something changed", rather than
+each operation remembering to update the views it happens to affect. Ahead/behind is the one
+exception: it rides on its own task, because a refresh runs on every file save and it costs a walk
+per tracking branch.
 
 ## Domain model
 
@@ -246,6 +307,29 @@ pub struct WorktreeStatus {
 pub struct Diff {
     pub files: Vec<FileDiff>,      // each with hunks, each hunk with lines
     pub stats: DiffStats,
+}
+
+/// A named remote, distinct from the remote-*tracking* branches in `Refs::remotes`:
+/// one that has been added but never fetched has no tracking refs at all.
+pub struct Remote {
+    pub name: String,
+    pub fetch_url: String,
+    pub push_url: Option<String>,  // only when it differs
+}
+
+/// How far a branch has drifted from its upstream. Absent from the map entirely
+/// when a branch tracks nothing, which is not the same as being level with a remote.
+pub struct Divergence { pub ahead: usize, pub behind: usize }
+
+/// One stash entry. `index` is the `n` in `stash@{n}`, which is what every stash
+/// subcommand takes; `id` is a commit, which is what lets its contents be read
+/// with an ordinary `DiffTarget::Commit`.
+pub struct StashEntry {
+    pub index: usize,
+    pub id: ObjectId,
+    pub message: String,
+    pub time: OffsetDateTime,
+    pub branch: Option<String>,
 }
 ```
 
@@ -386,6 +470,7 @@ pub enum GitError {
     Conflict(Vec<Conflict>),                       // expected outcome, not a failure
     IndexLocked(PathBuf),
     Auth(AuthError),
+    Cancelled { stale_lock: Option<PathBuf> },     // what was asked for, not a failure
     Command { argv: Vec<String>, status: Option<i32>, stderr: String },
     Gix { context: &'static str, source: Box<dyn Error + Send + Sync> },
     Io(#[from] std::io::Error),
@@ -393,12 +478,21 @@ pub enum GitError {
 }
 ```
 
-Three of these deserve emphasis:
+Some of these deserve emphasis:
 
 - **`Conflict`** is a normal outcome of merge and rebase, not an error condition. It routes to the
-  conflict resolution UI.
+  conflict resolution UI. Conflicts arising from a pull or a stash apply are the same: those methods
+  return them as an *outcome* rather than as this error, because a wall of stderr in front of a state
+  the user has to work in is the wrong shape.
 - **`GitNotFound`** is checked once at startup, with a clear message pointing at the requirement,
   rather than surfacing as a mystery failure the first time someone pushes.
+- **`Cancelled`** is what was asked for, so the UI reports it silently — unless `stale_lock` is set,
+  which names an `index.lock` the killed `git` left behind. hideGit never deletes one.
+- **`Auth`** is produced by classifying a failed network command's stderr, which is how a missing
+  credential becomes an actionable message instead of a wall of text. Matching on Git's wording is a
+  real maintenance cost, and anything unrecognised falls back to the verbatim `Command` error: a
+  phrase we stop recognising degrades to "here is exactly what git said" rather than to a confident
+  wrong diagnosis.
 - **`Command`** carries the argument vector and raw stderr so a bug report contains what is needed
   to reproduce it. `status` is `None` when the process was killed by a signal.
 - **`Gix`** boxes its source and names the operation, because gitoxide has no crate-wide error type
@@ -441,15 +535,27 @@ Stated plainly, because a reader should meet these here rather than discover the
    without a complete workflow layer. hideGit therefore requires the system `git` binary for those
    operations. Checked at startup with an actionable message.
    ([ADR-0002](./adr/0002-git-backend-hybrid.md))
-2. **Subprocess output is a parsing surface.** Mitigated by using only machine-readable formats
-   and pinning a minimum Git version, but it remains a real maintenance cost, and Git's porcelain
-   formats do occasionally gain fields.
-3. **GitHub only until post-1.0.** The `Forge` trait exists so GitLab and Bitbucket are additions
+2. **Subprocess output is a parsing surface.** Mitigated by preferring machine-readable formats and
+   pinning a minimum Git version, but it remains a real maintenance cost, and Git's porcelain formats
+   do occasionally gain fields. Three places read *human* output deliberately: `--progress` on
+   stderr, which has no machine form, and the fetch and push summaries, where
+   [ADR-0005](./adr/0005-progress-and-cancellation.md) records why. All three fail soft — an
+   unrecognised line costs a summary entry, never the operation.
+3. **Cancelling a network operation on Windows may leave a helper process behind.** Killing a process
+   there does not kill its children, and `git` spawns `git-remote-https` or an SSH client. Nothing in
+   a hermetic test suite is slow enough to exercise this, so it is a known gap rather than a solved
+   problem. ([ADR-0005](./adr/0005-progress-and-cancellation.md))
+4. **Credential helpers and SSH passphrases are not covered by the test suite.** Every remote in it
+   is a bare repository on a local path, which needs no authentication. `GIT_TERMINAL_PROMPT=0` makes
+   a missing credential fail fast rather than hang, and the failure is classified into `AuthError` —
+   but that classification is only ever exercised against synthetic stderr. Real credentials stay a
+   manual check on a developer's machine.
+5. **GitHub only until post-1.0.** The `Forge` trait exists so GitLab and Bitbucket are additions
    rather than rewrites, but a trait designed against one implementation usually needs adjusting
    when the second arrives. Expect to revise it.
-4. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
+6. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
    expected. Isolating iced types to `hidegit-ui` keeps that blast radius to one crate.
-5. **Opening a very large repository takes about a second.** Ordering 100,000 commits
+7. **Opening a very large repository takes about a second.** Ordering 100,000 commits
    topologically measures at 1.01s, and it happens before the first screen appears. Scrolling is
    fast once open — laying out a visible window costs 52µs — but the initial pass is real, and
    nothing yet shows progress during it. Numbers and method in

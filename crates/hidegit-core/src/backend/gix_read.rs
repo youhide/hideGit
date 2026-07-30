@@ -15,8 +15,9 @@ use gix::diff::blob::{Algorithm, InternedInput, UnifiedDiff, sources::byte_lines
 use crate::error::GitError;
 use crate::model::{
     Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
-    DiffStats, DiffTarget, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind, ObjectId,
-    RefKind, RefName, Refs, RepoState, RevSpec, Signature, Tag, WorktreeStatus,
+    DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind,
+    ObjectId, RefKind, RefName, Refs, Remote, RepoState, RevSpec, Signature, StashEntry, Tag,
+    WorktreeStatus,
 };
 
 /// Files past this size get a placeholder instead of a diff.
@@ -48,6 +49,14 @@ pub(crate) fn open(path: &Path) -> Result<gix::ThreadSafeRepository, GitError> {
 
 fn to_id(id: &gix::hash::oid) -> ObjectId {
     ObjectId::from_bytes(id.as_bytes()).expect("gix only produces sha-1 and sha-256 hashes")
+}
+
+/// The counterpart to [`to_id`], for handing an id back to gitoxide.
+///
+/// Infallible in practice: a domain [`ObjectId`] only ever holds a length Git
+/// uses, and hex round-trips exactly.
+fn to_gix_id(id: ObjectId) -> gix::ObjectId {
+    gix::ObjectId::from_hex(id.to_hex().as_bytes()).expect("a domain id is always valid hex")
 }
 
 fn to_ref_name(name: &gix::refs::FullNameRef) -> RefName {
@@ -199,6 +208,212 @@ pub(crate) fn refs(repo: &gix::Repository) -> Result<Refs, GitError> {
     out.tags.sort_by(|a, b| a.name.short.cmp(&b.name.short));
 
     Ok(out)
+}
+
+/// Ahead/behind for every local branch that has an upstream.
+///
+/// Two counted walks per branch, each hiding the other side: the commits a
+/// branch has that its upstream does not, and the reverse. Bounded by how far the
+/// two have actually drifted, because they share history up to their merge base —
+/// which is what makes this cheap for the ordinary case of a branch a few commits
+/// ahead, and why it is nonetheless kept out of [`refs`], which the filesystem
+/// watcher rereads on every file save.
+///
+/// A branch whose upstream no longer exists — the remote branch was deleted and
+/// the tracking ref pruned — is skipped rather than reported as infinitely ahead.
+pub(crate) fn divergence(repo: &gix::Repository) -> Result<HashMap<String, Divergence>, GitError> {
+    let refs = refs(repo)?;
+    let mut out = HashMap::new();
+
+    for branch in &refs.locals {
+        let Some(upstream) = &branch.upstream else {
+            continue;
+        };
+        // Resolved through the ref list already in hand rather than with another
+        // `rev_parse`: a configured upstream whose ref is gone is a normal state
+        // after a prune, not an error to propagate.
+        let Some(target) = refs
+            .remotes
+            .iter()
+            .find(|r| &r.name.full == upstream)
+            .map(|r| r.target)
+        else {
+            tracing::debug!(
+                branch = %branch.name.full,
+                %upstream,
+                "skipping ahead/behind for a branch whose upstream ref is gone"
+            );
+            continue;
+        };
+
+        if target == branch.target {
+            out.insert(branch.name.full.clone(), Divergence::default());
+            continue;
+        }
+
+        out.insert(
+            branch.name.full.clone(),
+            Divergence {
+                ahead: count_excluding(repo, branch.target, target)?,
+                behind: count_excluding(repo, target, branch.target)?,
+            },
+        );
+    }
+
+    Ok(out)
+}
+
+/// Every named remote, with its URLs.
+///
+/// Separate from [`Refs::remotes`], which holds remote-*tracking* branches: a
+/// remote that has been added but never fetched has no tracking refs at all, and
+/// leaving it out of the sidebar would be saying it does not exist.
+pub(crate) fn remotes(repo: &gix::Repository) -> Result<Vec<Remote>, GitError> {
+    let mut out = Vec::new();
+
+    for name in repo.remote_names() {
+        let name = name.as_bstr().to_str_lossy().into_owned();
+
+        // A remote whose URL will not parse is still a remote the user configured,
+        // and hiding it would make "why is my push failing" unanswerable. It is
+        // listed with whatever is there.
+        let Some(Ok(remote)) = repo.try_find_remote(name.as_str()) else {
+            tracing::warn!(%name, "listing a remote whose configuration would not parse");
+            out.push(Remote {
+                name,
+                fetch_url: String::new(),
+                push_url: None,
+            });
+            continue;
+        };
+
+        let url = |direction| {
+            remote
+                .url(direction)
+                .map(|url| url.to_bstring().to_str_lossy().into_owned())
+        };
+        let fetch_url = url(gix::remote::Direction::Fetch).unwrap_or_default();
+        let push = url(gix::remote::Direction::Push);
+
+        out.push(Remote {
+            name,
+            // Only set when it actually differs: gitoxide reports the fetch URL
+            // for both directions when no `pushurl` is configured, and showing
+            // the same string twice would imply a distinction that is not there.
+            push_url: push.filter(|push| *push != fetch_url),
+            fetch_url,
+        });
+    }
+
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// The stash, newest entry first.
+///
+/// A stash is not a branch: `refs/stash` points only at the most recent entry, and
+/// the older ones live in that ref's *reflog*, which is what `stash@{n}` indexes
+/// into. So this reads the reflog rather than walking commits — walking would
+/// follow each entry's parents into ordinary history instead.
+///
+/// A repository that has never stashed has no `refs/stash` at all, which is an
+/// empty list rather than an error.
+pub(crate) fn stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, GitError> {
+    let Some(reference) = repo
+        .try_find_reference("refs/stash")
+        .map_err(|e| GitError::gix("looking for the stash", e))?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut platform = reference.log_iter();
+    // Reverse order is newest first, which is the order `stash@{0}` means and the
+    // order the sidebar shows.
+    let Some(entries) = platform
+        .rev()
+        .map_err(|e| GitError::gix("reading the stash reflog", e))?
+    else {
+        // The ref exists but its log does not, which a hand-written ref can
+        // produce. Nothing to list.
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        let line = match entry {
+            Ok(line) => line,
+            // One unreadable entry must not blank the whole list.
+            Err(e) => {
+                tracing::warn!(error = %e, index, "skipping unreadable stash entry");
+                continue;
+            }
+        };
+
+        let (branch, message) = parse_stash_subject(line.message.to_str_lossy().as_ref());
+        out.push(StashEntry {
+            index,
+            id: to_id(&line.new_oid),
+            message,
+            // An owned reflog signature carries its time directly, unlike the
+            // borrowed kind a commit hands out.
+            time: to_time(line.signature.time),
+            branch,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Pulls the branch and the message out of a stash reflog subject.
+///
+/// Git writes `WIP on <branch>: <sha> <summary>` when it invented the message, and
+/// `On <branch>: <message>` when the user supplied one. Anything else — a reflog
+/// written by another tool, or a wording change — is kept whole rather than
+/// mangled, because a message shown verbatim is never wrong.
+fn parse_stash_subject(subject: &str) -> (Option<String>, String) {
+    for prefix in ["WIP on ", "On "] {
+        if let Some(rest) = subject.strip_prefix(prefix)
+            && let Some((branch, message)) = rest.split_once(": ")
+        {
+            return (Some(branch.to_owned()), message.trim().to_owned());
+        }
+    }
+    (None, subject.trim().to_owned())
+}
+
+/// Is `ancestor` reachable from `descendant`?
+///
+/// Used to tell a fast-forward from an integration: after a pull, a new `HEAD`
+/// that the old one is an ancestor of was fast-forwarded, and one it is not was
+/// merged or rebased.
+pub(crate) fn is_ancestor(
+    repo: &gix::Repository,
+    ancestor: ObjectId,
+    descendant: ObjectId,
+) -> Result<bool, GitError> {
+    // Everything reachable from `ancestor` is painted unwanted by hiding
+    // `descendant` exactly when `descendant` already contains all of it.
+    Ok(count_excluding(repo, ancestor, descendant)? == 0)
+}
+
+/// How many commits `from` reaches that `hidden` does not.
+fn count_excluding(
+    repo: &gix::Repository,
+    from: ObjectId,
+    hidden: ObjectId,
+) -> Result<usize, GitError> {
+    let walk = repo
+        .rev_walk([to_gix_id(from)])
+        .with_hidden([to_gix_id(hidden)])
+        .all()
+        .map_err(|e| GitError::gix("counting ahead/behind", e))?;
+
+    let mut count = 0;
+    for entry in walk {
+        entry.map_err(|e| GitError::gix("counting ahead/behind", e))?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 pub(crate) fn repo_state(repo: &gix::Repository) -> RepoState {

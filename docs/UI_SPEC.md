@@ -35,7 +35,7 @@ Layout sketches are structural, not visual design.
 
 | Screen | Purpose | Milestone |
 |---|---|---|
-| Welcome | Open, clone, recent repositories | M1 |
+| Welcome | Open, clone, recent repositories | M1 / M3 |
 | Main window | Graph, sidebar, detail — where all work happens | M1 |
 | Staging view | Staged / changed / untracked / conflicted, and the selected file's diff | M2 |
 | Diff view | Unified / side-by-side, hunk staging | M1 / M2 |
@@ -65,12 +65,25 @@ struct OpenRepo {
     state:       RepoState,            // Clean | Merging | Rebasing | CherryPicking | Bisecting
     graph:       GraphView,            // commits + computed layout + viewport
     status:      WorktreeStatus,
+    stashes:     Vec<StashEntry>,
+    remotes:     Vec<Remote>,          // configured, whether fetched or not
+    divergence:  HashMap<String, Divergence>,   // ahead/behind, its own task
     selection:   Selection,            // Commit(id) | WorkingDirectory | Stash(n)
     detail:      DetailPane,
     prs:         PrPanelState,
-    pending:     Vec<Operation>,       // in-flight, cancellable
+    pending:     Option<Operation>,    // one at a time, cancellable
 }
 ```
+
+`pending` is one operation rather than a list: the toolbar replaces its buttons with the banner while
+something is in flight, so two fetches racing for the same refs is not a state to support. It carries a
+monotonic id, because a cancelled operation's last report can arrive after the one that replaced it has
+started and must not redraw its banner.
+
+`divergence` is a separate map loaded by its own task rather than a field on each `Branch`, because it
+costs a commit walk per tracking branch and a refresh runs on every file save through the watcher. A
+branch that tracks nothing is **absent** from it, which is different from being level with a remote and
+renders differently.
 
 `RepoState` is consulted before rendering any action. It is the single source of truth for what is
 currently legal.
@@ -139,8 +152,26 @@ rather than each operation remembering which views it invalidated.
 ```
 
 **Sidebar** — one tree, one mental model for "places I can jump to": working directory, local
-branches, remotes, tags, stashes, pull requests. Ahead/behind indicators on branches. Counts on
-section headers.
+branches, remotes, tags, stashes, pull requests. Counts on section headers.
+
+Every row carries its own controls, revealed as a glyph rather than hidden behind a menu bar — the
+same idiom the staging rows use for `+`, `−` and `✕` — plus a `⋯` that opens its action sheet.
+Section headings carry a `+` for the thing they hold: a new branch, a remote, a tag.
+
+**Remotes are two levels**: the named remote, then the branches on it. Every *configured* remote
+appears, fetched or not, because one that has been added and never fetched has no tracking refs and
+grouping by ref name alone would say it does not exist. It shows "not fetched" rather than an empty
+space.
+
+**Ahead/behind has three states that must stay distinct.** A branch that tracks nothing shows nothing
+at all, because `↑0 ↓0` would claim an upstream that does not exist. A branch level with its upstream
+also shows nothing — the absence *is* the "no news" state, and a column of zeroes is noise. Only real
+drift gets arrows, and only the non-zero side of it.
+
+`LOCAL`, `REMOTES` and `TAGS` render even when empty, because their heading carries the `+` that
+creates the first one and "you have no remotes" is a true and useful thing to read. `STASHES` does not:
+a stash is made out of the working directory rather than from a heading, so stashing is offered from
+the working-directory row instead, and only when there is something to stash.
 
 **Graph** — the centre. Virtualised: only visible rows are laid out and drawn. Refs are rendered as
 badges on their commits. Selecting a row updates the detail pane. Full rendering rules in
@@ -149,13 +180,30 @@ badges on their commits. Selecting a row updates the detail pane. Full rendering
 **Detail pane** — commit metadata and changed files when a commit is selected; the staging view
 when the working directory is selected.
 
-**Toolbar** — the operations reached constantly. Push shows ahead-count; the notification bell
-shows unread PR alerts. Operations in flight replace their button with a progress indicator and a
-cancel affordance.
+**Toolbar** — the operations reached constantly. Push shows its ahead-count; the notification bell
+shows unread PR alerts. A control that cannot work is unavailable and carries *why* in its tooltip —
+"A merge in progress", "Nothing to push from a detached HEAD" — rather than leaving that to be
+guessed. With no remote configured at all the three buttons are replaced by the words "no remote",
+because a button that cannot work is worse than an absent one.
 
-**In-progress operations** get a persistent banner across the top: *"Rebasing feat/graph onto main
-— 3 of 7 commits"* with Continue / Skip / Abort. It cannot be dismissed, because the repository
-genuinely is in that state and hiding it is how people lose work.
+**A network operation in flight** replaces the toolbar's buttons with a banner: the phase, a real unit
+(*"Receiving objects 42/100"*), a progress bar, and Cancel. The bar is drawn only once a total is
+known — a bar that has to guess is exactly the indeterminate spinner ruled out below — so before the
+first report the banner says "starting…" rather than inventing a number. One operation at a time per
+repository.
+
+**Cancel only asks.** The worker notices, kills the subprocess, and reports back like any other
+ending, so the banner clears in exactly one place; clearing it on the click would claim the operation
+had stopped before it had. Afterwards a cancellation is silent, because it is what was asked for —
+unless the killed `git` left `index.lock` behind, which is named, because hideGit will not delete it.
+
+**A clone** gets the same banner above the whole screen, including the welcome screen it was started
+from, because there is no repository yet to put it in.
+
+**In-progress repository state** — mid-merge, mid-rebase — gets a second, persistent banner below
+that one: *"Rebasing feat/graph onto main — 3 of 7 commits"* with Continue / Skip / Abort (M5). It
+cannot be dismissed, because the repository genuinely is in that state and hiding it is how people
+lose work.
 
 ## Staging view
 
@@ -202,12 +250,17 @@ discards the open row. Discarding a *staged* change does nothing by keyboard —
 destroying is two decisions, and one key must not stand for both.
 
 **`Space` is not bound.** The spec's table lists it as stage/unstage, and it is deliberately absent
-until M6's keyboard-navigation work. iced 0.14 keeps text-input focus inside the widget: it is
-neither observable nor settable from the application, and wrapping a field in a `mouse_area` to
-catch the click that grants focus swallows that click so the field never focuses at all. So a
-global key binding cannot know whether the commit message field is being typed into until its
-first keystroke has already been delivered — and `Space` is the one bare key whose leak would
-stage a file. `j`/`k` remain bound because their leak only moves a highlight.
+until M6's keyboard-navigation work. iced 0.14 keeps text-input focus inside the widget: it is not
+**observable** from the application, and wrapping a field in a `mouse_area` to catch the click that
+grants focus swallows that click so the field never focuses at all. So a global key binding cannot
+know whether the commit message field is being typed into until its first keystroke has already been
+delivered — and `Space` is the one bare key whose leak would stage a file. `j`/`k` remain bound
+because their leak only moves a highlight.
+
+**Correcting what M2 recorded here:** focus is not observable, but it *is* settable, through a widget
+operation. That is what lets a prompt open with the cursor already in its first field, so the user
+does not have to click the thing they just asked for. It does not solve `Space` — knowing where focus
+*is* remains the missing half — but it is the reason a modal text input is workable at all.
 
 ## Commit composer
 
@@ -223,9 +276,11 @@ open. Subject and description are separate fields; `Enter` in the subject commit
   required"*, *"Nothing staged"*, *"A rebase in progress"*.
 - A failed commit keeps the message. A rejected hook must not cost the user what they wrote.
 
-## Confirmations and toasts
+## Layers over the screen
 
-Both sit in a layer over the screen.
+Four of them, stacked in this order: toasts, then the action sheet, then the prompt, then the
+confirmation — which goes last because it is what a sheet's destructive item raises, so it has to be
+able to sit over the sheet that raised it.
 
 A **confirmation** is modal and names what will be lost — *"Changes to doomed.txt will be lost.
 This cannot be undone."* — never a generic "are you sure?". Its accept button carries the verb
@@ -233,9 +288,30 @@ This cannot be undone."* — never a generic "are you sure?". Its accept button 
 the one that takes aim. While it is up it owns the keyboard: `Esc` cancels, `Enter` accepts, and
 nothing else reaches the screen behind it.
 
+An **action sheet** is the list of things that can be done to one item, titled with the item rather
+than with a question — the user knows what they clicked, and repeating "what would you like to do?"
+wastes the one line that could name it. Destructive items are distinguishable by colour *and* by a
+glyph. `Esc` dismisses; `Enter` does nothing, because a list one of whose items may be "Delete" must
+have no default action. Choosing an item closes the sheet as the action goes out, so it cannot end up
+sitting over a toast reporting that the action failed.
+
+**It is a centred card, not a positioned context menu.** iced 0.14 gives a `button`'s `on_press` no
+cursor coordinates and has no popover widget, so anchoring one where the click happened would mean a
+custom widget with its own overlay layer. A sheet says the same thing, works from the keyboard, and
+is one mechanism for branches, remote branches, remotes, tags and stashes.
+
+A **prompt** is a modal that collects text before acting — a branch name, a remote's URL, a stash
+message. It is a sibling of the confirmation rather than a variant of it, because a confirmation's
+action is fixed and an action that depends on what the user types cannot be. `Esc` dismisses, `Enter`
+accepts, and its primary button is the accent rather than the danger colour so creating a branch does
+not wear the same red as discarding one. Every field is required except a stash's message, which Git
+will invent.
+
 A **toast** reports a failure and keeps Git's own stderr verbatim rather than paraphrasing it,
 because that text is the most useful thing hideGit has to say when a command fails. Success is
-silent: the refresh that follows an operation is its result, and a toast per click is noise.
+silent: the refresh that follows an operation is its result, and a toast per click is noise. There is
+one exception — a push that was *partly* refused says so, because a push that appears to have worked
+and did not is exactly the lie the silence rule exists to avoid.
 
 ## Diff view
 
@@ -323,7 +399,7 @@ summary above a threshold.
 | Key | Action |
 |---|---|
 | `Cmd+O` | Open repository |
-| `Cmd+Shift+O` | Clone repository |
+| `Cmd+Shift+O` | Clone repository — checked before the unshifted `O`, or it would open a picker |
 | `Cmd+1` … `Cmd+9` | Switch repository tab |
 | `Cmd+,` | Settings |
 | **Navigation** | |
@@ -339,9 +415,15 @@ summary above a threshold.
 | `Cmd+Shift+Enter` | Commit and push |
 | `Cmd+Backspace` | Discard (always confirms) |
 | **Remotes** | |
-| `Cmd+Shift+F` | Fetch |
+| `Cmd+Shift+F` | Fetch every remote, pruning |
 | `Cmd+Shift+P` | Pull |
 | `Cmd+Shift+U` | Push |
+
+All three carry a modifier deliberately: the guard that stops bare keys reaching the screen while a
+text field has focus only lets modified keys through, and `Cmd+Shift+U` is wanted precisely while a
+commit message is being written. They are matched case-insensitively, because with Shift held the
+character iced reports is the shifted one on most layouts and hard-coding either case would make the
+binding depend on the keyboard.
 | **Diff** | |
 | `J` / `K` | Next / previous hunk |
 | `Cmd+D` | Toggle unified ⇄ side-by-side |
@@ -398,15 +480,27 @@ Constraints:
 
 ## Interaction rules
 
-**Destructive actions.** Discard, hard reset, force push, branch delete and stash drop each name
-what will be lost — "Discard changes to 3 files? This cannot be undone." — and never rely on a
-generic confirmation. Force push defaults to `--force-with-lease`; plain `--force` requires
-deliberately selecting it.
+**Destructive actions.** Discard, hard reset, force push, branch delete, tag delete, remote removal and
+stash drop each name what will be lost — "Discard changes to 3 files? This cannot be undone." — and
+never rely on a generic confirmation. Force push defaults to `--force-with-lease`, and its
+confirmation says what the lease protects; plain `--force` requires deliberately selecting it and says
+that someone else's commits would become unreachable.
+
+**A refusal is surfaced, never worked around.** Deleting an unmerged branch is refused by Git and the
+refusal is shown; hideGit does not retry with `--force` behind the user's back. A checkout blocked by
+local changes fails with Git's own message naming the files; hideGit does not stash on the user's
+behalf, because that moves their work somewhere they never asked for. Losing commits is always
+something the user chose.
+
+**An action that cannot work is absent, not present and refusing.** Checkout is not offered for the
+branch you are standing on, Delete is not offered for it either, and neither is offered for the only
+branch in the repository.
 
 **Long operations.** Anything that may exceed roughly 300ms shows progress with a real unit
 (objects, commits, bytes) and a cancel button. Cancellation kills the subprocess and then reports
 honestly if the repository was left mid-operation — including a stale `index.lock`, which is
-reported rather than silently removed.
+reported rather than silently removed. See
+[ADR-0005](./adr/0005-progress-and-cancellation.md).
 
 **Errors.** Recoverable errors appear inline where the action was attempted, with the action that
 fixes them. Unexpected errors become a toast with a "copy details" action containing the argument

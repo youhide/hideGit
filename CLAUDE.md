@@ -9,12 +9,12 @@ GUI toolkit, licensed GPL-3.0. Alongside the usual repository operations it prov
 alerts: native desktop notifications for review requests, CI status changes and newly conflicting
 PRs.
 
-**Current status: pre-alpha.** M1 and M2 have landed: the workspace, CI, the `gix` read backend,
-the commit graph, a read-only viewer, and the working directory — status, staging by file, hunk
-and line, discard, commit, and a filesystem watcher. Nothing touches a remote yet; that is M3.
-Check
-[ROADMAP.md](./docs/ROADMAP.md) before assuming a feature exists, and check the code before
-referring to a module.
+**Current status: pre-alpha.** M1, M2 and M3 have landed: the workspace, CI, the `gix` read backend,
+the commit graph, a read-only viewer, the working directory — status, staging by file, hunk and line,
+discard, commit, a filesystem watcher — and everything that touches a remote: clone, branches, tags,
+the stash, named remotes, and fetch, pull and push with progress and cancellation. History rewriting
+is M5 and pull request alerts are M4. Check [ROADMAP.md](./docs/ROADMAP.md) before assuming a feature
+exists, and check the code before referring to a module.
 
 ## Read before making architectural changes
 
@@ -47,9 +47,20 @@ a request belongs in `hidegit-ui` or `hidegit-forge`.
 
 **3. Never build a `git` command as a shell string.**
 Arguments go in a vector, no shell is spawned, `GIT_TERMINAL_PROMPT=0` is always set, machine
-formats (`--porcelain=v2`, `-z`) are always preferred over human output, and `stderr` is surfaced
-to the user verbatim on failure. Branch names and paths come from untrusted repositories. See
-[SECURITY.md](./SECURITY.md).
+formats (`--porcelain=v2`, `-z`) are preferred over human output, and `stderr` is surfaced
+to the user verbatim on failure. Branch names, paths and remote URLs come from untrusted
+repositories. See [SECURITY.md](./SECURITY.md).
+
+Arbitrary user text — a commit message, a branch name, a URL — goes on **stdin** or attached to its
+option as `--opt=value`, never as a bare argument. Git's own commands are not uniform about which:
+`git commit --file -` reads stdin, `git stash push --message` does not, and `git switch --create`
+needs the name attached because `switch` accepts only one reference after `--`. Either shape keeps the
+text one element of the argument vector.
+
+Three places read *human* output deliberately: `--progress` on stderr, which has no machine form, and
+the fetch and push summaries. The push case is a documented exception to preferring machine formats —
+`--porcelain` would move Git's actionable hint off stderr — and all three fail soft. See
+[ADR-0005](./docs/adr/0005-progress-and-cancellation.md).
 
 **4. Tokens go in the OS keychain, never in config, never in logs.**
 No OAuth client secret may be embedded in the binary — this is open source, so it would not be
@@ -58,7 +69,14 @@ See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md#authentication-and-tokens).
 
 **5. Blocking work never runs on the UI thread.**
 `gix` calls and `git` subprocesses are blocking. They go through `Task::perform` onto a blocking
-pool and return via a `Message`. PR polling is a long-lived `Subscription`.
+pool and return via a `Message`. A long operation that reports progress is a `Task::stream` — a
+one-shot that ends when the work does — not a `Subscription`; PR polling is a long-lived
+`Subscription` because it outlives any single request.
+
+**6. `invalidate` reopens the gitoxide handle, it does not just clear a cache.**
+gitoxide reads `.git/config` when a repository is opened and caches it, so any `git` command that
+rewrites config — a branch rename, a remote change, `push --set-upstream` — would otherwise leave every
+subsequent read describing the old file. The symptom is quiet: an upstream that silently disappears.
 
 ## Commands
 

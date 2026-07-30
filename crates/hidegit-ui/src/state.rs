@@ -5,14 +5,16 @@
 //! the start, because multi-repository tabs are M6 and retrofitting them into a
 //! single-repository shape would be a rewrite rather than an addition.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
 use hidegit_core::model::{
-    Commit, CommitDetail, Diff, Head, ObjectId, Refs, RepoState, WorktreeStatus,
+    Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
+    WorktreeStatus,
 };
+use hidegit_core::ops::{CancelToken, ProgressUpdate, StartPoint};
 use hidegit_core::{GitBackend, LogPage};
 
 use crate::message::{Message, UiError};
@@ -80,6 +82,12 @@ pub enum Selection {
     /// The staging view: what is staged, changed and untracked right now.
     WorkingDirectory,
     Commit(ObjectId),
+    /// A stash entry, by position from the top.
+    ///
+    /// Carries the index rather than the commit id because the index is what every
+    /// stash subcommand takes, and it is what the list is keyed by. The id is
+    /// looked up from `stashes` when the diff is loaded.
+    Stash(usize),
 }
 
 /// Unified or side-by-side, remembered per user.
@@ -158,6 +166,215 @@ pub struct Confirmation {
     pub confirm_label: String,
     /// Dispatched if the user accepts. Nothing happens until then.
     pub action: Box<Message>,
+}
+
+/// A list of things that can be done to one item.
+///
+/// Deliberately a **centred card, not a positioned context menu.** iced 0.14
+/// gives a `button`'s `on_press` no cursor coordinates and has no popover widget,
+/// so anchoring a menu where the click happened would mean writing a custom
+/// widget with its own overlay layer. A sheet titled with the item it acts on —
+/// `feat/graph` — says the same thing, works from the keyboard, and is the one
+/// mechanism behind per-item actions for branches, tags, remotes and stashes.
+#[derive(Debug, Clone)]
+pub struct ActionSheet {
+    /// The item being acted on, e.g. `feat/graph`.
+    pub title: String,
+    pub items: Vec<SheetItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SheetItem {
+    pub label: String,
+    /// Dispatched when it is chosen. The sheet closes first, so an action that
+    /// raises a confirmation of its own is not fighting for the same layer.
+    pub message: Message,
+    /// Rendered distinctly, per `UI_SPEC.md`: destructive actions must not look
+    /// like the rest.
+    pub destructive: bool,
+}
+
+impl ActionSheet {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            items: Vec::new(),
+        }
+    }
+
+    pub fn item(mut self, label: impl Into<String>, message: Message) -> Self {
+        self.items.push(SheetItem {
+            label: label.into(),
+            message,
+            destructive: false,
+        });
+        self
+    }
+
+    pub fn destructive(mut self, label: impl Into<String>, message: Message) -> Self {
+        self.items.push(SheetItem {
+            label: label.into(),
+            message,
+            destructive: true,
+        });
+        self
+    }
+}
+
+/// A modal that collects text before acting.
+///
+/// A sibling of [`Confirmation`] rather than an extension of it:
+/// `Confirmation::action` is a fixed [`Message`], and an action that depends on
+/// what the user types cannot be one. So the *kind* is stored instead, and
+/// `update` builds the real message from the kind plus the current field values
+/// when it is accepted. That keeps `Message` cloneable and keeps closures out of
+/// application state.
+#[derive(Debug, Clone)]
+pub struct Prompt {
+    pub kind: PromptKind,
+    pub title: String,
+    /// The verb on the button that goes ahead — "Create", never "OK".
+    pub confirm_label: String,
+    pub fields: Vec<PromptField>,
+}
+
+/// One field, and the widget id that lets it be focused.
+///
+/// A correction to what M2 concluded: focus in iced 0.14 is not *observable*, but
+/// it is *settable*, through a widget operation. So raising a prompt can put the
+/// cursor in the first field, and the user does not have to click the thing they
+/// just asked for.
+#[derive(Debug, Clone)]
+pub struct PromptField {
+    pub label: String,
+    pub placeholder: String,
+    pub value: String,
+}
+
+impl PromptField {
+    pub fn new(label: impl Into<String>, placeholder: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            placeholder: placeholder.into(),
+            value: String::new(),
+        }
+    }
+
+    /// A field that starts from an existing value — renaming opens holding the
+    /// current name, the way `git commit --amend` opens holding the old message.
+    pub fn prefilled(label: impl Into<String>, value: impl Into<String>) -> Self {
+        let value = value.into();
+        Self {
+            label: label.into(),
+            placeholder: value.clone(),
+            value,
+        }
+    }
+}
+
+/// Widget ids for the prompt's fields, so they can be focused.
+///
+/// Static because a prompt never has more than two: naming them is simpler than
+/// carrying a generated id through application state.
+pub const PROMPT_FIELD_IDS: [&str; 2] = ["hidegit-prompt-field-0", "hidegit-prompt-field-1"];
+
+/// What a [`Prompt`] is collecting text for.
+///
+/// The prompt is always about the active repository — it is modal, so nothing can
+/// change which one that is while it is up — so the index is not carried here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptKind {
+    /// One field: the new branch's name.
+    NewBranch { from: StartPoint, checkout: bool },
+    /// One field: the new name.
+    RenameBranch { from: String },
+    /// One field: the tag's name. A message makes it annotated.
+    NewTag { at: StartPoint, annotated: bool },
+    /// Two fields: name, then URL.
+    AddRemote,
+    /// One field: the new URL.
+    EditRemote { name: String },
+    /// One field: the message. Optional — an empty one is Git's own `WIP on …`.
+    StashPush { include_untracked: bool },
+    /// One field: the URL. The destination is chosen with the platform's picker
+    /// afterwards, because typing a path is worse than pointing at one.
+    Clone,
+}
+
+impl Prompt {
+    /// The first field's value, trimmed. `None` when it is empty.
+    ///
+    /// Trimmed because a branch name with a trailing space is a name Git will
+    /// refuse, and the refusal would be about whitespace the user cannot see.
+    pub fn first(&self) -> Option<&str> {
+        self.field(0)
+    }
+
+    /// A field's value, trimmed, or `None` when it is empty.
+    pub fn field(&self, at: usize) -> Option<&str> {
+        let value = self.fields.get(at)?.value.trim();
+        (!value.is_empty()).then_some(value)
+    }
+
+    /// Is there enough here to act on?
+    ///
+    /// Every field is required except a stash's message, which Git will invent —
+    /// so that one prompt can be accepted empty and the others cannot.
+    pub fn is_ready(&self) -> bool {
+        match self.kind {
+            PromptKind::StashPush { .. } => true,
+            _ => (0..self.fields.len()).all(|at| self.field(at).is_some()),
+        }
+    }
+}
+
+/// A long operation in flight.
+///
+/// One at a time per repository, which is why the toolbar replaces its buttons
+/// with a banner rather than queueing: two fetches racing for the same refs is not
+/// a thing worth supporting, and `id` is what keeps a *cancelled* operation's late
+/// result from clearing the banner of the one that replaced it.
+#[derive(Debug, Clone)]
+pub struct Operation {
+    pub id: u64,
+    /// What to call it in the banner — "Fetching", "Pushing to origin".
+    pub label: String,
+    /// Set by the Cancel button. The worker polls it and kills the subprocess.
+    pub cancel: CancelToken,
+    /// The most recent report, or `None` before the first one arrives.
+    pub progress: Option<ProgressUpdate>,
+}
+
+impl Operation {
+    /// The banner's right-hand text: the phase and a real unit.
+    ///
+    /// `UI_SPEC.md` requires a real unit rather than an indeterminate spinner, so
+    /// before the first report this says what it is waiting for rather than
+    /// inventing a number.
+    pub fn detail(&self) -> String {
+        match &self.progress {
+            None => "starting…".to_owned(),
+            Some(update) => match update.total {
+                Some(total) => format!("{} {}/{}", update.phase, update.done, total),
+                None => format!("{} {}", update.phase, update.done),
+            },
+        }
+    }
+
+    /// Progress as a fraction, when the total is known.
+    pub fn fraction(&self) -> Option<f32> {
+        self.progress.as_ref().and_then(ProgressUpdate::fraction)
+    }
+}
+
+/// Where a push would go, and under what name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushTarget {
+    pub remote: String,
+    pub branch: String,
+    pub refspec: String,
+    /// True when the branch has no upstream yet, so the push should record one.
+    pub set_upstream: bool,
 }
 
 /// A transient message.
@@ -289,6 +506,25 @@ pub struct OpenRepo {
     pub state: RepoState,
     /// The working directory as the staging view shows it.
     pub status: WorktreeStatus,
+    /// The stash, newest first.
+    ///
+    /// Read as part of a refresh, unlike `divergence`: it is one ref and one
+    /// reflog, which is cheap enough for the watcher path.
+    pub stashes: Vec<StashEntry>,
+    /// Every configured remote, with its URLs.
+    ///
+    /// Read alongside `refs`, because a remote that has never been fetched has no
+    /// tracking refs and would otherwise be invisible.
+    pub remotes: Vec<Remote>,
+    /// Ahead/behind per local branch, keyed by full ref name.
+    ///
+    /// Loaded by its own task rather than as part of a refresh: it costs a commit
+    /// walk per tracking branch, and a refresh runs on every file save through
+    /// the watcher. A branch that tracks nothing is absent, which is different
+    /// from being level with a remote and has to render differently.
+    pub divergence: HashMap<String, Divergence>,
+    /// The network operation in flight, if any.
+    pub pending: Option<Operation>,
     pub graph: GraphView,
     pub selection: Option<Selection>,
     pub detail: DetailPane,
@@ -349,6 +585,129 @@ impl OpenRepo {
         }
     }
 
+    /// May `HEAD` be moved right now?
+    ///
+    /// A merge or rebase in progress owns `HEAD` until it is finished or aborted,
+    /// so switching branches mid-operation is not something to offer. Read both by
+    /// `update`, before acting, and by the view, to say why a control is disabled —
+    /// `UI_SPEC.md` requires those two answers to be the same one.
+    pub fn can_switch_branches(&self) -> bool {
+        !self.state.is_in_progress()
+    }
+
+    /// The remote to reach for when nothing names one.
+    ///
+    /// `origin` when it exists, because that is what it means; otherwise the first
+    /// remote there is, alphabetically, so a repository whose only remote is called
+    /// something else still works. Derived from remote-tracking refs, which is all
+    /// `refs` carries — `remotes()` arrives with the rest of remote management.
+    pub fn default_remote(&self) -> Option<String> {
+        let mut names: Vec<&str> = self.remotes.iter().map(|r| r.name.as_str()).collect();
+
+        // Falls back to the names implied by tracking refs, so this still answers
+        // before `remotes` has been read — and for a repository whose config
+        // gitoxide could not parse.
+        if names.is_empty() {
+            names = self
+                .refs
+                .remotes
+                .iter()
+                .filter_map(|b| b.name.short.split_once('/').map(|(remote, _)| remote))
+                .collect();
+        }
+        names.sort_unstable();
+        names.dedup();
+
+        if names.contains(&"origin") {
+            return Some("origin".to_owned());
+        }
+        names.first().map(|n| (*n).to_owned())
+    }
+
+    /// Remote-tracking branches grouped under the remote they belong to.
+    ///
+    /// Every configured remote appears, fetched or not, so the sidebar cannot imply
+    /// that a remote which has never been fetched does not exist.
+    pub fn remotes_with_branches(&self) -> Vec<(&Remote, Vec<&hidegit_core::model::Branch>)> {
+        self.remotes
+            .iter()
+            .map(|remote| {
+                let prefix = format!("{}/", remote.name);
+                let branches = self
+                    .refs
+                    .remotes
+                    .iter()
+                    // Matched on the whole first segment, so `origin` does not
+                    // collect `origin-mirror/main`.
+                    .filter(|b| b.name.short.starts_with(&prefix))
+                    .collect();
+                (remote, branches)
+            })
+            .collect()
+    }
+
+    /// Where a push from the current branch would go.
+    ///
+    /// `None` when there is nothing to push *from* — a detached `HEAD` or an unborn
+    /// branch — or nowhere to push *to*. The toolbar reads this both to decide
+    /// whether Push is available and to say why it is not.
+    pub fn push_target(&self) -> Option<PushTarget> {
+        let Head::Branch { name, .. } = &self.head else {
+            return None;
+        };
+        let branch = name.short.clone();
+
+        // An existing upstream names both the remote *and the branch on it*, and
+        // the two are not always the same name. Renaming a local branch leaves its
+        // upstream pointing at the old one, which is the ordinary state — pushing
+        // to the local name instead would quietly create a second branch on the
+        // remote rather than updating the one being tracked.
+        let upstream = self
+            .refs
+            .locals
+            .iter()
+            .find(|b| b.name.full == name.full)
+            .and_then(|b| b.upstream.as_deref())
+            .and_then(|full| full.strip_prefix("refs/remotes/"))
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(remote, on_remote)| (remote.to_owned(), on_remote.to_owned()));
+
+        let set_upstream = upstream.is_none();
+        let (remote, on_remote) = match upstream {
+            Some(pair) => pair,
+            // Nothing tracked yet, so it goes out under its own name.
+            None => (self.default_remote()?, branch.clone()),
+        };
+
+        Some(PushTarget {
+            remote,
+            // Fully qualified on both sides, so a branch whose name also matches a
+            // tag cannot be resolved to the wrong thing on either end.
+            refspec: format!("refs/heads/{branch}:refs/heads/{on_remote}"),
+            branch,
+            set_upstream,
+        })
+    }
+
+    /// How far ahead the current branch is of its upstream, for the Push button.
+    pub fn head_ahead(&self) -> usize {
+        match &self.head {
+            Head::Branch { name, .. } => self
+                .divergence_of(&name.full)
+                .map_or(0, |drift| drift.ahead),
+            _ => 0,
+        }
+    }
+
+    /// Ahead/behind for a branch, or `None` when it tracks nothing.
+    ///
+    /// `None` and `Some(0, 0)` mean different things and must render differently:
+    /// one is "there is no remote to compare with", the other is "level with the
+    /// remote".
+    pub fn divergence_of(&self, full_ref: &str) -> Option<Divergence> {
+        self.divergence.get(full_ref).copied()
+    }
+
     /// The repository's own name, for a window title or a tab.
     pub fn name(&self) -> String {
         self.path
@@ -370,6 +729,10 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// The confirmation currently on screen, if any.
     pub confirming: Option<Confirmation>,
+    /// The action sheet currently on screen, if any.
+    pub sheet: Option<ActionSheet>,
+    /// The prompt currently on screen, if any.
+    pub prompt: Option<Prompt>,
     next_toast_id: u64,
 }
 
@@ -383,6 +746,8 @@ impl Default for App {
             theme: Theme::default(),
             toasts: Vec::new(),
             confirming: None,
+            sheet: None,
+            prompt: None,
             next_toast_id: 0,
         }
     }
@@ -398,6 +763,15 @@ impl App {
             Some(i) => self.repos.get_mut(i),
             None => None,
         }
+    }
+
+    /// Is a modal layer up?
+    ///
+    /// While one is, it owns the keyboard: letting a bare key reach the screen
+    /// behind a question the user has to answer is the worst possible moment to
+    /// act on a stray press.
+    pub fn is_modal(&self) -> bool {
+        self.confirming.is_some() || self.sheet.is_some() || self.prompt.is_some()
     }
 
     /// Raises a toast carrying the error's details for copying.

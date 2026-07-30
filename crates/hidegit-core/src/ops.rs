@@ -1,12 +1,15 @@
 //! Inputs and outcomes for the operations that write.
 //!
-//! **These types are provisional.** The write half of [`crate::GitBackend`]
-//! carries its full signature from M1 so the read/write split is auditable in
-//! one file, but each operation is designed properly in the milestone that
-//! implements it: staging in M2, remotes in M3, history rewriting in M5.
-//! Expect the shapes here to be refined then rather than treated as settled.
+//! The write half of [`crate::GitBackend`] carries its full signature from M1 so
+//! the read/write split is auditable in one file, and each operation is designed
+//! properly in the milestone that implements it. Staging landed in M2 and
+//! branches, remotes and the stash in M3; **the types for history rewriting —
+//! [`MergeOpts`], [`RebasePlan`] and their outcomes — are still provisional and
+//! will be refined in M5** rather than treated as settled.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::model::{Conflict, ObjectId};
 
@@ -38,6 +41,21 @@ pub struct Patch {
     pub reverse: bool,
 }
 
+/// Where a new branch or tag starts.
+///
+/// A commit id and a ref name are not interchangeable: `git branch feat main`
+/// records `main`'s commit, but naming the ref is what the user asked for and is
+/// what Git's own reflog will say. Keeping them distinct also means a caller does
+/// not have to resolve a ref before it can use one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartPoint {
+    /// Wherever `HEAD` is now.
+    Head,
+    Commit(ObjectId),
+    /// A ref name, full or short — whatever the user picked from.
+    Ref(String),
+}
+
 /// What `checkout` should switch to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckoutTarget {
@@ -46,8 +64,30 @@ pub enum CheckoutTarget {
     Commit(ObjectId),
     NewBranch {
         name: String,
-        from: ObjectId,
+        from: StartPoint,
     },
+    /// A remote-tracking branch, as a new local branch that tracks it.
+    ///
+    /// The most common single action in a day's work, and not expressible as
+    /// [`CheckoutTarget::NewBranch`]: that would create a branch at the same
+    /// commit with no upstream, so the first push would need `--set-upstream`
+    /// and the sidebar would show no ahead/behind.
+    TrackRemote {
+        /// The remote-tracking ref, e.g. `origin/feat`.
+        remote_ref: String,
+        /// The local branch to create, e.g. `feat`.
+        local: String,
+    },
+}
+
+/// A tag to create.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagSpec {
+    pub name: String,
+    pub at: StartPoint,
+    /// `Some` makes it an annotated tag carrying this message; `None` makes it a
+    /// lightweight tag, which is just a ref.
+    pub message: Option<String>,
 }
 
 /// How hard a push is allowed to push.
@@ -71,11 +111,64 @@ pub struct PushSpec {
     pub set_upstream: bool,
 }
 
+/// How much of a remote to fetch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FetchOpts {
+    /// Delete remote-tracking refs whose remote branch is gone.
+    pub prune: bool,
+    /// Fetch tags reachable from the fetched refs.
+    pub tags: bool,
+    /// Every configured remote rather than one named one.
+    pub all_remotes: bool,
+}
+
 /// What a fetch brought back.
+///
+/// The names are as `git` printed them — usually short, like `origin/main` — so
+/// they are for showing a person, not for resolving. An empty outcome means the
+/// fetch worked and there was nothing to summarise, never that it failed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FetchOutcome {
     pub updated: Vec<String>,
     pub pruned: Vec<String>,
+}
+
+/// Which remote to pull from.
+///
+/// There is deliberately no strategy field. `pull.rebase`, `pull.ff` and
+/// `rebase.autoStash` are the user's own Git configuration, and carrying that
+/// configuration is half the reason writes shell out at all — a pull that
+/// behaved differently here than in the same user's terminal would be exactly
+/// the surprise the hybrid backend exists to avoid.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullOpts {
+    /// `None` uses the current branch's configured upstream remote.
+    pub remote: Option<String>,
+}
+
+/// How a pull ended. Conflicts are an outcome, not an error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PullOutcome {
+    UpToDate,
+    FastForwarded(ObjectId),
+    /// A merge or a rebase, depending on the user's configuration, that landed.
+    Integrated(ObjectId),
+    Conflicted(Vec<Conflict>),
+}
+
+/// What a push did, per ref.
+///
+/// `rejected` is not, by itself, an error: pushing several refs at once can update
+/// some and be refused others, and reporting only the failure would hide what did
+/// land. A push where *nothing* landed is a plain failure, and Git's own hint —
+/// which says exactly what to do about a non-fast-forward — is what gets shown.
+///
+/// Names are as `git` printed them, so the short form. For display, not for
+/// resolving.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PushOutcome {
+    pub updated: Vec<String>,
+    pub rejected: Vec<String>,
 }
 
 /// Whether a merge may or must fast-forward.
@@ -179,12 +272,84 @@ pub trait ProgressSink: Send + Sync {
     fn report(&self, update: ProgressUpdate);
 }
 
+impl ProgressUpdate {
+    /// Parses one line of `git --progress` output, if it is one.
+    ///
+    /// Git writes `Receiving objects:  42% (42/100)`, sometimes prefixed with
+    /// `remote: `, and rewrites the line in place with a bare carriage return.
+    /// Parsed by hand rather than with a regular expression: this is the only
+    /// pattern that needs matching, and `crate::process::parse_version` is the
+    /// precedent for keeping the dependency list short.
+    ///
+    /// Returns `None` for anything else — a summary line, a warning, a hint.
+    /// That is not a failure; the caller keeps the text for `stderr` and moves on.
+    pub fn parse(line: &str) -> Option<Self> {
+        let line = line.trim().strip_prefix("remote: ").unwrap_or(line.trim());
+
+        // `<phase>: <n>% (<done>/<total>)`. The colon is the anchor, and the
+        // phase is everything before it.
+        let (phase, rest) = line.split_once(':')?;
+        if phase.is_empty() || !phase.chars().all(|c| c.is_alphabetic() || c == ' ') {
+            return None;
+        }
+
+        // The counts are what carry meaning; the percentage is redundant with
+        // them and is skipped rather than parsed twice.
+        let open = rest.find('(')?;
+        let counts = rest[open + 1..].split(')').next()?;
+        let (done, total) = counts.split_once('/')?;
+
+        Some(Self {
+            phase: phase.trim().to_owned(),
+            done: done.trim().parse().ok()?,
+            total: total.trim().parse().ok(),
+        })
+    }
+
+    /// Progress as a fraction, when the total is known.
+    pub fn fraction(&self) -> Option<f32> {
+        match self.total {
+            Some(total) if total > 0 => Some((self.done as f32 / total as f32).clamp(0.0, 1.0)),
+            _ => None,
+        }
+    }
+}
+
 /// Discards progress. For calls that do not display any.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoProgress;
 
 impl ProgressSink for NoProgress {
     fn report(&self, _update: ProgressUpdate) {}
+}
+
+/// A cooperative request to stop a long operation.
+///
+/// An `Arc<AtomicBool>` rather than a channel for the same reason
+/// [`ProgressSink`] is a trait object: `hidegit-core` stays free of any
+/// particular async runtime. Cloning shares the flag, so the UI keeps one handle
+/// and the blocking worker keeps another.
+///
+/// Setting it does not stop anything by itself — whoever runs the subprocess
+/// polls it and kills the child. Cancelling a `git` command can leave
+/// `index.lock` behind, which is reported rather than deleted; see
+/// [`crate::process::GitCommand::run_streaming`].
+#[derive(Debug, Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Asks the operation to stop. Idempotent, and never blocks.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 /// Blame output. Lands in M6.
@@ -199,4 +364,95 @@ pub struct BlameLine {
     /// 1-based line number in the file as of the blamed revision.
     pub lineno: u32,
     pub text: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_is_read_out_of_gits_own_counts() {
+        let update = ProgressUpdate::parse("Receiving objects:  42% (42/100)").expect("a count");
+        assert_eq!(update.phase, "Receiving objects");
+        assert_eq!(update.done, 42);
+        assert_eq!(update.total, Some(100));
+        assert_eq!(update.fraction(), Some(0.42));
+    }
+
+    #[test]
+    fn a_remote_prefix_is_the_remotes_progress_not_a_phase_name() {
+        let update =
+            ProgressUpdate::parse("remote: Counting objects:  50% (3/6)").expect("a count");
+        assert_eq!(update.phase, "Counting objects");
+        assert_eq!(update.done, 3);
+    }
+
+    #[test]
+    fn a_finished_phase_still_reports_its_final_counts() {
+        // Git appends `, done.` to the last line of a phase. The counts before
+        // it are the ones that matter, so the trailing text must not defeat it.
+        let update =
+            ProgressUpdate::parse("Resolving deltas: 100% (12/12), done.").expect("a count");
+        assert_eq!((update.done, update.total), (12, Some(12)));
+        assert_eq!(update.fraction(), Some(1.0));
+    }
+
+    #[test]
+    fn a_rate_after_the_counts_is_ignored_rather_than_confusing_the_parse() {
+        let update =
+            ProgressUpdate::parse("Receiving objects:  90% (90/100), 1.20 MiB | 500 KiB/s")
+                .expect("a count");
+        assert_eq!((update.done, update.total), (90, Some(100)));
+    }
+
+    #[test]
+    fn lines_that_are_not_progress_are_not_an_error() {
+        // Everything git writes to stderr comes through this parser. Warnings,
+        // hints and summaries are kept for `stderr` and must not be mistaken
+        // for counts.
+        for line in [
+            "",
+            "From /tmp/remote",
+            "   a3f9c21..b7e2d10  main       -> origin/main",
+            "warning: redirecting to https://example.invalid/repo.git/",
+            "hint: use --force-with-lease",
+            "fatal: could not read Username for 'https://example.invalid'",
+        ] {
+            assert_eq!(
+                ProgressUpdate::parse(line),
+                None,
+                "{line:?} is not a progress report"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_total_still_reports_what_is_done() {
+        let update = ProgressUpdate {
+            phase: "Enumerating objects".to_owned(),
+            done: 17,
+            total: None,
+        };
+        assert_eq!(
+            update.fraction(),
+            None,
+            "no total means no fraction to show"
+        );
+    }
+
+    #[test]
+    fn a_cancel_token_is_shared_by_every_clone_of_it() {
+        // The UI holds one and the blocking worker holds another; a cancel on
+        // either has to be visible to the other or nothing stops.
+        let held_by_ui = CancelToken::new();
+        let held_by_worker = held_by_ui.clone();
+
+        assert!(!held_by_worker.is_cancelled());
+        held_by_ui.cancel();
+        assert!(held_by_worker.is_cancelled());
+
+        // Idempotent: a second click on Cancel is not an error.
+        held_by_ui.cancel();
+        assert!(held_by_worker.is_cancelled());
+    }
 }
