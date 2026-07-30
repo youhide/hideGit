@@ -13,8 +13,8 @@ use time::format_description::well_known::Rfc3339;
 
 use super::query;
 use crate::model::{
-    CheckState, Identity, MergeState, PrRole, PullRequest, PullRequestDetail, RateBudget, Review,
-    ReviewState, ReviewVerdict,
+    CheckState, Identity, Lifecycle, MergeState, PrRole, PullRequest, PullRequestDetail,
+    RateBudget, Review, ReviewState, ReviewVerdict,
 };
 
 /// Parses a GitHub timestamp, falling back to the epoch.
@@ -83,6 +83,19 @@ fn check_state(raw: Option<&str>) -> CheckState {
             tracing::debug!(other, "unrecognised check state; treating it as pending");
             CheckState::Pending
         }
+    }
+}
+
+/// `OPEN` / `MERGED` / `CLOSED`.
+///
+/// Anything unrecognised reads as `Closed`: this is only ever consulted for a
+/// pull request that has already vanished from a list of open ones, so "not
+/// open" is the one thing already known to be true.
+fn lifecycle(raw: Option<&str>) -> Lifecycle {
+    match raw {
+        Some("OPEN") => Lifecycle::Open,
+        Some("MERGED") => Lifecycle::Merged,
+        _ => Lifecycle::Closed,
     }
 }
 
@@ -212,6 +225,7 @@ pub fn detail(node: &query::Node, viewer: &str) -> PullRequestDetail {
 
     PullRequestDetail {
         pr: pull_request(node, viewer),
+        lifecycle: lifecycle(node.state.as_deref()),
         body: node.body.clone().unwrap_or_default(),
         reviews,
         commits: node
@@ -305,6 +319,7 @@ mod tests {
             assignees: None,
             latest_reviews: None,
             commits: None,
+            state: None,
             body: None,
             additions: None,
             deletions: None,
@@ -441,6 +456,21 @@ mod tests {
             pull_request(&node, "youhide").updated,
             OffsetDateTime::UNIX_EPOCH
         );
+    }
+
+    #[test]
+    fn how_a_pull_request_ended_is_read_rather_than_guessed() {
+        assert_eq!(lifecycle(Some("MERGED")), Lifecycle::Merged);
+        assert_eq!(lifecycle(Some("CLOSED")), Lifecycle::Closed);
+        assert_eq!(lifecycle(Some("OPEN")), Lifecycle::Open);
+    }
+
+    #[test]
+    fn an_unrecognised_state_reads_as_closed_rather_than_open() {
+        // Only ever consulted for a pull request that has already vanished from
+        // a list of open ones, so "not open" is the one thing already known.
+        assert_eq!(lifecycle(None), Lifecycle::Closed);
+        assert_eq!(lifecycle(Some("SOMETHING_NEW")), Lifecycle::Closed);
     }
 
     #[test]

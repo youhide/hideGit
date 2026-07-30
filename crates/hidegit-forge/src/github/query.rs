@@ -75,6 +75,7 @@ query($owner: String!, $name: String!, $number: Int!, $nested: Int!) {
       url
       isDraft
       updatedAt
+      state
       body
       additions
       deletions
@@ -87,7 +88,7 @@ query($owner: String!, $name: String!, $number: Int!, $nested: Int!) {
       comments { totalCount }
       reviewThreads { totalCount }
       reviewRequests(first: $nested) {
-        nodes { requestedReviewer { __typename ... on User { login } ... on Team { name } } }
+        nodes { requestedReviewer { __typename ... on User { login } } }
       }
       assignees(first: $nested) { nodes { login } }
       latestReviews(first: $nested) { nodes { author { login } state submittedAt } }
@@ -191,6 +192,7 @@ pub struct Node {
     pub commits: Option<Connection<CommitNode>>,
 
     // Detail only.
+    pub state: Option<String>,
     pub body: Option<String>,
     pub additions: Option<u32>,
     pub deletions: Option<u32>,

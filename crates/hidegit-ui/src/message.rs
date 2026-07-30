@@ -19,7 +19,9 @@ use hidegit_core::ops::{
     StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
-use hidegit_forge::{DeviceCode, ForgeError, GitHub, Identity, PullRequest, PullRequestDetail};
+use hidegit_forge::{
+    DeviceCode, ForgeError, GitHub, Identity, PullRequest, PullRequestDetail, RateBudget,
+};
 
 use crate::state::{ActionSheet, Pane, Prompt, Selection, StagingRow};
 
@@ -171,6 +173,10 @@ pub enum Message {
     /// It did not open. Reported, because a control that looks like it worked
     /// and did not is worse than one that says it could not.
     OpenUrlFailed(Box<UiError>),
+    /// The window gained or lost focus, which is what decides how often
+    /// hideGit polls. A minimised window asking every minute is exactly what
+    /// the interval table exists to prevent.
+    WindowFocused(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -338,6 +344,14 @@ pub enum RepoMessage {
     /// Ask the forge for this repository's open pull requests.
     PrsRefreshRequested,
     PrsLoaded(Box<Result<PrsLoad, UiError>>),
+    /// A pull request of yours that is no longer open, loaded to find out
+    /// *how* it ended.
+    ///
+    /// A poll asks only for open ones, so an ending arrives as an absence and
+    /// an absence cannot say whether it was merged or closed. Those are
+    /// different events, so each disappearance costs one more request — a
+    /// handful a day, not one per poll.
+    PrEndingLoaded(Box<Result<PullRequestDetail, UiError>>),
     /// A pull request row. Loads its detail into the detail pane.
     PrDetailLoaded(Box<Result<PullRequestDetail, UiError>>),
     /// Open one in the browser — the trait is narrow, and everything past
@@ -402,8 +416,16 @@ pub struct Refreshed {
 /// that fixes it — none of which a toast can express.
 #[derive(Debug, Clone)]
 pub enum PrsLoad {
-    Loaded(Vec<PullRequest>),
-    NotInstalled { install_url: String },
+    Loaded {
+        items: Vec<PullRequest>,
+        /// What is left of the API budget, which is what the scheduler widens
+        /// its interval on. It rides on the result rather than being asked for
+        /// separately — see ADR-0006.
+        budget: RateBudget,
+    },
+    NotInstalled {
+        install_url: String,
+    },
 }
 
 /// The working directory, and both of its diffs.

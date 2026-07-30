@@ -177,10 +177,24 @@ pub struct Review {
     pub submitted: OffsetDateTime,
 }
 
+/// Whether a pull request is still open, and how it ended if not.
+///
+/// A poll asks only for open pull requests, so an ending arrives as an
+/// *absence* — and an absence cannot say which of the two it was. Reading this
+/// costs one extra request per pull request that disappears, which happens a
+/// handful of times a day rather than on every poll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lifecycle {
+    Open,
+    Merged,
+    Closed,
+}
+
 /// A pull request, loaded for the detail pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestDetail {
     pub pr: PullRequest,
+    pub lifecycle: Lifecycle,
     pub body: String,
     pub reviews: Vec<Review>,
     pub commits: u32,

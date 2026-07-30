@@ -31,7 +31,7 @@ use crate::state::{
     Operation, PAGE_SIZE, PROMPT_FIELD_IDS, Pane, PrPanel, PrState, Prompt, PromptField,
     PromptKind, ROW_HEIGHT, Screen, Section, Selection,
 };
-use crate::{forge, screen, watcher, widget};
+use crate::{alerts, forge, screen, watcher, widget};
 
 /// The application, plus the bits of view state that are not domain state.
 #[derive(Debug, Default)]
@@ -287,6 +287,13 @@ impl Hidegit {
 
                 match *result {
                     Ok(identity) => {
+                        let changed =
+                            !forge::same_identity(self.app.forge.identity.as_ref(), &identity);
+                        if changed {
+                            for repo in &mut self.app.repos {
+                                repo.prs.watcher.reset();
+                            }
+                        }
                         self.app.forge.identity = Some(identity);
                         self.poll_every_repository()
                     }
@@ -332,6 +339,9 @@ impl Hidegit {
                 for repo in &mut self.app.repos {
                     repo.prs.items.clear();
                     repo.prs.state = PrState::Idle;
+                    // Signing in as somebody else makes every role different,
+                    // and that difference is not news about the pull requests.
+                    repo.prs.watcher.reset();
                 }
                 // A pull request in the detail pane came from a session that no
                 // longer exists, so it goes with it.
@@ -348,6 +358,11 @@ impl Hidegit {
 
             Message::OpenUrlFailed(error) => {
                 self.app.toast(&error);
+                Task::none()
+            }
+
+            Message::WindowFocused(focused) => {
+                self.app.focused = focused;
                 Task::none()
             }
 
@@ -1684,9 +1699,37 @@ impl Hidegit {
 
             RepoMessage::PrsLoaded(result) => {
                 match *result {
-                    Ok(PrsLoad::Loaded(items)) => {
+                    Ok(PrsLoad::Loaded { items, budget }) => {
+                        repo.prs.schedule.succeeded(budget);
+                        // Compared *before* the list is replaced, because the
+                        // comparison is against what was there.
+                        let observed = repo.prs.watcher.observe(&items);
                         repo.prs.items = items;
                         repo.prs.state = PrState::Loaded;
+
+                        let repository = repo
+                            .prs
+                            .repo
+                            .as_ref()
+                            .map_or_else(String::new, ToString::to_string);
+                        let forge_repo = repo.prs.repo.clone();
+
+                        for (summary, body) in
+                            hidegit_forge::notify::compose(&observed.alerts, &repository)
+                        {
+                            self.app.notifier.notify(&summary, &body);
+                        }
+
+                        // Each ending costs one more request, and only for pull
+                        // requests you wrote.
+                        let Some((client, forge_repo)) =
+                            self.app.forge.client.clone().zip(forge_repo)
+                        else {
+                            return Task::none();
+                        };
+                        return Task::batch(observed.vanished.into_iter().map(|number| {
+                            forge::ending(Arc::clone(&client), index, forge_repo.clone(), number)
+                        }));
                     }
                     // Its own state rather than a toast: it is about this
                     // repository, it persists until somebody installs the app,
@@ -1701,9 +1744,44 @@ impl Hidegit {
                     // deliberately left alone so the panel goes stale rather
                     // than empty.
                     Err(error) => {
+                        repo.prs.schedule.failed();
                         tracing::debug!(error = %error.summary, "a poll failed");
                         repo.prs.state = PrState::Stale(error.summary);
                     }
+                }
+                Task::none()
+            }
+
+            RepoMessage::PrEndingLoaded(result) => {
+                // A lookup that fails costs one notification, never the poll:
+                // the pull request is gone from the list either way.
+                let Ok(detail) = *result else {
+                    return Task::none();
+                };
+
+                let event = match detail.lifecycle {
+                    hidegit_forge::Lifecycle::Merged => hidegit_forge::AlertEvent::PrMerged,
+                    hidegit_forge::Lifecycle::Closed => hidegit_forge::AlertEvent::PrClosed,
+                    // It is open after all — it fell off the page rather than
+                    // ending, which a repository with more than `PAGE` open
+                    // pull requests can do. Not an event.
+                    hidegit_forge::Lifecycle::Open => return Task::none(),
+                };
+
+                let repository = repo
+                    .prs
+                    .repo
+                    .as_ref()
+                    .map_or_else(String::new, ToString::to_string);
+
+                let alert = hidegit_forge::Alert {
+                    event,
+                    number: detail.pr.number,
+                    title: detail.pr.title.clone(),
+                    url: detail.pr.url.clone(),
+                };
+                for (summary, body) in hidegit_forge::notify::compose(&[alert], &repository) {
+                    self.app.notifier.notify(&summary, &body);
                 }
                 Task::none()
             }
@@ -1861,7 +1939,36 @@ impl Hidegit {
             )
         });
 
-        Subscription::batch(std::iter::once(keys).chain(watches))
+        // One timer per repository that has something to poll. The interval is
+        // part of the subscription's identity, so a failure or a thin budget
+        // replaces the timer rather than being noticed on the next tick.
+        let now = time::OffsetDateTime::now_utc();
+        let total = self.app.repos.len();
+        let activity = self.app.activity();
+        let connected = self.app.forge.is_connected();
+
+        let polls = self
+            .app
+            .repos
+            .iter()
+            .enumerate()
+            .filter(move |(_, repo)| connected && repo.prs.repo.is_some())
+            .map(move |(index, repo)| {
+                alerts::subscribe(index, total, &repo.prs.schedule, activity, now)
+            });
+
+        // Focus decides how often polling happens, so it has to be observed
+        // rather than assumed. A minimised window asking every minute is the
+        // thing the interval table exists to prevent.
+        let focus = iced::event::listen_with(|event, _, _| match event {
+            iced::Event::Window(iced::window::Event::Focused) => Some(Message::WindowFocused(true)),
+            iced::Event::Window(iced::window::Event::Unfocused) => {
+                Some(Message::WindowFocused(false))
+            }
+            _ => None,
+        });
+
+        Subscription::batch([keys, focus].into_iter().chain(watches).chain(polls))
     }
 
     /// Which modal, if any, currently owns the keyboard.
@@ -4241,7 +4348,25 @@ mod tests {
     fn app_with_forge_repo() -> Hidegit {
         let mut app = app_with(3);
         app.app.repos[0].prs.repo = Some(github_repo());
+        // Notifications go to a recorder rather than to a notification daemon,
+        // which no CI runner has.
+        app.app.notifier = Arc::new(hidegit_forge::Recorder::default());
         app
+    }
+
+    fn full_budget() -> hidegit_forge::RateBudget {
+        hidegit_forge::RateBudget {
+            limit: 5_000,
+            remaining: 5_000,
+            reset: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn loaded(items: Vec<hidegit_forge::PullRequest>) -> PrsLoad {
+        PrsLoad::Loaded {
+            items,
+            budget: full_budget(),
+        }
     }
 
     #[test]
@@ -4263,7 +4388,7 @@ mod tests {
 
         let _ = app.update(Message::Repo(
             0,
-            RepoMessage::PrsLoaded(Box::new(Ok(PrsLoad::Loaded(vec![pull_request(47)])))),
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![pull_request(47)])))),
         ));
         assert_eq!(app.app.repos[0].prs.items.len(), 1);
 
@@ -4321,7 +4446,7 @@ mod tests {
 
         let _ = app.update(Message::Repo(
             0,
-            RepoMessage::PrsLoaded(Box::new(Ok(PrsLoad::Loaded(vec![pull_request(47)])))),
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![pull_request(47)])))),
         ));
         app.app.repos[0].selection = Some(Selection::PullRequest(47));
 
@@ -4384,7 +4509,7 @@ mod tests {
 
         let _ = app.update(Message::Repo(
             0,
-            RepoMessage::PrsLoaded(Box::new(Ok(PrsLoad::Loaded(vec![pull_request(48)])))),
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![pull_request(48)])))),
         ));
         let _ = app.update(Message::Repo(
             0,
@@ -4456,6 +4581,122 @@ mod tests {
             modal_shortcut(&key, Modal::DeviceCode),
             Message::ToastDismissed(_)
         ));
+    }
+
+    #[test]
+    fn the_first_poll_after_launch_notifies_about_nothing() {
+        // Otherwise opening a repository alerts about every pull request that
+        // already needed attention, which is all of them.
+        let recorder = Arc::new(hidegit_forge::Recorder::default());
+        let mut app = app_with_forge_repo();
+        app.app.notifier = recorder.clone();
+
+        let mut failing = pull_request(47);
+        failing.checks = hidegit_forge::CheckState::Failing;
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![failing])))),
+        ));
+
+        assert!(recorder.shown().is_empty());
+    }
+
+    #[test]
+    fn a_change_after_the_baseline_reaches_the_notifier() {
+        let recorder = Arc::new(hidegit_forge::Recorder::default());
+        let mut app = app_with_forge_repo();
+        app.app.notifier = recorder.clone();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![pull_request(47)])))),
+        ));
+
+        let mut failing = pull_request(47);
+        failing.checks = hidegit_forge::CheckState::Failing;
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![failing])))),
+        ));
+
+        let shown = recorder.shown();
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].0.contains("Checks failed on #47"), "{shown:?}");
+        assert!(shown[0].1.contains("youhide/hideGit"), "{shown:?}");
+    }
+
+    #[test]
+    fn a_failed_poll_never_notifies() {
+        let recorder = Arc::new(hidegit_forge::Recorder::default());
+        let mut app = app_with_forge_repo();
+        app.app.notifier = recorder.clone();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![pull_request(47)])))),
+        ));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Err(UiError {
+                summary: "could not reach github.com".into(),
+                details: String::new(),
+            }))),
+        ));
+
+        assert!(recorder.shown().is_empty());
+    }
+
+    #[test]
+    fn a_merged_pull_request_is_reported_as_merged_rather_than_as_closed() {
+        // The poll asks only for open pull requests, so an ending arrives as an
+        // absence — and the absence cannot say which of the two it was.
+        let recorder = Arc::new(hidegit_forge::Recorder::default());
+        let mut app = app_with_forge_repo();
+        app.app.notifier = recorder.clone();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrEndingLoaded(Box::new(Ok(hidegit_forge::PullRequestDetail {
+                pr: pull_request(47),
+                lifecycle: hidegit_forge::Lifecycle::Merged,
+                body: String::new(),
+                reviews: Vec::new(),
+                commits: 1,
+                changed_files: 1,
+                additions: 1,
+                deletions: 0,
+            }))),
+        ));
+
+        let shown = recorder.shown();
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].0.contains("merged"), "{shown:?}");
+    }
+
+    #[test]
+    fn a_pull_request_that_fell_off_the_page_is_not_an_ending() {
+        // A repository with more than one page of open pull requests can drop
+        // one out of the window without anything having happened to it.
+        let recorder = Arc::new(hidegit_forge::Recorder::default());
+        let mut app = app_with_forge_repo();
+        app.app.notifier = recorder.clone();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrEndingLoaded(Box::new(Ok(hidegit_forge::PullRequestDetail {
+                pr: pull_request(47),
+                lifecycle: hidegit_forge::Lifecycle::Open,
+                body: String::new(),
+                reviews: Vec::new(),
+                commits: 1,
+                changed_files: 1,
+                additions: 1,
+                deletions: 0,
+            }))),
+        ));
+
+        assert!(recorder.shown().is_empty());
     }
 
     #[test]

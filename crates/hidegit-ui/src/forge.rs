@@ -97,7 +97,10 @@ pub fn poll(client: Arc<GitHub>, index: usize, repo: RepoRef) -> Task<Message> {
             match client.pull_requests(&repo, None).await {
                 // A cursor-less poll always carries data; `None` would mean
                 // "unchanged", which GraphQL never reports.
-                Ok(result) => Ok(PrsLoad::Loaded(result.data.unwrap_or_default())),
+                Ok(result) => Ok(PrsLoad::Loaded {
+                    items: result.data.unwrap_or_default(),
+                    budget: result.budget,
+                }),
                 // Lifted out of the error channel: the request succeeded and
                 // the answer is that hideGit cannot see this repository, which
                 // has an action attached rather than a failure to report.
@@ -118,6 +121,23 @@ pub fn detail(client: Arc<GitHub>, index: usize, repo: RepoRef, number: u64) -> 
             Message::Repo(
                 index,
                 RepoMessage::PrDetailLoaded(Box::new(result.map_err(UiError::from))),
+            )
+        },
+    )
+}
+
+/// Finds out how a pull request that vanished from the open list ended.
+///
+/// The same request as `detail`, landing on a different message: this one feeds
+/// a notification rather than the detail pane, and routing both through one
+/// message would put a merged pull request on screen because it was merged.
+pub fn ending(client: Arc<GitHub>, index: usize, repo: RepoRef, number: u64) -> Task<Message> {
+    Task::perform(
+        async move { client.pull_request(&repo, number).await },
+        move |result: Result<PullRequestDetail, _>| {
+            Message::Repo(
+                index,
+                RepoMessage::PrEndingLoaded(Box::new(result.map_err(UiError::from))),
             )
         },
     )

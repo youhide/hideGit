@@ -88,7 +88,8 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `async-trait` | 0.1 | `Forge`'s async methods, which have to be dyn-compatible | M4 |
 | `octocrab` | 0.54 | GitHub API, and the device flow | M4 |
 | `keyring` | 4 | OS keychain access for forge tokens | M4 |
-| `notify-rust` | — | Native desktop notifications | M4 |
+| `notify-rust` | 4 | Native desktop notifications | M4 |
+| `open` | 5 | Handing a URL to the platform's browser | M4 |
 
 Versions are pinned in the workspace `Cargo.toml` and inherited by every crate, so a bump happens
 in one place. Crates whose milestone has not arrived carry no version here — recording a number
@@ -259,7 +260,7 @@ iced's `update` runs on the UI thread. Blocking it drops frames, so nothing bloc
 | `gix` calls (blocking) | `Task::perform` onto `tokio`'s blocking pool |
 | `git` subprocesses | Run on the blocking pool, awaited off the UI thread |
 | Long operations (clone, fetch, pull, push) | `Task::stream` yielding progress `Message`s and then the outcome; cancellable |
-| PR polling | Long-lived `Subscription` in `hidegit-forge` |
+| PR polling | Schedule in `hidegit-forge`, `Subscription` in `hidegit-ui` |
 | Filesystem watching | `Subscription` over a debounced watcher, triggering status refresh |
 
 The flow is uniform: `Message` → `update` returns a `Task` → work happens off-thread → completion
@@ -512,9 +513,31 @@ widens, below 5% polling stops until reset and says so in the UI. `Retry-After` 
 exactly. Network failures back off exponentially from 30s to a 30-minute ceiling with jitter, and
 never produce a notification — a failed poll updates a status indicator.
 
+**The scheduler lives in `hidegit-forge`; the `Subscription` that drives it lives in `hidegit-ui`.**
+An interval is arithmetic and a transition is a comparison — neither needs a window, and both are
+miserable to test through a toolkit. It is the same split `hidegit_core::watch` and
+`hidegit-ui`'s `watcher` already use for the filesystem. The interval is part of the subscription's
+identity, so a failure or a thin budget replaces the timer rather than being noticed on the next
+tick.
+
 Notifications fire on *transitions*, not on state, and the first poll after startup establishes a
 baseline silently so launching the app never produces a burst of alerts for things already known.
-Events and their defaults are listed in [UI_SPEC.md](./UI_SPEC.md#pr-panel).
+Signing in as a different account resets that baseline for the same reason: every role changes, and
+the change is not news about the pull requests. Events and their defaults are listed in
+[UI_SPEC.md](./UI_SPEC.md#pr-panel).
+
+**An ending arrives as an absence.** The poll asks only for open pull requests, so a merge and a
+close both look like a row disappearing — and `PrMerged` and `PrClosed` are different events. Each
+disappearance of a pull request *you wrote* therefore costs one extra request to read its state.
+That is a handful a day rather than one per poll, and it is the alternative to reporting both as
+the same thing.
+
+**Delivery is behind a `Notifier` trait.** Nothing in CI can receive a notification — a Linux runner
+has no notification daemon and a macOS runner has no bundle to send from — so everything that
+*decides* to notify is tested against a recorder. On macOS `notify-rust` goes through
+`mac-notification-sys`, which needs a registered bundle identifier: a notification sent from
+`cargo run` silently does not appear, and checking alerts there means
+`cargo run -p xtask -- bundle-macos` and running the bundle.
 
 ## Error taxonomy
 

@@ -521,6 +521,7 @@ mod tests {
             repo: None,
             items: vec![pr(47, &[PrRole::Author, PrRole::Assignee])],
             state: PrState::Loaded,
+            ..crate::state::PrPanel::default()
         };
 
         let grouped = panel.grouped();
@@ -539,6 +540,7 @@ mod tests {
                 pr(3, &[PrRole::Author]),
             ],
             state: PrState::Loaded,
+            ..crate::state::PrPanel::default()
         };
 
         let roles: Vec<PrRole> = panel.grouped().into_iter().map(|(role, _)| role).collect();
@@ -554,6 +556,7 @@ mod tests {
             repo: None,
             items: vec![pr(1, &[PrRole::Author])],
             state: PrState::Loaded,
+            ..crate::state::PrPanel::default()
         };
 
         assert_eq!(panel.grouped().len(), 1, "only the one that has items");

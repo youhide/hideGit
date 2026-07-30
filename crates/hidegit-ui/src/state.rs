@@ -17,7 +17,8 @@ use hidegit_core::model::{
 use hidegit_core::ops::{CancelToken, ProgressUpdate, StartPoint};
 use hidegit_core::{GitBackend, LogPage};
 use hidegit_forge::{
-    DeviceCode, GitHub, Identity, PrRole, PullRequest, PullRequestDetail, RepoRef,
+    Activity, DeviceCode, GitHub, Identity, Notifier, PrRole, PullRequest, PullRequestDetail,
+    RepoRef, Schedule, Watcher,
 };
 
 use crate::message::{Message, UiError};
@@ -184,6 +185,11 @@ pub struct PrPanel {
     /// can go stale rather than empty.
     pub items: Vec<PullRequest>,
     pub state: PrState,
+    /// When to ask next: the interval, the backoff and the budget.
+    pub schedule: Schedule,
+    /// What was seen last time, so a poll produces *transitions* rather than
+    /// state. Per repository, because the numbers are.
+    pub watcher: Watcher,
 }
 
 impl PrPanel {
@@ -841,6 +847,12 @@ pub struct App {
     pub prompt: Option<Prompt>,
     /// The forge session: one token, every open repository.
     pub forge: ForgeSession,
+    /// Where a notification goes. A trait object because nothing in CI can
+    /// receive one, so everything that *decides* to notify is tested against a
+    /// recorder instead.
+    pub notifier: Arc<dyn Notifier>,
+    /// Whether the window has focus. Half of what decides the poll interval.
+    pub focused: bool,
     next_toast_id: u64,
 }
 
@@ -857,6 +869,11 @@ impl Default for App {
             sheet: None,
             prompt: None,
             forge: ForgeSession::default(),
+            notifier: Arc::new(hidegit_forge::Desktop),
+            // Assumed focused until told otherwise: a window that has just
+            // opened is being looked at, and iced reports focus by event rather
+            // than on demand.
+            focused: true,
             next_toast_id: 0,
         }
     }
@@ -879,6 +896,26 @@ impl App {
     /// While one is, it owns the keyboard: letting a bare key reach the screen
     /// behind a question the user has to answer is the worst possible moment to
     /// act on a stray press.
+    /// How often to poll, given what is on screen.
+    ///
+    /// `Foreground` needs somebody actually reading the answer, which is what a
+    /// selected pull request means. Being focused with the graph open is
+    /// ordinary use, not a reason to ask every minute.
+    pub fn activity(&self) -> Activity {
+        if !self.focused {
+            return Activity::Background;
+        }
+        let reading = self
+            .active_repo()
+            .is_some_and(|repo| matches!(repo.selection, Some(Selection::PullRequest(_))));
+
+        if reading {
+            Activity::Foreground
+        } else {
+            Activity::Normal
+        }
+    }
+
     pub fn is_modal(&self) -> bool {
         self.confirming.is_some() || self.sheet.is_some() || self.prompt.is_some()
     }
