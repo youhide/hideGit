@@ -16,7 +16,7 @@ use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
 use crate::message::{Message, RepoMessage};
-use crate::state::{ActionSheet, OpenRepo, Prompt, PromptField, PromptKind, Selection};
+use crate::state::{ActionSheet, App, OpenRepo, Prompt, PromptField, PromptKind, Selection};
 use crate::theme::Palette;
 
 const HEADING_SIZE: f32 = 11.0;
@@ -27,7 +27,12 @@ const ITEM_SIZE: f32 = 13.0;
 /// Most rows address one repository (`RepoMessage`), but raising a sheet or a
 /// prompt is application state, so those are top-level. `index` is what lets a
 /// row build a `Message::Repo(index, …)` to put *inside* a sheet item.
-pub fn view<'a>(repo: &'a OpenRepo, index: usize, palette: &'a Palette) -> Element<'a, Message> {
+pub fn view<'a>(
+    app: &'a App,
+    repo: &'a OpenRepo,
+    index: usize,
+    palette: &'a Palette,
+) -> Element<'a, Message> {
     let mut sections = column![].spacing(2).padding(Padding::from([8, 0]));
 
     sections = sections.push(working_directory(repo, index, palette));
@@ -107,6 +112,14 @@ pub fn view<'a>(repo: &'a OpenRepo, index: usize, palette: &'a Palette) -> Eleme
         }
     }
 
+    // Last, and absent entirely when no remote names a forge repository: a
+    // repository whose only remote is a path on disk has no pull requests to
+    // have, which is not the same as having none.
+    if let Some(prs) = crate::widget::pr::section(app, repo, index, palette) {
+        sections = sections.push(Space::new().height(8));
+        sections = sections.push(prs);
+    }
+
     let palette = *palette;
     container(scrollable(sections).height(Fill))
         .width(Length::Fixed(230.0))
@@ -173,7 +186,7 @@ fn heading_row<'a, M: 'a>(
 }
 
 /// A section heading, with the `+` that adds to it when there is one.
-fn section_heading<'a>(
+pub(crate) fn section_heading<'a>(
     label: &'a str,
     count: usize,
     add: Option<(&'a str, Message)>,

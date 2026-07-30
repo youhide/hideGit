@@ -20,15 +20,18 @@ use hidegit_core::{GitBackend, GitError, HybridBackend};
 use iced::widget::canvas;
 use iced::{Element as IcedElement, Subscription, Task, keyboard};
 
+use hidegit_forge::{NewPullRequest, WebTarget};
+
 use crate::message::{
-    CommitLoad, Message, OpenedRepository, OperationOutcome, Page, Refreshed, RepoMessage,
+    CommitLoad, Message, OpenedRepository, OperationOutcome, Page, PrsLoad, Refreshed, RepoMessage,
     StatusLoad, UiError,
 };
 use crate::state::{
-    App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo, Operation,
-    PAGE_SIZE, PROMPT_FIELD_IDS, Pane, Prompt, PromptKind, ROW_HEIGHT, Screen, Section, Selection,
+    ActionSheet, App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo,
+    Operation, PAGE_SIZE, PROMPT_FIELD_IDS, Pane, PrPanel, PrState, Prompt, PromptField,
+    PromptKind, ROW_HEIGHT, Screen, Section, Selection,
 };
-use crate::{screen, watcher, widget};
+use crate::{forge, screen, watcher, widget};
 
 /// The application, plus the bits of view state that are not domain state.
 #[derive(Debug, Default)]
@@ -144,12 +147,14 @@ impl Hidegit {
         let mut this = Self::default();
         this.app.recents = recents;
 
-        let task = match initial {
-            Some(path) => Task::done(Message::OpenRepository(path)),
-            None => Task::none(),
-        };
+        // The forge client is built off the UI thread, because building it
+        // reads the keychain and a keychain can prompt.
+        let mut tasks = vec![forge::boot()];
+        if let Some(path) = initial {
+            tasks.push(Task::done(Message::OpenRepository(path)));
+        }
 
-        (this, task)
+        (this, Task::batch(tasks))
     }
 
     pub fn title(&self) -> String {
@@ -208,6 +213,141 @@ impl Hidegit {
 
             Message::ToastDismissed(id) => {
                 self.app.dismiss_toast(id);
+                Task::none()
+            }
+
+            Message::ForgeClientBuilt(client, restored) => {
+                self.app.forge.client = Some(client);
+                match *restored {
+                    Ok(identity) => {
+                        self.app.forge.identity = identity;
+                        // Every repository already open was opened before the
+                        // keychain had been read, so none of them has asked for
+                        // its pull requests yet.
+                        self.poll_every_repository()
+                    }
+                    Err(error) => {
+                        // The one failure that is not worth a toast: on a machine
+                        // with no keychain there is nothing to retry and nothing
+                        // to dismiss. The panel says so where a user would look
+                        // for pull requests, which is where the question arises.
+                        self.app.forge.no_keychain =
+                            error.summary.contains("no OS keychain is available");
+                        if !self.app.forge.no_keychain {
+                            self.app.toast(&error);
+                        }
+                        Task::none()
+                    }
+                }
+            }
+
+            Message::ConnectRequested => {
+                self.app.sheet = Some(ActionSheet::new("Connect to GitHub")
+                    .item("Sign in with a browser…", Message::DeviceFlowRequested)
+                    .item(
+                        "Paste a personal access token…",
+                        Message::PromptRequested(Box::new(Prompt {
+                            kind: PromptKind::PersonalAccessToken,
+                            title: "Personal access token".to_owned(),
+                            confirm_label: "Connect".to_owned(),
+                            fields: vec![PromptField::new(
+                                "A token with read access to your repositories and pull requests",
+                                "github_pat_… or ghp_…",
+                            )],
+                        })),
+                    ));
+                Task::none()
+            }
+
+            Message::DeviceFlowRequested => match self.app.forge.client.clone() {
+                Some(client) => forge::device_flow(client),
+                None => Task::none(),
+            },
+
+            Message::DeviceCodeIssued(code) => {
+                self.app.forge.connecting = Some(*code);
+                Task::none()
+            }
+
+            Message::DeviceCodeDismissed => {
+                self.app.forge.connecting = None;
+                Task::none()
+            }
+
+            Message::TokenSubmitted(token) => match self.app.forge.client.clone() {
+                Some(client) => forge::with_token(client, token),
+                None => Task::none(),
+            },
+
+            Message::ForgeConnected(result) => {
+                // Cleared either way: the code is spent once the flow resolves,
+                // and leaving it up after a refusal would show a code that can
+                // no longer be typed.
+                self.app.forge.connecting = None;
+
+                match *result {
+                    Ok(identity) => {
+                        self.app.forge.identity = Some(identity);
+                        self.poll_every_repository()
+                    }
+                    Err(error) => {
+                        self.app.toast(&error);
+                        Task::none()
+                    }
+                }
+            }
+
+            Message::DisconnectRequested => {
+                let who = self
+                    .app
+                    .forge
+                    .identity
+                    .as_ref()
+                    .map_or_else(|| "GitHub".to_owned(), |i| format!("GitHub as {}", i.login));
+
+                self.app.confirming = Some(Confirmation {
+                    title: "Sign out?".to_owned(),
+                    body: format!(
+                        "hideGit will forget the token for {who} and stop showing pull requests. \
+                         Signing back in goes through the browser again."
+                    ),
+                    confirm_label: "Sign out".to_owned(),
+                    action: Box::new(Message::DisconnectConfirmed),
+                });
+                Task::none()
+            }
+
+            Message::DisconnectConfirmed => match self.app.forge.client.clone() {
+                Some(client) => forge::sign_out(client),
+                None => Task::none(),
+            },
+
+            Message::ForgeSignedOut(result) => {
+                if let Err(error) = *result {
+                    self.app.toast(&error);
+                    return Task::none();
+                }
+
+                self.app.forge.identity = None;
+                for repo in &mut self.app.repos {
+                    repo.prs.items.clear();
+                    repo.prs.state = PrState::Idle;
+                }
+                // A pull request in the detail pane came from a session that no
+                // longer exists, so it goes with it.
+                for repo in &mut self.app.repos {
+                    if matches!(repo.selection, Some(Selection::PullRequest(_))) {
+                        repo.selection = None;
+                        repo.detail = DetailPane::Empty;
+                    }
+                }
+                Task::none()
+            }
+
+            Message::OpenUrl(url) => forge::open_url(url),
+
+            Message::OpenUrlFailed(error) => {
+                self.app.toast(&error);
                 Task::none()
             }
 
@@ -391,9 +531,13 @@ impl Hidegit {
     /// repository, and stashing may be accepted with nothing typed, so both are
     /// resolved before the rest.
     fn prompt_action(&self, prompt: &Prompt) -> Option<Message> {
-        // Handled first: there need not be a repository open to clone one.
+        // Handled first: there need not be a repository open to clone one, or
+        // to sign in.
         if let PromptKind::Clone = &prompt.kind {
             return Some(Message::CloneRequested(prompt.first()?.to_owned()));
+        }
+        if let PromptKind::PersonalAccessToken = &prompt.kind {
+            return Some(Message::TokenSubmitted(prompt.first()?.to_owned()));
         }
 
         let index = self.app.active?;
@@ -460,8 +604,19 @@ impl Hidegit {
                 name: name.clone(),
                 url: value,
             },
-            // Both resolved above, before a repository or a value was required.
-            PromptKind::StashPush { .. } | PromptKind::Clone => return None,
+            // A pull request from the branch you are standing on. Offered
+            // only when there is one to open it from, so the head is known by
+            // the time the prompt exists.
+            PromptKind::NewPullRequest { head, base } => RepoMessage::PrCreateRequested {
+                head: head.clone(),
+                base: base.clone(),
+                title: value,
+                body: prompt.field(1).unwrap_or_default().to_owned(),
+            },
+            // All resolved above, before a repository or a value was required.
+            PromptKind::StashPush { .. } | PromptKind::Clone | PromptKind::PersonalAccessToken => {
+                return None;
+            }
         };
 
         Some(Message::Repo(index, message))
@@ -479,6 +634,8 @@ impl Hidegit {
         graph.append(opened.first_page);
 
         let selection = graph.commits.first().map(|c| Selection::Commit(c.id));
+        // Read before the remotes move into the repository.
+        let forge_repo = forge::detect(&opened.remotes);
 
         self.app.remember(opened.path.clone());
         self.app.repos.push(OpenRepo {
@@ -499,6 +656,10 @@ impl Hidegit {
             diff_mode: crate::state::DiffMode::default(),
             hunk: 0,
             draft: Draft::default(),
+            prs: PrPanel {
+                repo: forge_repo,
+                ..PrPanel::default()
+            },
         });
         self.caches.insert(index, canvas::Cache::new());
         self.app.active = Some(index);
@@ -508,6 +669,7 @@ impl Hidegit {
             self.checkpoint_task(index),
             self.load_more_task(index),
             self.divergence_task(index),
+            self.poll_task(index),
         ];
         if let Some(selection) = selection {
             tasks.push(
@@ -662,6 +824,44 @@ impl Hidegit {
         .map(move |result| Message::Repo(index, RepoMessage::CommitsLoaded(Box::new(result))))
     }
 
+    /// Asks the forge for one repository's pull requests.
+    ///
+    /// Silent when there is nothing to ask: no client yet, not signed in, or a
+    /// repository whose remotes name no forge. None of those is an error, and
+    /// all three are ordinary.
+    fn poll_task(&self, index: usize) -> Task<Message> {
+        let Some(client) = self.app.forge.client.clone() else {
+            return Task::none();
+        };
+        if !self.app.forge.is_connected() {
+            return Task::none();
+        }
+        let Some(repo) = self.app.repos.get(index).and_then(|r| r.prs.repo.clone()) else {
+            return Task::none();
+        };
+
+        forge::poll(client, index, repo)
+    }
+
+    /// Polls every open repository, and marks each as loading.
+    ///
+    /// Used when the session changes rather than when a repository does: signing
+    /// in has to populate the panels of repositories that were opened before
+    /// there was a token.
+    fn poll_every_repository(&mut self) -> Task<Message> {
+        let indices: Vec<usize> = (0..self.app.repos.len()).collect();
+
+        for index in &indices {
+            if let Some(repo) = self.app.repos.get_mut(*index)
+                && repo.prs.repo.is_some()
+            {
+                repo.prs.state = PrState::Loading;
+            }
+        }
+
+        Task::batch(indices.into_iter().map(|index| self.poll_task(index)))
+    }
+
     fn update_repo(&mut self, index: usize, message: RepoMessage) -> Task<Message> {
         let Some(repo) = self.app.repos.get_mut(index) else {
             return Task::none();
@@ -711,6 +911,20 @@ impl Hidegit {
                         blocking(move || load_commit(backend.as_ref(), id)).map(move |result| {
                             Message::Repo(index, RepoMessage::DetailLoaded(Box::new(result)))
                         })
+                    }
+                    // The one selection whose contents are not in the
+                    // repository, so it is loaded from the forge rather than
+                    // through the backend.
+                    Selection::PullRequest(number) => {
+                        let (Some(client), Some(forge_repo)) =
+                            (self.app.forge.client.clone(), repo.prs.repo.clone())
+                        else {
+                            return Task::none();
+                        };
+                        repo.detail = DetailPane::Loading;
+                        repo.hunk = 0;
+
+                        forge::detail(client, index, forge_repo, number)
                     }
                 }
             }
@@ -1411,6 +1625,10 @@ impl Hidegit {
                 repo.state = refreshed.state;
                 repo.status = refreshed.status;
                 repo.stashes = refreshed.stashes;
+                // A remote may have been added, removed or repointed, so which
+                // forge repository this is can change without the app
+                // restarting.
+                repo.prs.repo = forge::detect(&refreshed.remotes);
                 repo.remotes = refreshed.remotes;
 
                 // Restored by commit id rather than row index: a new commit at
@@ -1455,6 +1673,112 @@ impl Hidegit {
                 }
                 Task::batch(tasks)
             }
+
+            // ---- pull requests ----
+            RepoMessage::PrsRefreshRequested => {
+                if repo.prs.repo.is_some() {
+                    repo.prs.state = PrState::Loading;
+                }
+                self.poll_task(index)
+            }
+
+            RepoMessage::PrsLoaded(result) => {
+                match *result {
+                    Ok(PrsLoad::Loaded(items)) => {
+                        repo.prs.items = items;
+                        repo.prs.state = PrState::Loaded;
+                    }
+                    // Its own state rather than a toast: it is about this
+                    // repository, it persists until somebody installs the app,
+                    // and its action belongs in the panel where the question
+                    // comes up.
+                    Ok(PrsLoad::NotInstalled { install_url }) => {
+                        repo.prs.items.clear();
+                        repo.prs.state = PrState::NotInstalled { install_url };
+                    }
+                    // A failed poll updates an indicator; it never raises a
+                    // dialog and never clears what was last known. `items` is
+                    // deliberately left alone so the panel goes stale rather
+                    // than empty.
+                    Err(error) => {
+                        tracing::debug!(error = %error.summary, "a poll failed");
+                        repo.prs.state = PrState::Stale(error.summary);
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::PrDetailLoaded(result) => {
+                match *result {
+                    Ok(detail) => repo.detail = DetailPane::PullRequest(Box::new(detail)),
+                    Err(error) => repo.detail = DetailPane::Failed(error),
+                }
+                Task::none()
+            }
+
+            RepoMessage::PrOpenRequested(number) => {
+                let (Some(client), Some(forge_repo)) =
+                    (self.app.forge.client.as_ref(), repo.prs.repo.as_ref())
+                else {
+                    return Task::none();
+                };
+
+                // The pull request's own URL when it is known, because a
+                // repository that has been renamed still answers on its old
+                // path and an assembled URL would not.
+                let url = repo.prs.find(number).map_or_else(
+                    || forge::web_url(client, forge_repo, WebTarget::PullRequest(number)),
+                    |pr| pr.url.clone(),
+                );
+                Task::done(Message::OpenUrl(url))
+            }
+
+            RepoMessage::PrCreateRequested {
+                head,
+                base,
+                title,
+                body,
+            } => {
+                let (Some(client), Some(forge_repo)) =
+                    (self.app.forge.client.clone(), repo.prs.repo.clone())
+                else {
+                    return Task::none();
+                };
+
+                forge::create(
+                    client,
+                    index,
+                    forge_repo,
+                    NewPullRequest {
+                        title,
+                        body,
+                        head,
+                        base,
+                        draft: false,
+                    },
+                )
+            }
+
+            RepoMessage::PrCreated(result) => match *result {
+                Ok(created) => {
+                    let number = created.number;
+                    // Inserted rather than waited for: the poll that would have
+                    // brought it may be minutes away, and a pull request that
+                    // does not appear after being opened reads as a failure.
+                    repo.prs.items.retain(|pr| pr.number != number);
+                    repo.prs.items.insert(0, created);
+                    repo.prs.state = PrState::Loaded;
+
+                    Task::done(Message::Repo(
+                        index,
+                        RepoMessage::Selected(Selection::PullRequest(number)),
+                    ))
+                }
+                Err(error) => {
+                    self.app.toast(&error);
+                    Task::none()
+                }
+            },
         }
     }
 
@@ -1478,6 +1802,7 @@ impl Hidegit {
                 confirming: self.app.confirming.as_ref(),
                 sheet: self.app.sheet.as_ref(),
                 prompt: self.app.prompt.as_ref(),
+                device_code: self.app.forge.connecting.as_ref(),
                 toasts: &self.app.toasts,
             },
             palette,
@@ -1496,7 +1821,7 @@ impl Hidegit {
                     .get(&index)
                     .expect("every open repository has a canvas cache");
 
-                screen::repository::view(repo, index, palette, cache)
+                screen::repository::view(&self.app, repo, index, palette, cache)
             }
             _ => screen::welcome::view(&self.app.recents, palette),
         }
@@ -1545,7 +1870,9 @@ impl Hidegit {
     /// confirmation raised from a sheet sits over that sheet, so `Esc` has to
     /// dismiss the confirmation rather than the thing underneath it.
     fn modal_keys(&self) -> Option<Modal> {
-        if self.app.confirming.is_some() {
+        if self.app.forge.connecting.is_some() {
+            Some(Modal::DeviceCode)
+        } else if self.app.confirming.is_some() {
             Some(Modal::Confirmation)
         } else if self.app.prompt.is_some() {
             Some(Modal::Prompt)
@@ -1563,6 +1890,7 @@ pub enum Modal {
     Confirmation,
     Prompt,
     Sheet,
+    DeviceCode,
 }
 
 /// Maps a key press to a message. `Cmd` on macOS, `Ctrl` elsewhere.
@@ -1662,6 +1990,9 @@ fn modal_shortcut(key: &keyboard::Key, modal: Modal) -> Message {
         // second arrival finds nothing and does nothing.
         (Key::Named(Named::Enter), Modal::Prompt) => Message::PromptAccepted,
         (Key::Named(Named::Escape), Modal::Sheet) => Message::SheetDismissed,
+        // Dismisses the dialog, not the flow: the token still arrives and is
+        // still stored, which is why there is no `Enter` binding to "accept".
+        (Key::Named(Named::Escape), Modal::DeviceCode) => Message::DeviceCodeDismissed,
         // A sheet has no default action. `Enter` on a list of things one of which
         // may be "Delete" must not pick anything.
         _ => Message::ToastDismissed(u64::MAX),
@@ -3876,5 +4207,277 @@ mod tests {
             shortcut(&key, keyboard::Modifiers::default(), None, false),
             Message::ToastDismissed(_)
         ));
+    }
+
+    // ---- pull requests ---------------------------------------------------
+
+    fn github_repo() -> hidegit_forge::RepoRef {
+        hidegit_forge::RepoRef {
+            host: "github.com".into(),
+            owner: "youhide".into(),
+            name: "hideGit".into(),
+        }
+    }
+
+    fn pull_request(number: u64) -> hidegit_forge::PullRequest {
+        hidegit_forge::PullRequest {
+            number,
+            title: "feat: something".into(),
+            url: format!("https://github.com/youhide/hideGit/pull/{number}"),
+            author: "youhide".into(),
+            head: "feat/x".into(),
+            base: "main".into(),
+            draft: false,
+            updated: OffsetDateTime::UNIX_EPOCH,
+            roles: [hidegit_forge::PrRole::Author].into_iter().collect(),
+            review: hidegit_forge::ReviewState::Required,
+            checks: hidegit_forge::CheckState::Passing,
+            merge: hidegit_forge::MergeState::Mergeable,
+            comments: 0,
+        }
+    }
+
+    /// An open repository whose remotes name a GitHub repository.
+    fn app_with_forge_repo() -> Hidegit {
+        let mut app = app_with(3);
+        app.app.repos[0].prs.repo = Some(github_repo());
+        app
+    }
+
+    #[test]
+    fn a_repository_with_no_forge_remote_never_enters_a_pull_request_state() {
+        // Every remote in hideGit's own suite is a path on disk, so this is the
+        // common case. Such a repository has no pull requests to have, which is
+        // not the same as having none.
+        let app = app_with(3);
+
+        assert_eq!(app.app.repos[0].prs.repo, None);
+        assert_eq!(app.app.repos[0].prs.state, PrState::Idle);
+    }
+
+    #[test]
+    fn a_failed_poll_goes_stale_rather_than_empty() {
+        // What was last known stays on screen. A network blip must not look
+        // like every pull request having been closed.
+        let mut app = app_with_forge_repo();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(PrsLoad::Loaded(vec![pull_request(47)])))),
+        ));
+        assert_eq!(app.app.repos[0].prs.items.len(), 1);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Err(UiError {
+                summary: "could not reach github.com".into(),
+                details: String::new(),
+            }))),
+        ));
+
+        assert_eq!(
+            app.app.repos[0].prs.items.len(),
+            1,
+            "the previous result survives a failed poll"
+        );
+        assert!(matches!(app.app.repos[0].prs.state, PrState::Stale(_)));
+        assert!(
+            app.app.toasts.is_empty(),
+            "a failed poll updates an indicator; it never raises a dialog"
+        );
+    }
+
+    #[test]
+    fn not_installed_is_a_state_with_an_action_rather_than_an_empty_list() {
+        let mut app = app_with_forge_repo();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(PrsLoad::NotInstalled {
+                install_url: "https://github.com/apps/hidegit/installations/new".into(),
+            }))),
+        ));
+
+        match &app.app.repos[0].prs.state {
+            PrState::NotInstalled { install_url } => {
+                assert!(install_url.contains("installations/new"));
+            }
+            other => panic!("expected NotInstalled, got {other:?}"),
+        }
+        assert!(app.app.toasts.is_empty(), "it is not a failure to report");
+    }
+
+    #[test]
+    fn signing_out_clears_every_repositorys_panel_and_any_pull_request_on_screen() {
+        // The session is application-wide, so one sign-out empties them all —
+        // and a pull request in the detail pane came from a session that no
+        // longer exists.
+        let mut app = app_with_forge_repo();
+        app.app.forge.identity = Some(hidegit_forge::Identity {
+            login: "youhide".into(),
+            name: None,
+            avatar_url: None,
+        });
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(PrsLoad::Loaded(vec![pull_request(47)])))),
+        ));
+        app.app.repos[0].selection = Some(Selection::PullRequest(47));
+
+        let _ = app.update(Message::ForgeSignedOut(Box::new(Ok(()))));
+
+        assert!(!app.app.forge.is_connected());
+        assert!(app.app.repos[0].prs.items.is_empty());
+        assert_eq!(app.app.repos[0].prs.state, PrState::Idle);
+        assert_eq!(app.app.repos[0].selection, None);
+        assert!(matches!(app.app.repos[0].detail, DetailPane::Empty));
+    }
+
+    #[test]
+    fn a_missing_keychain_disables_the_panel_without_raising_a_toast() {
+        // There is nothing to retry and nothing to dismiss. The panel says so
+        // where somebody would look for pull requests.
+        let mut app = Hidegit::default();
+
+        // Building a client builds an HTTP stack, which wants a reactor. In the
+        // application it is built inside a `Task`, which already has one.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+
+        let _ = app.update(Message::ForgeClientBuilt(
+            Arc::new(hidegit_forge::GitHub::public(Arc::new(
+                hidegit_forge::MemoryStore::default(),
+            ))),
+            Box::new(Err(UiError {
+                summary: "no OS keychain is available, so forge features are disabled".into(),
+                details: String::new(),
+            })),
+        ));
+
+        assert!(app.app.forge.no_keychain);
+        assert!(app.app.toasts.is_empty());
+    }
+
+    #[test]
+    fn a_new_pull_request_appears_without_waiting_for_the_next_poll() {
+        // A poll may be minutes away, and a pull request that does not show up
+        // after being opened reads as a failure.
+        let mut app = app_with_forge_repo();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrCreated(Box::new(Ok(pull_request(48)))),
+        ));
+
+        assert_eq!(app.app.repos[0].prs.items.len(), 1);
+        assert_eq!(app.app.repos[0].prs.items[0].number, 48);
+        assert_eq!(app.app.repos[0].prs.state, PrState::Loaded);
+    }
+
+    #[test]
+    fn a_pull_request_that_a_poll_also_brought_is_not_listed_twice() {
+        let mut app = app_with_forge_repo();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(PrsLoad::Loaded(vec![pull_request(48)])))),
+        ));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrCreated(Box::new(Ok(pull_request(48)))),
+        ));
+
+        assert_eq!(app.app.repos[0].prs.items.len(), 1);
+    }
+
+    #[test]
+    fn the_device_code_dialog_dismisses_without_cancelling_the_flow() {
+        // The flow keeps polling and the token still arrives. Only the dialog
+        // goes away, which is why there is no message that stops the task.
+        let mut app = Hidegit::default();
+
+        let _ = app.update(Message::DeviceCodeIssued(Box::new(
+            hidegit_forge::DeviceCode {
+                user_code: "WDJB-MJHT".into(),
+                verification_uri: "https://github.com/login/device".into(),
+                expires_in: std::time::Duration::from_secs(900),
+            },
+        )));
+        assert!(app.app.forge.connecting.is_some());
+
+        let _ = app.update(Message::DeviceCodeDismissed);
+        assert!(app.app.forge.connecting.is_none());
+    }
+
+    #[test]
+    fn a_resolved_flow_clears_the_code_whether_it_worked_or_not() {
+        // Leaving it up after a refusal would show a code that can no longer be
+        // typed.
+        let mut app = Hidegit::default();
+        let _ = app.update(Message::DeviceCodeIssued(Box::new(
+            hidegit_forge::DeviceCode {
+                user_code: "WDJB-MJHT".into(),
+                verification_uri: "https://github.com/login/device".into(),
+                expires_in: std::time::Duration::from_secs(900),
+            },
+        )));
+
+        let _ = app.update(Message::ForgeConnected(Box::new(Err(UiError {
+            summary: "the code expired before it was approved".into(),
+            details: String::new(),
+        }))));
+
+        assert!(app.app.forge.connecting.is_none());
+        assert!(!app.app.forge.is_connected());
+        assert_eq!(app.app.toasts.len(), 1);
+    }
+
+    #[test]
+    fn escape_closes_the_device_code_dialog_before_anything_underneath_it() {
+        let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+
+        assert!(matches!(
+            modal_shortcut(&key, Modal::DeviceCode),
+            Message::DeviceCodeDismissed
+        ));
+    }
+
+    #[test]
+    fn enter_does_nothing_on_the_device_code_dialog() {
+        // There is nothing to accept — hideGit is waiting on GitHub, not on the
+        // user's keyboard.
+        let key = keyboard::Key::Named(keyboard::key::Named::Enter);
+
+        assert!(matches!(
+            modal_shortcut(&key, Modal::DeviceCode),
+            Message::ToastDismissed(_)
+        ));
+    }
+
+    #[test]
+    fn a_pasted_token_is_accepted_with_no_repository_open() {
+        // Signing in is not something you do to a repository.
+        let app = Hidegit::default();
+        let prompt = Prompt {
+            kind: PromptKind::PersonalAccessToken,
+            title: "Personal access token".into(),
+            confirm_label: "Connect".into(),
+            fields: vec![PromptField {
+                label: "Token".into(),
+                placeholder: String::new(),
+                value: "  ghp_pasted  ".into(),
+            }],
+        };
+
+        match app.prompt_action(&prompt) {
+            Some(Message::TokenSubmitted(token)) => {
+                assert_eq!(token, "ghp_pasted", "trimmed, like every other prompt");
+            }
+            other => panic!("expected TokenSubmitted, got {other:?}"),
+        }
     }
 }

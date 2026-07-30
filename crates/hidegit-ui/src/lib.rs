@@ -6,6 +6,7 @@
 //! radius to one crate is the mitigation.
 
 pub mod app;
+pub mod forge;
 pub mod format;
 pub mod message;
 pub mod state;
@@ -22,6 +23,7 @@ pub mod widget {
     pub mod diff;
     pub mod graph;
     pub mod overlay;
+    pub mod pr;
     pub mod sidebar;
     pub mod staging;
 }

@@ -376,6 +376,34 @@ A sidebar section, alongside branches, tags and stashes. The transport is descri
 - Selecting a PR shows its detail in the detail pane; opening it goes to the browser
 - A stale-data marker when the last poll failed — a status indicator, never a dialog
 
+**A pull request is listed once, under its strongest role** — author, then reviewer, then assignee
+— because listing one you wrote *and* were assigned to under two headings would make the section's
+count disagree with what is under it. Having already reviewed something keeps it under *awaiting
+your review*: otherwise approving it drops it the instant you act, and there is nowhere left to see
+that checks later failed on it.
+
+**Check and review state are glyphs in fixed positions, not colours.** Passing and failing would
+otherwise differ only in hue. "No checks configured" shows nothing at all, which is a different
+thing from "no check has reported yet" and must not get the same marker. A conflict marker appears
+only when a pull request is *known* to conflict — GitHub computes mergeability lazily, and marking
+its "still checking" answer would be a guess the user acts on.
+
+**The section is absent when no remote names a forge repository.** A repository whose only remote is
+a path on disk has no pull requests to have, which is not the same as having none — and every remote
+in hideGit's own test suite is exactly that. Where several remotes qualify, `origin` wins: in a fork
+configured with `origin` for your copy and `upstream` for the project, yours is the one you are
+working in.
+
+**Four states that look alike as an absence, and mean opposite things**, so each gets its own row
+with its own next action: not signed in → Connect; signed in but the app is not installed on this
+repository → Install, with the URL; installed with nothing open → "no open pull requests"; the last
+poll failed → a stale marker *above the previous result*, which stays on screen. A network blip must
+not read as every pull request having been closed.
+
+**No keychain, no forge features.** On a machine with no credential store there is nothing to retry
+and nothing to dismiss, so it is not a toast — the panel says so where somebody would look for pull
+requests, which is where the question comes up.
+
 Notifications are native OS notifications, individually toggleable, with per-repository enable and
 quiet hours. Clicking one focuses hideGit with that PR selected.
 
@@ -405,6 +433,7 @@ and a new review thread both do notify.
 | Key | Action |
 |---|---|
 | `Cmd+O` | Open repository |
+| `Esc` | Close the device-code dialog — the sign-in continues in the background |
 | `Cmd+Shift+O` | Clone repository — checked before the unshifted `O`, or it would open a picker |
 | `Cmd+1` … `Cmd+9` | Switch repository tab |
 | `Cmd+,` | Settings |

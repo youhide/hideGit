@@ -18,6 +18,7 @@ use crate::Element;
 use crate::message::Message;
 use crate::state::{ActionSheet, Confirmation, PROMPT_FIELD_IDS, Prompt, SheetItem, Toast};
 use crate::theme::Palette;
+use hidegit_forge::DeviceCode;
 
 /// Everything that can sit above the screen, in the order it stacks.
 ///
@@ -29,6 +30,8 @@ pub struct Layers<'a> {
     pub confirming: Option<&'a Confirmation>,
     pub sheet: Option<&'a ActionSheet>,
     pub prompt: Option<&'a Prompt>,
+    /// The device code, while the flow is waiting for it to be approved.
+    pub device_code: Option<&'a DeviceCode>,
     pub toasts: &'a [Toast],
 }
 
@@ -51,6 +54,9 @@ pub fn wrap<'a>(
     if let Some(prompt) = layers.prompt {
         stacked = stacked.push(prompt_dialog(prompt, palette));
     }
+    if let Some(code) = layers.device_code {
+        stacked = stacked.push(device_code_dialog(code, palette));
+    }
     // A confirmation goes last of all: it is what a sheet's destructive item
     // raises, so it has to be able to sit over the sheet that raised it.
     if let Some(confirmation) = layers.confirming {
@@ -58,6 +64,49 @@ pub fn wrap<'a>(
     }
 
     stacked.into()
+}
+
+/// The code to type, and the page to type it into.
+///
+/// A layer of its own rather than a prompt, because there is nothing to accept:
+/// hideGit is polling in the background and the dialog closes when GitHub
+/// answers. Dismissing it does not cancel the flow — the token still arrives
+/// and is still stored — so it says so instead of offering a Cancel that would
+/// be a lie.
+fn device_code_dialog<'a>(code: &'a DeviceCode, palette: &'a Palette) -> Element<'a, Message> {
+    let palette = *palette;
+
+    let card = column![
+        text("Sign in to GitHub")
+            .size(15.0)
+            .color(palette.text)
+            .font(Font {
+                weight: iced::font::Weight::Semibold,
+                ..Font::DEFAULT
+            }),
+        text("Open the page below and enter this code:")
+            .size(13.0)
+            .color(palette.muted),
+        // Monospace and large: it is read off the screen and typed into
+        // another device, sometimes another machine entirely.
+        container(
+            text(code.user_code.as_str())
+                .size(28.0)
+                .font(Font::MONOSPACE)
+                .color(palette.accent)
+        )
+        .padding(Padding::from([8, 16])),
+        button(text(code.verification_uri.as_str()).size(13.0))
+            .padding(Padding::from([6, 12]))
+            .on_press(Message::OpenUrl(code.verification_uri.clone())),
+        text("hideGit is waiting. This closes on its own once you approve it.")
+            .size(11.0)
+            .color(palette.muted),
+    ]
+    .spacing(10)
+    .align_x(Center);
+
+    scrim(container(card), palette)
 }
 
 /// What a clone is doing, and the only action that applies to it.
