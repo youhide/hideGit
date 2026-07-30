@@ -28,6 +28,16 @@ use crate::{DeviceCode, model::ForgeId};
 /// thing about what must *not* be compiled in.
 pub const CLIENT_ID: &str = "Iv23ctri74KmT4Js2gDM";
 
+/// The App's slug, which is what its public URLs are built from.
+///
+/// **Not derivable from the name.** GitHub generates a slug at registration and
+/// it need not resemble the App — this one is `hidegit-github` rather than
+/// `hidegit`, because the shorter name was taken. It sits next to the client ID
+/// because it is the same kind of thing: a fact about the registered App that
+/// only its owner knows, and that no API will hand back without the private key
+/// hideGit deliberately does not have.
+pub const APP_SLUG: &str = "hidegit-github";
+
 /// A GitHub App requests no scopes.
 ///
 /// Permissions come from the App's own definition and from what the user grants

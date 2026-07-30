@@ -20,7 +20,7 @@ use crate::model::{
     ForgeId, Identity, NewPullRequest, PollCursor, PollResult, PullRequest, PullRequestDetail,
     RepoRef, WebTarget,
 };
-use crate::token::{StoredToken, TokenStore};
+use crate::token::{self, StoredToken, TokenStore};
 use crate::{AuthFlow, Forge, auth, detect};
 
 /// The host hideGit knows without being told.
@@ -108,7 +108,7 @@ impl GitHub {
     /// `Ok(None)` when nothing is stored, which is the ordinary state of a
     /// first run rather than a failure.
     pub async fn resume(&self) -> Result<Option<Identity>, ForgeError> {
-        let Some(token) = self.store.load(&self.endpoint.host)? else {
+        let Some(token) = token::load(&self.store, &self.endpoint.host).await? else {
             return Ok(None);
         };
 
@@ -127,9 +127,9 @@ impl GitHub {
     }
 
     /// Forgets the token, here and in the keychain.
-    pub fn sign_out(&self) -> Result<(), ForgeError> {
+    pub async fn sign_out(&self) -> Result<(), ForgeError> {
         self.adopt_none();
-        self.store.clear(&self.endpoint.host)
+        token::clear(&self.store, &self.endpoint.host).await
     }
 
     /// Exchanges a refresh token and stores what came back.
@@ -147,7 +147,7 @@ impl GitHub {
         )
         .await?;
         let fresh = issued.into_stored(token.login.clone());
-        self.store.save(&self.endpoint.host, &fresh)?;
+        token::save(&self.store, &self.endpoint.host, fresh.clone()).await?;
         Ok(fresh)
     }
 
@@ -332,7 +332,7 @@ impl Forge for GitHub {
             login: identity.login.clone(),
             ..provisional
         };
-        self.store.save(&self.endpoint.host, &stored)?;
+        token::save(&self.store, &self.endpoint.host, stored.clone()).await?;
         self.adopt(&stored);
 
         Ok(identity)
@@ -467,7 +467,13 @@ impl Forge for GitHub {
             // repositories. Not a deep link to this repository: GitHub's
             // installation settings live under the account that owns the App,
             // and the owner is the one who has to act.
-            WebTarget::Install => format!("{root}/apps/hidegit/installations/new"),
+            //
+            // The slug is a constant rather than the project's name because
+            // GitHub generates one at registration and it need not match — see
+            // `auth::APP_SLUG`.
+            WebTarget::Install => {
+                format!("{root}/apps/{}/installations/new", auth::APP_SLUG)
+            }
         }
     }
 }

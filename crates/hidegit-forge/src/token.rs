@@ -10,6 +10,7 @@
 //! [`ForgeError::NoKeychain`] is how it is reported.
 
 use std::fmt;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -108,6 +109,57 @@ pub trait TokenStore: Send + Sync + fmt::Debug {
     fn load(&self, account: &str) -> Result<Option<StoredToken>, ForgeError>;
     fn save(&self, account: &str, token: &StoredToken) -> Result<(), ForgeError>;
     fn clear(&self, account: &str) -> Result<(), ForgeError>;
+}
+
+/// Reads a token without holding the async runtime.
+///
+/// **`keyring` is synchronous, and on macOS it can raise an authorisation
+/// dialog that waits for a human.** Called straight from an `async fn`, that
+/// stops the executor thread it is on from serving anything else — observed as
+/// a repository that never opened because the keychain prompt at startup was
+/// still up. Every keychain touch therefore goes through one of these, and none
+/// of them is `pub`: there is no way to reach a store from async code without
+/// leaving the runtime alone.
+pub(crate) async fn load(
+    store: &Arc<dyn TokenStore>,
+    account: &str,
+) -> Result<Option<StoredToken>, ForgeError> {
+    let store = Arc::clone(store);
+    let account = account.to_owned();
+    off_thread(move || store.load(&account)).await
+}
+
+pub(crate) async fn save(
+    store: &Arc<dyn TokenStore>,
+    account: &str,
+    token: StoredToken,
+) -> Result<(), ForgeError> {
+    let store = Arc::clone(store);
+    let account = account.to_owned();
+    off_thread(move || store.save(&account, &token)).await
+}
+
+pub(crate) async fn clear(store: &Arc<dyn TokenStore>, account: &str) -> Result<(), ForgeError> {
+    let store = Arc::clone(store);
+    let account = account.to_owned();
+    off_thread(move || store.clear(&account)).await
+}
+
+/// Runs one keychain call on the blocking pool.
+async fn off_thread<T, F>(work: F) -> Result<T, ForgeError>
+where
+    F: FnOnce() -> Result<T, ForgeError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(work).await {
+        Ok(result) => result,
+        // The pool cancelled or panicked. Reported as an unusable keychain,
+        // because from the caller's side that is what it is.
+        Err(error) => {
+            tracing::error!(%error, "the keychain task did not finish");
+            Err(ForgeError::NoKeychain)
+        }
+    }
 }
 
 /// The OS keychain: Keychain Services, Credential Manager, or Secret Service.

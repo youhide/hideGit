@@ -261,6 +261,7 @@ iced's `update` runs on the UI thread. Blocking it drops frames, so nothing bloc
 | `git` subprocesses | Run on the blocking pool, awaited off the UI thread |
 | Long operations (clone, fetch, pull, push) | `Task::stream` yielding progress `Message`s and then the outcome; cancellable |
 | PR polling | Schedule in `hidegit-forge`, `Subscription` in `hidegit-ui` |
+| Keychain reads and writes | `spawn_blocking`, always — see below |
 | Filesystem watching | `Subscription` over a debounced watcher, triggering status refresh |
 
 The flow is uniform: `Message` → `update` returns a `Task` → work happens off-thread → completion
@@ -273,6 +274,14 @@ a `ProgressSink` that pushes into a channel; the sink is moved into the blocking
 sender drops exactly when the work returns, which is what tells the stream to stop waiting and
 collect the result. Operations carry a monotonic id, because a cancelled one's last report can arrive
 after the operation that replaced it has started and must not redraw its banner.
+
+**The keychain counts as blocking work, and it is easy to forget that it does.** `keyring` is
+synchronous, and on macOS it can raise an authorisation dialog that waits for a human — so a call
+made straight from an `async fn` stops that executor thread from serving anything else. It showed up
+as a repository that never opened, because the keychain prompt at startup was still up and the task
+that would have opened it never ran. Every keychain touch therefore goes through a `spawn_blocking`
+helper inside `hidegit-forge`, and none of those helpers is public: there is no way to reach a token
+store from async code without leaving the runtime alone.
 
 Every operation that mutates the repository ends by emitting `RepositoryChanged`, which triggers a
 refresh of status, refs, remotes and the stash. One code path for "something changed", rather than

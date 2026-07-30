@@ -73,21 +73,11 @@ pub fn with_token(client: Arc<GitHub>, token: String) -> Task<Message> {
 }
 
 pub fn sign_out(client: Arc<GitHub>) -> Task<Message> {
-    // Synchronous — it clears a keychain entry — but it still leaves the UI
-    // thread, because a keychain can prompt and a prompt can block.
-    Task::perform(
-        async move { tokio::task::spawn_blocking(move || client.sign_out()).await },
-        |joined| {
-            let result = match joined {
-                Ok(result) => result.map_err(UiError::from),
-                Err(error) => Err(UiError {
-                    summary: "could not sign out".to_owned(),
-                    details: error.to_string(),
-                }),
-            };
-            Message::ForgeSignedOut(Box::new(result))
-        },
-    )
+    // The keychain is touched off the runtime inside `hidegit-forge`, so there
+    // is nothing to wrap here.
+    Task::perform(async move { client.sign_out().await }, |result| {
+        Message::ForgeSignedOut(Box::new(result.map_err(UiError::from)))
+    })
 }
 
 /// One poll for one repository.

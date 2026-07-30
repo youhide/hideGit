@@ -149,7 +149,10 @@ async fn a_repository_the_token_cannot_see_is_not_a_repository_with_no_pull_requ
     match github.pull_requests(&repo(), None).await {
         Err(ForgeError::NotInstalled { repo, install_url }) => {
             assert_eq!(repo.to_string(), "youhide/hideGit");
-            assert!(install_url.contains("installations/new"), "{install_url}");
+            assert_eq!(
+                install_url,
+                "https://github.com/apps/hidegit-github/installations/new"
+            );
         }
         other => panic!("expected NotInstalled, got {other:?}"),
     }
@@ -353,6 +356,14 @@ async fn every_web_target_builds_a_url_on_the_configured_host() {
             }
         ),
         "https://github.com/youhide/hideGit/compare/main...feat/graph?expand=1"
+    );
+    // Pinned in full, because this one is not derivable from anything in the
+    // repository: GitHub generated the slug at registration and it does not
+    // match the project's name. The first version of this line guessed
+    // `hidegit` and led to a 404.
+    assert_eq!(
+        github.web_url(&repo, WebTarget::Install),
+        "https://github.com/apps/hidegit-github/installations/new"
     );
 }
 
@@ -687,7 +698,7 @@ async fn signing_out_forgets_the_token_here_and_in_the_keychain() {
         .unwrap();
     assert!(store.load(PUBLIC_HOST).unwrap().is_some());
 
-    github.sign_out().unwrap();
+    github.sign_out().await.unwrap();
     assert_eq!(store.load(PUBLIC_HOST).unwrap(), None);
     assert_eq!(github.resume().await.unwrap(), None);
 }
