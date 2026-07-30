@@ -68,9 +68,23 @@ impl From<GitError> for UiError {
 /// words shown verbatim.
 impl From<ForgeError> for UiError {
     fn from(error: ForgeError) -> Self {
+        let details = match &error {
+            // The one family where the `Debug` form says nothing a person can
+            // act on: `DeviceFlow(Disabled)` on a clipboard is not a bug
+            // report, it is a shrug.
+            ForgeError::DeviceFlow(flow) => flow.next_step().to_owned(),
+            // Not installed already carries the URL that fixes it, and the
+            // panel offers it as a row — the detail is for a bug report, so it
+            // names the repository rather than repeating the instruction.
+            ForgeError::NotInstalled { repo, install_url } => {
+                format!("{repo}\n{install_url}")
+            }
+            other => format!("{other:?}"),
+        };
+
         Self {
             summary: error.to_string(),
-            details: format!("{error:?}"),
+            details,
         }
     }
 }

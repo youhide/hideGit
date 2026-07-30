@@ -92,8 +92,8 @@ pub enum DeviceFlowError {
     #[error("authorisation was declined")]
     Denied,
 
-    /// The app has device flow turned off in its settings. Nothing the user can
-    /// do, so it says so rather than offering a retry that cannot work.
+    /// The app has device flow turned off in its settings. Retrying cannot
+    /// help, so it says what would.
     #[error("this app does not have device flow enabled")]
     Disabled,
 
@@ -101,4 +101,76 @@ pub enum DeviceFlowError {
     /// unregistered app. A personal access token still works.
     #[error("no OAuth client ID is configured for this build")]
     NotConfigured,
+}
+
+impl DeviceFlowError {
+    /// What to do about it.
+    ///
+    /// Kept apart from `Display` because a toast shows the summary as a title
+    /// and the detail underneath, and because this is the half worth copying:
+    /// `DeviceFlow(Disabled)` on a clipboard tells nobody anything, where a
+    /// sentence naming the checkbox does.
+    ///
+    /// hideGit paraphrasing rather than quoting the provider is deliberate
+    /// here. GitHub's own wording — *"Device Flow must be explicitly enabled
+    /// for this App"* — states the problem again; what a person stuck on it
+    /// needs is where the setting lives and what still works meanwhile.
+    pub fn next_step(self) -> &'static str {
+        match self {
+            DeviceFlowError::Expired => {
+                "The code is good for fifteen minutes. Start signing in again to get a new one."
+            }
+            DeviceFlowError::Denied => {
+                "Nothing was authorised, and no token was stored. \
+                 Start again if that was not what you meant."
+            }
+            DeviceFlowError::Disabled => {
+                "Turn on \"Enable Device Flow\" in the app's settings on GitHub — \
+                 Settings › Developer settings › GitHub Apps › hideGit. \
+                 A personal access token works meanwhile."
+            }
+            DeviceFlowError::NotConfigured => {
+                "This build has no OAuth client ID compiled in. \
+                 Use a personal access token."
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_way_the_device_flow_can_end_says_what_to_do_about_it() {
+        // The summary names the problem; this is the half worth copying, and a
+        // variant added later must not quietly ship without one.
+        for error in [
+            DeviceFlowError::Expired,
+            DeviceFlowError::Denied,
+            DeviceFlowError::Disabled,
+            DeviceFlowError::NotConfigured,
+        ] {
+            let step = error.next_step();
+            assert!(step.len() > 20, "{error:?} has no next step worth reading");
+            assert!(
+                step.ends_with('.'),
+                "{error:?} reads as a fragment rather than a sentence"
+            );
+        }
+    }
+
+    #[test]
+    fn the_one_that_needs_a_setting_changed_names_where_it_is() {
+        // "This app does not have device flow enabled" is a fact. Where the
+        // checkbox lives is the part somebody stuck on it actually needs.
+        let step = DeviceFlowError::Disabled.next_step();
+
+        assert!(step.contains("Enable Device Flow"));
+        assert!(step.contains("GitHub Apps"));
+        assert!(
+            step.contains("personal access token"),
+            "and what still works meanwhile"
+        );
+    }
 }

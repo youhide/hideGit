@@ -4838,6 +4838,19 @@ mod tests {
     }
 
     #[test]
+    fn a_forge_failure_carries_something_worth_copying() {
+        // `DeviceFlow(Disabled)` on a clipboard is a shrug. The detail is what
+        // someone pastes into a message asking for help.
+        let error = UiError::from(hidegit_forge::ForgeError::DeviceFlow(
+            hidegit_forge::DeviceFlowError::Disabled,
+        ));
+
+        assert_eq!(error.summary, "this app does not have device flow enabled");
+        assert!(error.details.contains("Enable Device Flow"), "{error:?}");
+        assert!(!error.details.contains("DeviceFlow("), "{error:?}");
+    }
+
+    #[test]
     fn a_pasted_token_is_accepted_with_no_repository_open() {
         // Signing in is not something you do to a repository.
         let app = Hidegit::default();
