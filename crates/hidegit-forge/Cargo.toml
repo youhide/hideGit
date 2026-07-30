@@ -34,6 +34,7 @@ notify-rust = "4.17.0"
 [dev-dependencies]
 # HTTP is mocked. No test touches the network or needs a real token.
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+toml = "1.1.4"
 wiremock = "0.6"
 
 [features]

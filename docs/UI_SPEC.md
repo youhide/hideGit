@@ -407,13 +407,33 @@ requests, which is where the question comes up.
 Notifications are native OS notifications, individually toggleable, with per-repository enable and
 quiet hours. Clicking one focuses hideGit with that PR selected.
 
+Preferences live in `config.toml` under `[alerts]`, and every value has a working default, so the
+section need not exist:
+
+```toml
+[alerts]
+enabled = true          # the master switch; the panel keeps working either way
+muted   = ["owner/noisy"]   # repositories to stay silent about, by owner/name
+
+[alerts.events]
+checks_passed = true    # off by default; see the table below
+
+[alerts.quiet_hours]
+enabled = true
+from = 22               # local hours, `from` inclusive and `to` exclusive
+to   = 8                # `from > to` wraps midnight, which is the usual case
+```
+
+Toggles are named fields rather than a map keyed by event name, so a misspelled setting is an error
+rather than one that silently turns nothing on.
+
 | Event | Fires when | Default |
 |---|---|---|
 | `ReviewRequested` | You are added as a reviewer | on |
 | `ReviewSubmitted` | Someone approves or requests changes on your PR | on |
 | `PrCommented` | A new comment, or a new review thread, on your PR | on |
 | `ChecksFailed` | CI transitions to failing on your PR | on |
-| `ChecksPassed` | CI transitions to passing on your PR | off |
+| `ChecksPassed` | CI transitions to passing on your PR | off — every other event needs your attention; a build going green is the *absence* of a problem |
 | `PrConflicting` | Your open PR becomes conflicted | on |
 | `PrMerged` / `PrClosed` | A PR you authored is merged or closed | on |
 

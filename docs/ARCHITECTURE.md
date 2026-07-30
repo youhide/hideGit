@@ -588,7 +588,7 @@ Paths come from `directories`, so each platform gets its conventional location.
 
 | What | Location | Format |
 |---|---|---|
-| Settings, repository list, alert preferences | Config dir | TOML |
+| Settings, repository list, alert preferences | Config dir | TOML — `AlertPrefs` is defined in `hidegit-forge`, so config and UI share one definition |
 | Graph layout cache, avatars, forge response cache | Cache dir | Binary; safe to delete |
 | Window geometry, recent repositories | Data dir | TOML |
 | **Tokens** | **OS keychain** | Never a file |

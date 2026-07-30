@@ -17,8 +17,8 @@ use hidegit_core::model::{
 use hidegit_core::ops::{CancelToken, ProgressUpdate, StartPoint};
 use hidegit_core::{GitBackend, LogPage};
 use hidegit_forge::{
-    Activity, DeviceCode, GitHub, Identity, Notifier, PrRole, PullRequest, PullRequestDetail,
-    RepoRef, Schedule, Watcher,
+    Activity, Alert, AlertPrefs, DeviceCode, GitHub, Identity, Notifier, PrRole, PullRequest,
+    PullRequestDetail, RepoRef, Schedule, Watcher,
 };
 
 use crate::message::{Message, UiError};
@@ -853,6 +853,8 @@ pub struct App {
     pub notifier: Arc<dyn Notifier>,
     /// Whether the window has focus. Half of what decides the poll interval.
     pub focused: bool,
+    /// Which alerts to send, and when not to.
+    pub alerts: AlertPrefs,
     next_toast_id: u64,
 }
 
@@ -874,6 +876,7 @@ impl Default for App {
             // opened is being looked at, and iced reports focus by event rather
             // than on demand.
             focused: true,
+            alerts: AlertPrefs::default(),
             next_toast_id: 0,
         }
     }
@@ -913,6 +916,30 @@ impl App {
             Activity::Foreground
         } else {
             Activity::Normal
+        }
+    }
+
+    /// Sends whatever the preferences allow, for one repository.
+    ///
+    /// The one place that reads the clock and consults the preferences, so
+    /// there is exactly one answer to "why did that not notify me?" — rather
+    /// than a filter at each of the two call sites that produce alerts.
+    pub fn notify(&self, alerts: &[Alert], repository: &str) {
+        // The local hour, because quiet hours are the user's evening rather
+        // than UTC's. A machine with no discoverable offset falls back to UTC:
+        // being an hour out on a quiet-hours boundary beats not applying them.
+        let hour = time::OffsetDateTime::now_local()
+            .unwrap_or_else(|_| time::OffsetDateTime::now_utc())
+            .hour();
+
+        let allowed: Vec<Alert> = alerts
+            .iter()
+            .filter(|alert| self.alerts.allows(alert.event, repository, hour))
+            .cloned()
+            .collect();
+
+        for (summary, body) in hidegit_forge::notify::compose(&allowed, repository) {
+            self.notifier.notify(&summary, &body);
         }
     }
 

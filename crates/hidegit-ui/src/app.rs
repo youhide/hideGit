@@ -143,9 +143,14 @@ where
 }
 
 impl Hidegit {
-    pub fn new(initial: Option<PathBuf>, recents: Vec<PathBuf>) -> (Self, Task<Message>) {
+    pub fn new(
+        initial: Option<PathBuf>,
+        recents: Vec<PathBuf>,
+        alerts: hidegit_forge::AlertPrefs,
+    ) -> (Self, Task<Message>) {
         let mut this = Self::default();
         this.app.recents = recents;
+        this.app.alerts = alerts;
 
         // The forge client is built off the UI thread, because building it
         // reads the keychain and a keychain can prompt.
@@ -1714,11 +1719,7 @@ impl Hidegit {
                             .map_or_else(String::new, ToString::to_string);
                         let forge_repo = repo.prs.repo.clone();
 
-                        for (summary, body) in
-                            hidegit_forge::notify::compose(&observed.alerts, &repository)
-                        {
-                            self.app.notifier.notify(&summary, &body);
-                        }
+                        self.app.notify(&observed.alerts, &repository);
 
                         // Each ending costs one more request, and only for pull
                         // requests you wrote.
@@ -1774,15 +1775,15 @@ impl Hidegit {
                     .as_ref()
                     .map_or_else(String::new, ToString::to_string);
 
-                let alert = hidegit_forge::Alert {
-                    event,
-                    number: detail.pr.number,
-                    title: detail.pr.title.clone(),
-                    url: detail.pr.url.clone(),
-                };
-                for (summary, body) in hidegit_forge::notify::compose(&[alert], &repository) {
-                    self.app.notifier.notify(&summary, &body);
-                }
+                self.app.notify(
+                    &[hidegit_forge::Alert {
+                        event,
+                        number: detail.pr.number,
+                        title: detail.pr.title.clone(),
+                        url: detail.pr.url.clone(),
+                    }],
+                    &repository,
+                );
                 Task::none()
             }
 
@@ -4624,6 +4625,58 @@ mod tests {
         assert_eq!(shown.len(), 1);
         assert!(shown[0].0.contains("Checks failed on #47"), "{shown:?}");
         assert!(shown[0].1.contains("youhide/hideGit"), "{shown:?}");
+    }
+
+    #[test]
+    fn an_event_turned_off_reaches_no_notifier() {
+        // `checks_passed` is off by default, which is the one preference a user
+        // is most likely to notice not having changed.
+        let recorder = Arc::new(hidegit_forge::Recorder::default());
+        let mut app = app_with_forge_repo();
+        app.app.notifier = recorder.clone();
+
+        let mut failing = pull_request(47);
+        failing.checks = hidegit_forge::CheckState::Failing;
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![failing])))),
+        ));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![pull_request(47)])))),
+        ));
+
+        assert!(
+            recorder.shown().is_empty(),
+            "checks passing is the absence of a problem, and is off by default"
+        );
+    }
+
+    #[test]
+    fn a_muted_repository_stays_silent_while_the_panel_keeps_working() {
+        let recorder = Arc::new(hidegit_forge::Recorder::default());
+        let mut app = app_with_forge_repo();
+        app.app.notifier = recorder.clone();
+        app.app.alerts.muted = vec!["youhide/hideGit".to_owned()];
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![pull_request(47)])))),
+        ));
+        let mut failing = pull_request(47);
+        failing.checks = hidegit_forge::CheckState::Failing;
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PrsLoaded(Box::new(Ok(loaded(vec![failing])))),
+        ));
+
+        assert!(recorder.shown().is_empty());
+        assert_eq!(
+            app.app.repos[0].prs.items.len(),
+            1,
+            "muting silences the desktop, not the panel"
+        );
     }
 
     #[test]

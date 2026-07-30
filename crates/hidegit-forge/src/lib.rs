@@ -16,6 +16,7 @@ pub mod github;
 pub mod model;
 pub mod notify;
 pub mod poll;
+pub mod prefs;
 pub mod secret;
 pub mod token;
 
@@ -24,6 +25,7 @@ pub use github::{Endpoint, GitHub};
 pub use model::*;
 pub use notify::{Desktop, Notifier};
 pub use poll::{Activity, Alert, AlertEvent, Next, Observed, Schedule, Watcher};
+pub use prefs::{AlertPrefs, EventPrefs, QuietHours};
 pub use secret::SecretString;
 pub use token::{Keychain, StoredToken, TokenStore};
 
