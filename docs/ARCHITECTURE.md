@@ -3,10 +3,10 @@
 How hideGit is put together, and why. Decisions summarised here are argued in full in the
 [ADRs](./adr/README.md).
 
-**Status:** M1, M2 and M3 have landed, so the reads, the working-directory writes, and everything
-that touches a remote described here are code that exists. History rewriting — merge, rebase,
-cherry-pick — is still design: those methods are declared and return `NotImplementedYet` with the
-milestone they arrive in.
+**Status:** M1 through M4 have landed, so the reads, the working-directory writes, everything that
+touches a remote, and the forge integration described here are code that exists. History
+rewriting — merge, rebase, cherry-pick — is still design: those methods are declared and return
+`NotImplementedYet` with the milestone they arrive in.
 
 ## Contents
 
@@ -535,9 +535,12 @@ the same thing.
 **Delivery is behind a `Notifier` trait.** Nothing in CI can receive a notification — a Linux runner
 has no notification daemon and a macOS runner has no bundle to send from — so everything that
 *decides* to notify is tested against a recorder. On macOS `notify-rust` goes through
-`mac-notification-sys`, which needs a registered bundle identifier: a notification sent from
-`cargo run` silently does not appear, and checking alerts there means
-`cargo run -p xtask -- bundle-macos` and running the bundle.
+`mac-notification-sys`, which attributes a notification to whatever executable sent it: run from
+`cargo run`, macOS raises its authorization prompt naming that binary rather than hideGit, and any
+alert that follows is attributed to it. Checking alerts there therefore means
+`cargo run -p xtask -- bundle-macos` and running the bundle, whose identifier is what makes the
+notification say hideGit. `show()` returns `Ok` either way, so nothing in the code can detect the
+difference — `cargo test -p hidegit-forge -- --ignored a_real_notification` is the manual check.
 
 ## Error taxonomy
 
@@ -636,10 +639,21 @@ Stated plainly, because a reader should meet these here rather than discover the
    manual check on a developer's machine.
 5. **GitHub only until post-1.0.** The `Forge` trait exists so GitLab and Bitbucket are additions
    rather than rewrites, but a trait designed against one implementation usually needs adjusting
-   when the second arrives. Expect to revise it.
-6. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
+   when the second arrives. Expect to revise it. **GitHub Enterprise is not wired up either** — a
+   self-hosted instance puts REST on `/api/v3` and GraphQL on `/api/graphql`, and there is no
+   configuration surface to name a host from. `Endpoint` carries the three bases apart so adding it
+   is a change in one place.
+6. **Pull request alerts have not been verified against a real account.** Every forge test mocks
+   HTTP, which is what keeps the suite hermetic — and it means the milestone's own bar, a real
+   review request producing a real notification, is a manual check. So is a full day of running
+   without a rate-limit warning.
+7. **A reply inside an existing review thread does not notify.** `PrCommented` watches a count of
+   issue comments plus review threads, and a reply changes neither. Catching those would mean
+   reading every thread on every pull request on every poll, which is the N+1
+   [ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md) exists to avoid.
+8. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
    expected. Isolating iced types to `hidegit-ui` keeps that blast radius to one crate.
-7. **Opening a very large repository takes about a second.** Ordering 100,000 commits
+9. **Opening a very large repository takes about a second.** Ordering 100,000 commits
    topologically measures at 1.01s, and it happens before the first screen appears. Scrolling is
    fast once open — laying out a visible window costs 52µs — but the initial pass is real, and
    nothing yet shows progress during it. Numbers and method in

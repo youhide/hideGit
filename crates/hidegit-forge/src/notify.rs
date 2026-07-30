@@ -5,12 +5,15 @@
 //! is what lets everything that *decides* to notify be tested — which is the
 //! part with the logic in it.
 //!
-//! **On macOS, `notify-rust` needs a bundled `.app`.** It goes through
-//! `mac-notification-sys`, which asks the notification centre for a registered
-//! bundle identifier; a notification sent from `cargo run` has none and does
-//! not appear. Verifying alerts there therefore means
-//! `cargo run -p xtask -- bundle-macos` and running the bundle. Stated here
-//! because the failure is silent.
+//! **On macOS, run this from the bundle.** `notify-rust` goes through
+//! `mac-notification-sys`, which attributes a notification to whatever
+//! executable sent it. Sent from `cargo run` or from a test binary, macOS
+//! raises its authorization prompt naming that binary — observed as
+//! *"hidegit_forge-22ed2ace8b2e02be" would like to send you notifications* —
+//! and any alert that follows is attributed to it rather than to hideGit.
+//! `cargo run -p xtask -- bundle-macos` produces the bundle whose identifier
+//! makes the notification say hideGit. `show()` returns `Ok` either way, so
+//! nothing here can detect the difference.
 
 use std::fmt;
 
@@ -174,6 +177,26 @@ mod tests {
         ] {
             assert!(event.summary(47).contains("#47"), "{event:?}");
         }
+    }
+
+    /// Sends a real notification. Run it by hand:
+    ///
+    /// ```sh
+    /// cargo test -p hidegit-forge -- --ignored --nocapture desktop
+    /// ```
+    ///
+    /// Ignored because CI cannot receive one, and because what it proves is not
+    /// assertable: whether a notification *appeared*, and under whose name.
+    /// Run from a test binary on macOS it prompts for permission as
+    /// `hidegit_forge-<hash>`; run from the bundle it is hideGit. `show()`
+    /// returns `Ok` in both cases.
+    #[test]
+    #[ignore = "sends a real desktop notification; run by hand"]
+    fn a_real_notification_can_be_sent() {
+        Desktop.notify(
+            "Checks failed on #47",
+            "feat: hunk staging · youhide/hideGit",
+        );
     }
 
     #[test]

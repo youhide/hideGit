@@ -11,7 +11,7 @@ behaviour someone can check, not a feeling of completeness.
 | ✅ | [M1 — Scaffold & read-only viewer](#m1--scaffold--read-only-viewer) | See history |
 | ✅ | [M2 — Working directory](#m2--working-directory) | Make commits |
 | ✅ | [M3 — Branches & remotes](#m3--branches--remotes) | Daily driver |
-| ⬜ | [M4 — Pull request alerts](#m4--pull-request-alerts) | Forge integration |
+| ✅ | [M4 — Pull request alerts](#m4--pull-request-alerts) | Forge integration |
 | ⬜ | [M5 — History operations](#m5--history-operations) | Stop dropping to a terminal |
 | ⬜ | [M6 — Polish & release](#m6--polish--release) | 1.0 |
 | ⬜ | [Post-1.0](#post-10) | Breadth |
@@ -203,6 +203,52 @@ Design in [ARCHITECTURE.md](./ARCHITECTURE.md#forge-integration) and
 **Done when:** someone requests your review on GitHub and a native notification appears on your
 desktop within the configured interval — with hideGit in the background, no browser open, and no
 rate-limit warnings after a full day of running.
+
+**Status: complete, with the same shape of caveat M3 had.** Everything in the scope above is
+implemented and covered by tests — HTTP mocked throughout, so no test needs a token or a network —
+and the panel has been checked by eye. What has *not* been verified is the bar itself, because it
+needs a real account: **a real review request producing a real notification**, and **a full day of
+running without a rate-limit warning**. Every credential path is the same manual check M3 left
+behind, and saying otherwise would be claiming something nobody has tried.
+
+Four things fell out of building it that the plan did not anticipate.
+
+**The documented polling design could not have worked.** It specified conditional REST requests with
+`If-None-Match`, on the reasoning that a free `304` is what makes a one-minute interval affordable.
+But a check run completing does not modify the pull request it belongs to — checks attach to a
+*commit* — so the `ETag` stays valid for the entire life of a CI run and `ChecksFailed` never fires.
+The one notification a developer actually waits for was the one the design could not deliver. The
+gap only became visible when the event list and the transport were looked at together, which is an
+argument for writing both down in the same document.
+[ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md) records the replacement and what it costs:
+every poll now spends budget instead of riding a free `304`, and the query's nested page sizes
+became a rate-limit decision rather than a display one.
+
+**Two of the seven events arrive as an absence.** The poll asks for open pull requests, so a merge
+and a close both look like a row disappearing — and `PrMerged` and `PrClosed` are separate events
+the spec distinguishes. Each disappearance of a pull request *you wrote* therefore costs one extra
+request to read its state. That is a handful a day rather than one per poll, and the alternative was
+reporting both as the same thing.
+
+**`UNKNOWN` is the ordinary answer, not an error.** GitHub recomputes mergeability after every push
+and says `UNKNOWN` while it does, so `Unknown → Conflicting` is what *finished checking* looks like
+rather than what *started conflicting* looks like. Collapsing it into two states would have fired
+`PrConflicting` on every push. It is why `MergeState` has three variants and why the sidebar marks a
+conflict only when one is known.
+
+**The macOS notification story is about attribution, not delivery.** `notify-rust` goes through
+`mac-notification-sys`, which credits whatever executable sent the notification: run from
+`cargo run`, macOS raises its permission prompt naming *that binary* — observed here as
+`"hidegit_forge-22ed2ace8b2e02be" would like to send you notifications` — rather than naming hideGit.
+`show()` returns `Ok` either way, so nothing in the code can tell. The bundle is what fixes it, and
+`cargo test -p hidegit-forge -- --ignored a_real_notification` is the manual check. That settles half
+of the open question about whether a platform shim is needed; actionable buttons on the alert are
+the other half and are still open.
+
+One smaller thing. **`cargo run -p xtask -- bundle-macos` wraps an already-built release binary; it
+does not build one.** A stale `target/release/hidegit` produces a bundle of the previous milestone
+that looks entirely convincing, which cost a confused half-hour chasing a regression that did not
+exist. `cargo build --release` first.
 
 ---
 
