@@ -75,7 +75,7 @@ The full reasoning, including how this changes as gitoxide matures, is in
 | | Minimum |
 |---|---|
 | Git | 2.30 or newer, on `PATH` |
-| Rust | 1.85 or newer (to build from source) |
+| Rust | 1.88 or newer (to build from source) |
 | Platforms | macOS 11+, Windows 10+, Linux with Vulkan / OpenGL 3.3 |
 
 ## Installing

@@ -20,7 +20,11 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Raised from 1.85 in M4. `octocrab` itself declares 1.85, but it depends on
+# `jsonwebtoken`, which reaches `time 0.3.47`, which needs 1.88 — so the
+# effective floor is set by a transitive dependency rather than by anything
+# hideGit writes. Stated here because the number is otherwise unexplainable.
+rust-version = "1.88"
 license = "GPL-3.0-only"
 repository = "https://github.com/youhide/hideGit"
 authors = ["The hideGit contributors"]

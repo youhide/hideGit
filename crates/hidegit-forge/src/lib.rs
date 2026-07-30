@@ -11,10 +11,12 @@
 
 pub mod detect;
 pub mod error;
+pub mod github;
 pub mod model;
 pub mod secret;
 
 pub use error::{DeviceFlowError, ForgeError};
+pub use github::GitHub;
 pub use model::*;
 pub use secret::SecretString;
 

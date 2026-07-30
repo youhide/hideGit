@@ -383,7 +383,7 @@ quiet hours. Clicking one focuses hideGit with that PR selected.
 |---|---|---|
 | `ReviewRequested` | You are added as a reviewer | on |
 | `ReviewSubmitted` | Someone approves or requests changes on your PR | on |
-| `PrCommented` | A new comment or review comment on your PR | on |
+| `PrCommented` | A new comment, or a new review thread, on your PR | on |
 | `ChecksFailed` | CI transitions to failing on your PR | on |
 | `ChecksPassed` | CI transitions to passing on your PR | off |
 | `PrConflicting` | Your open PR becomes conflicted | on |
@@ -391,6 +391,12 @@ quiet hours. Clicking one focuses hideGit with that PR selected.
 
 Actions you take yourself never notify you, and multiple events in one poll collapse into a single
 summary above a threshold.
+
+**One gap worth knowing about.** `PrCommented` fires on a change in the number of issue comments
+plus review threads, so a *reply inside an existing review thread* does not produce a notification.
+Catching those would mean reading every thread on every pull request on every poll, which is the
+N+1 that [ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md) exists to avoid. A new comment
+and a new review thread both do notify.
 
 ## Keyboard shortcuts
 
