@@ -221,6 +221,20 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::ToastCopied(id) => {
+                let Some(toast) = self.app.toasts.iter().find(|t| t.id == id) else {
+                    return Task::none();
+                };
+                // Summary and details together: the details alone are often a
+                // wall of stderr with no statement of what was being attempted.
+                let text = if toast.details.is_empty() {
+                    toast.summary.clone()
+                } else {
+                    format!("{}\n\n{}", toast.summary, toast.details)
+                };
+                iced::clipboard::write(text)
+            }
+
             Message::ForgeClientBuilt(client, restored) => {
                 self.app.forge.client = Some(client);
                 match *restored {
@@ -954,6 +968,22 @@ impl Hidegit {
                 repo.graph.clamp_scroll();
                 cache.clear();
                 Task::none()
+            }
+
+            RepoMessage::GraphScrolledTo(fraction) => {
+                // The scrollable range is the history minus one screenful: the
+                // last row belongs at the bottom of the window, not at the top
+                // of an empty one.
+                let total = repo.graph.total.max(repo.graph.commits.len());
+                let last = total.saturating_sub(repo.graph.viewport_rows.max(1));
+
+                repo.graph.scroll = fraction.clamp(0.0, 1.0) * last as f32;
+                repo.graph.clamp_scroll();
+                cache.clear();
+
+                // Dragging to somewhere history has not been loaded yet is the
+                // whole point of a scrollbar on a hundred thousand commits.
+                self.load_more_task(index)
             }
 
             RepoMessage::SelectionMoved(delta) => {
@@ -4750,6 +4780,61 @@ mod tests {
         ));
 
         assert!(recorder.shown().is_empty());
+    }
+
+    #[test]
+    fn dragging_the_scrollbar_to_the_end_lands_on_the_last_screenful() {
+        // Not on the last row at the top of an empty window: the scrollable
+        // range is the history minus one screenful.
+        let mut app = app_with(100);
+        app.app.repos[0].graph.viewport_rows = 10;
+
+        let _ = app.update(Message::Repo(0, RepoMessage::GraphScrolledTo(1.0)));
+        assert_eq!(app.app.repos[0].graph.scroll, 90.0);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::GraphScrolledTo(0.0)));
+        assert_eq!(app.app.repos[0].graph.scroll, 0.0);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::GraphScrolledTo(0.5)));
+        assert_eq!(app.app.repos[0].graph.scroll, 45.0);
+    }
+
+    #[test]
+    fn a_fraction_outside_the_bar_is_clamped_rather_than_trusted() {
+        // The pointer goes past both ends of the track while dragging.
+        let mut app = app_with(100);
+        app.app.repos[0].graph.viewport_rows = 10;
+
+        let _ = app.update(Message::Repo(0, RepoMessage::GraphScrolledTo(4.0)));
+        assert_eq!(app.app.repos[0].graph.scroll, 90.0);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::GraphScrolledTo(-2.0)));
+        assert_eq!(app.app.repos[0].graph.scroll, 0.0);
+    }
+
+    #[test]
+    fn a_history_that_fits_on_screen_does_not_scroll() {
+        let mut app = app_with(5);
+        app.app.repos[0].graph.viewport_rows = 40;
+
+        let _ = app.update(Message::Repo(0, RepoMessage::GraphScrolledTo(1.0)));
+        assert_eq!(app.app.repos[0].graph.scroll, 0.0);
+    }
+
+    #[test]
+    fn copying_a_failure_takes_what_was_attempted_along_with_the_detail() {
+        // Details alone are often a wall of stderr with no statement of what
+        // was being tried, which is the half a bug report needs most.
+        let mut app = Hidegit::default();
+        app.app.toast(&UiError {
+            summary: "git push origin failed".into(),
+            details: "! [rejected] main -> main (stale info)".into(),
+        });
+
+        let id = app.app.toasts[0].id;
+        let _ = app.update(Message::ToastCopied(id));
+
+        assert_eq!(app.app.toasts.len(), 1, "copying does not dismiss it");
     }
 
     #[test]

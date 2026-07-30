@@ -139,7 +139,13 @@ impl GitHub {
             .as_ref()
             .ok_or(ForgeError::NotAuthenticated(ForgeId::GitHub))?;
 
-        let issued = auth::refresh(&self.oauth_client(), &self.client_id, refresh).await?;
+        let issued = auth::refresh(
+            &self.oauth_client(),
+            &self.endpoint.oauth,
+            &self.client_id,
+            refresh,
+        )
+        .await?;
         let fresh = issued.into_stored(token.login.clone());
         self.store.save(&self.endpoint.host, &fresh)?;
         Ok(fresh)
@@ -285,7 +291,13 @@ impl Forge for GitHub {
     async fn authenticate(&self, flow: AuthFlow) -> Result<Identity, ForgeError> {
         let issued = match flow {
             AuthFlow::Device(announce) => {
-                auth::device_flow(&self.oauth_client(), &self.client_id, announce).await?
+                auth::device_flow(
+                    &self.oauth_client(),
+                    &self.endpoint.oauth,
+                    &self.client_id,
+                    announce,
+                )
+                .await?
             }
             // A personal access token is already a token. It has no expiry
             // hideGit can see and no refresh token, which `StoredToken`

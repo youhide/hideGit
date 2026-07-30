@@ -177,6 +177,14 @@ the working-directory row instead, and only when there is something to stash.
 badges on their commits. Selecting a row updates the detail pane. Full rendering rules in
 [COMMIT_GRAPH.md](./COMMIT_GRAPH.md).
 
+**The scrollbar is draggable, and it takes the click before the rows do.** A strip along the right
+edge wider than the bar it draws answers to a press — an 8px target is one people miss, and missing
+it would select whatever commit sits behind it. Dragging past the bottom edge keeps scrolling,
+because that is how anyone reaches the end. Clicking the track jumps the thumb under the pointer and
+then drags from its middle, so the page follows the cursor rather than leaping once and stopping.
+The thumb has a minimum height: at a hundred thousand commits its proportional size is under a
+pixel, and a thumb nobody can grab is the same as no thumb.
+
 **Detail pane** — commit metadata and changed files when a commit is selected; the staging view
 when the working directory is selected.
 
@@ -558,9 +566,11 @@ reported rather than silently removed. See
 [ADR-0005](./adr/0005-progress-and-cancellation.md).
 
 **Errors.** Recoverable errors appear inline where the action was attempted, with the action that
-fixes them. Unexpected errors become a toast with a "copy details" action containing the argument
-vector and Git's own stderr. Git's error messages are good; hideGit shows them rather than
-paraphrasing.
+fixes them. Unexpected errors become a toast with a **Copy details** action containing the argument
+vector and Git's own stderr — or, for a forge failure, the provider's own message. Git's error
+messages are good; hideGit shows them rather than paraphrasing. The copy action matters more than it
+looks: an `iced` `text` is not selectable, so without it the one thing a bug report needs can be read
+on screen and taken nowhere. Copying does not dismiss the toast.
 
 **Empty states** carry the next action, not just an absence: no repositories → Open / Clone; no
 PRs → connect GitHub, or "you have no open pull requests"; clean working directory → the last

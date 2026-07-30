@@ -424,6 +424,23 @@ fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
         );
     }
 
+    // The detail is selectable nowhere — an iced `text` is not — so the only
+    // way it reaches a bug report is a button that puts it on the clipboard.
+    // `UI_SPEC` has asked for this since M1.
+    body = body.push(
+        row![
+            Space::new().width(Fill),
+            button(
+                container(text("Copy details").size(11.0).color(palette.muted))
+                    .padding(Padding::from([2, 6]))
+            )
+            .padding(0)
+            .style(move |_, status| quiet_style(palette, status))
+            .on_press(Message::ToastCopied(toast.id)),
+        ]
+        .align_y(Center),
+    );
+
     container(body)
         .width(Length::Fixed(420.0))
         .padding(Padding::from([10, 12]))

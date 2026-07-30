@@ -137,6 +137,12 @@ pub enum Message {
     CloseRepository(usize),
     Repo(usize, RepoMessage),
     ToastDismissed(u64),
+    /// Puts a failure's details on the clipboard.
+    ///
+    /// `UI_SPEC` has asked for this since M1 and it was never built, so the one
+    /// thing a bug report needs — the argument vector, Git's own stderr, the
+    /// forge's own message — could be read on screen and not taken anywhere.
+    ToastCopied(u64),
 
     // ---- the forge ----
     /// The client exists, and a stored session was restored if there was one.
@@ -186,6 +192,13 @@ pub enum RepoMessage {
     /// A wheel or trackpad scroll, in pixels. Positive scrolls toward older
     /// history.
     GraphScrolled(f32),
+    /// The scrollbar was dragged, as a fraction of the way through history.
+    ///
+    /// A fraction rather than a row, because that is what the thumb's position
+    /// actually means: the widget knows where the pointer is and the state
+    /// knows how many commits there are, and neither should have to learn the
+    /// other's units.
+    GraphScrolledTo(f32),
     /// Arrow keys: move the selection by rows, scrolling to keep it visible.
     SelectionMoved(i32),
     /// `Tab` / `Shift+Tab`: sidebar → graph → detail.
