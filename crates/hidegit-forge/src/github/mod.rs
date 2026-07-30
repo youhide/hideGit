@@ -8,44 +8,178 @@
 mod query;
 mod translate;
 
+use std::sync::{Arc, RwLock};
+
 use async_trait::async_trait;
 use octocrab::{GraphqlResponse, Octocrab};
 use serde_json::json;
+use time::OffsetDateTime;
 
-use crate::detect;
 use crate::error::ForgeError;
 use crate::model::{
     ForgeId, Identity, NewPullRequest, PollCursor, PollResult, PullRequest, PullRequestDetail,
     RepoRef, WebTarget,
 };
-use crate::{AuthFlow, Forge};
+use crate::token::{StoredToken, TokenStore};
+use crate::{AuthFlow, Forge, auth, detect};
 
 /// The host hideGit knows without being told.
 ///
 /// A GitHub Enterprise instance lives on an arbitrary domain, which no static
-/// method can recognise — [`GitHub::detect`] has no configuration to consult.
-/// An enterprise host therefore has to be configured, and [`GitHub::new`] takes
-/// one; detection alone only ever claims `github.com`.
+/// method can recognise — [`GitHub::detect`] has no configuration to consult —
+/// so detection alone only ever claims `github.com`.
 pub const PUBLIC_HOST: &str = "github.com";
 
-#[derive(Debug)]
-pub struct GitHub {
-    crab: Octocrab,
-    host: String,
+/// Where a GitHub lives.
+///
+/// Three separate bases because GitHub uses three: the API is on a different
+/// host from the website on `github.com`, and the OAuth endpoints are on the
+/// website rather than the API. Carrying them apart is also what lets a test
+/// point all three at one mock server.
+#[derive(Debug, Clone)]
+pub struct Endpoint {
+    /// The bare hostname, for display and for web URLs.
+    pub host: String,
+    /// Base for REST and `/graphql`.
+    pub api: String,
+    /// Base for `/login/*`.
+    pub oauth: String,
 }
 
-impl GitHub {
-    /// A client for `host`, authenticated with `token`.
-    pub fn new(host: impl Into<String>, crab: Octocrab) -> Self {
+impl Endpoint {
+    pub fn public() -> Self {
         Self {
-            crab,
-            host: host.into(),
+            host: PUBLIC_HOST.to_owned(),
+            api: "https://api.github.com".to_owned(),
+            oauth: "https://github.com".to_owned(),
         }
     }
 
-    /// `https://github.com`, or `https://<host>` for an enterprise instance.
+    /// Every base pointed at one server.
+    ///
+    /// **GitHub Enterprise is not wired up.** It would need `/api/v3` for REST
+    /// and `/api/graphql` for GraphQL — a different layout, not a different
+    /// hostname — and there is no configuration surface to supply a host from
+    /// yet. This constructor exists for tests, and naming it so keeps it from
+    /// being mistaken for enterprise support.
+    #[cfg(any(test, feature = "fake"))]
+    pub fn testing(uri: &str) -> Self {
+        Self {
+            host: PUBLIC_HOST.to_owned(),
+            api: uri.to_owned(),
+            oauth: uri.to_owned(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct GitHub {
+    endpoint: Endpoint,
+    client_id: String,
+    store: Arc<dyn TokenStore>,
+    /// Swapped when a token is issued or refreshed, so the credential lives in
+    /// exactly one place and every request picks up the current one.
+    crab: RwLock<Octocrab>,
+}
+
+impl GitHub {
+    /// A client with no credentials yet.
+    pub fn new(
+        endpoint: Endpoint,
+        client_id: impl Into<String>,
+        store: Arc<dyn TokenStore>,
+    ) -> Self {
+        let crab = build(&endpoint.api, None);
+        Self {
+            endpoint,
+            client_id: client_id.into(),
+            store,
+            crab: RwLock::new(crab),
+        }
+    }
+
+    /// `github.com`, hideGit's registered app, and the OS keychain.
+    pub fn public(store: Arc<dyn TokenStore>) -> Self {
+        Self::new(Endpoint::public(), auth::CLIENT_ID, store)
+    }
+
+    /// Restores a saved session, refreshing the token if it is about to expire.
+    ///
+    /// `Ok(None)` when nothing is stored, which is the ordinary state of a
+    /// first run rather than a failure.
+    pub async fn resume(&self) -> Result<Option<Identity>, ForgeError> {
+        let Some(token) = self.store.load(&self.endpoint.host)? else {
+            return Ok(None);
+        };
+
+        let token = if token.needs_refresh(OffsetDateTime::now_utc()) {
+            self.refreshed(&token).await?
+        } else {
+            token
+        };
+
+        self.adopt(&token);
+        Ok(Some(Identity {
+            login: token.login,
+            name: None,
+            avatar_url: None,
+        }))
+    }
+
+    /// Forgets the token, here and in the keychain.
+    pub fn sign_out(&self) -> Result<(), ForgeError> {
+        self.adopt_none();
+        self.store.clear(&self.endpoint.host)
+    }
+
+    /// Exchanges a refresh token and stores what came back.
+    async fn refreshed(&self, token: &StoredToken) -> Result<StoredToken, ForgeError> {
+        let refresh = token
+            .refresh
+            .as_ref()
+            .ok_or(ForgeError::NotAuthenticated(ForgeId::GitHub))?;
+
+        let issued = auth::refresh(&self.oauth_client(), &self.client_id, refresh).await?;
+        let fresh = issued.into_stored(token.login.clone());
+        self.store.save(&self.endpoint.host, &fresh)?;
+        Ok(fresh)
+    }
+
+    /// A client for the OAuth endpoints, which are unauthenticated and live on
+    /// the website rather than the API host.
+    fn oauth_client(&self) -> Octocrab {
+        Octocrab::builder()
+            .base_uri(&self.endpoint.oauth)
+            .and_then(|builder| {
+                // GitHub's OAuth endpoints answer form-encoded by default;
+                // asking for JSON is what makes the reply parseable.
+                builder
+                    .add_header(http::header::ACCEPT, "application/json".to_owned())
+                    .build()
+            })
+            .unwrap_or_else(|error| {
+                // The base URI came from `Endpoint`, not from user input, so
+                // this is a programming error rather than something to surface.
+                tracing::error!(%error, "the OAuth base URI is not a URI");
+                Octocrab::default()
+            })
+    }
+
+    fn adopt(&self, token: &StoredToken) {
+        *self.crab.write().expect("not poisoned") = build(&self.endpoint.api, Some(token));
+    }
+
+    fn adopt_none(&self) {
+        *self.crab.write().expect("not poisoned") = build(&self.endpoint.api, None);
+    }
+
+    fn crab(&self) -> Octocrab {
+        self.crab.read().expect("not poisoned").clone()
+    }
+
+    /// `https://github.com`, or `https://<host>` for another instance.
     fn web_root(&self) -> String {
-        format!("https://{}", self.host)
+        format!("https://{}", self.endpoint.host)
     }
 
     /// Runs a GraphQL document, keeping partial results.
@@ -63,7 +197,7 @@ impl GitHub {
         let payload = json!({ "query": document, "variables": variables });
 
         let response: GraphqlResponse<T> = self
-            .crab
+            .crab()
             .post("/graphql", Some(&payload))
             .await
             .map_err(|error| self.transport(error))?;
@@ -111,7 +245,7 @@ impl GitHub {
                 }
             }
             other => ForgeError::Network {
-                host: self.host.clone(),
+                host: self.endpoint.host.clone(),
                 source: Box::new(other),
             },
         }
@@ -140,11 +274,56 @@ impl Forge for GitHub {
         (repo.host == PUBLIC_HOST).then_some(repo)
     }
 
-    async fn authenticate(&self, _flow: AuthFlow) -> Result<Identity, ForgeError> {
-        Err(ForgeError::NotImplementedYet {
-            operation: "authenticate",
-            milestone: "M4",
-        })
+    /// Obtains a token, adopts it, and saves it to the keychain.
+    ///
+    /// The client keeps custody of the token rather than handing it back: it is
+    /// the only object that needs the value, and a token that is never returned
+    /// is a token that cannot end up in a log line somebody added upstream.
+    ///
+    /// The keychain is written *before* the identity is returned, so a caller
+    /// that sees success can rely on the session surviving a restart.
+    async fn authenticate(&self, flow: AuthFlow) -> Result<Identity, ForgeError> {
+        let issued = match flow {
+            AuthFlow::Device(announce) => {
+                auth::device_flow(&self.oauth_client(), &self.client_id, announce).await?
+            }
+            // A personal access token is already a token. It has no expiry
+            // hideGit can see and no refresh token, which `StoredToken`
+            // represents as absent rather than as a guessed lifetime.
+            AuthFlow::Token(token) => auth::Issued {
+                access: token,
+                expires_at: None,
+                refresh: None,
+                refresh_expires_at: None,
+            },
+        };
+
+        // Adopted before the login is known, because reading the login is the
+        // first request the new credential makes — and that request doubles as
+        // proof the token works, which is what a pasted personal access token
+        // most needs.
+        let provisional = issued.into_stored(String::new());
+        self.adopt(&provisional);
+
+        let identity = match self.current_user().await {
+            Ok(identity) => identity,
+            Err(error) => {
+                // A token that could not name its owner is not one to keep
+                // holding: leaving it adopted would make every later call fail
+                // in the same way, with no sign of why.
+                self.adopt_none();
+                return Err(error);
+            }
+        };
+
+        let stored = StoredToken {
+            login: identity.login.clone(),
+            ..provisional
+        };
+        self.store.save(&self.endpoint.host, &stored)?;
+        self.adopt(&stored);
+
+        Ok(identity)
     }
 
     async fn current_user(&self) -> Result<Identity, ForgeError> {
@@ -226,7 +405,7 @@ impl Forge for GitHub {
         // REST rather than the GraphQL mutation, which needs the repository's
         // node id and therefore a round trip to look it up first.
         let created = self
-            .crab
+            .crab()
             .pulls(&repo.owner, &repo.name)
             .create(&draft.title, &draft.head, &draft.base)
             .body(&draft.body)
@@ -279,6 +458,29 @@ impl Forge for GitHub {
             WebTarget::Install => format!("{root}/apps/hidegit/installations/new"),
         }
     }
+}
+
+/// An API client, with a token if there is one.
+///
+/// `user_access_token` rather than `personal_token`: both send a bearer token,
+/// but the first is what a GitHub App's user-to-server token is, and naming it
+/// correctly is what keeps the next reader from concluding the App path was
+/// never implemented.
+fn build(api: &str, token: Option<&StoredToken>) -> Octocrab {
+    let builder = Octocrab::builder();
+    let builder = match token {
+        Some(token) => builder.user_access_token(token.access.expose().to_owned()),
+        None => builder,
+    };
+
+    builder
+        .base_uri(api)
+        .and_then(|builder| builder.build())
+        .unwrap_or_else(|error| {
+            // The base URI comes from `Endpoint`, never from user input.
+            tracing::error!(%error, "the API base URI is not a URI");
+            Octocrab::default()
+        })
 }
 
 #[cfg(test)]

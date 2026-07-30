@@ -29,13 +29,26 @@ most welcome.
 
 ### Credentials are never written to disk by hideGit
 
-Forge access tokens live in the operating system keychain (macOS Keychain, Windows Credential
-Manager, Secret Service on Linux) via the `keyring` crate. They are **never** written to the
-configuration file, never logged, and never included in diagnostic output.
+Forge access tokens — **and the refresh tokens that come with them** — live in the operating system
+keychain (macOS Keychain, Windows Credential Manager, Secret Service on Linux) via the `keyring`
+crate. They are **never** written to the configuration file, never logged, and never included in
+diagnostic output.
 
-Authentication uses the OAuth Device Authorization Flow. hideGit embeds **no client secret** — in
-an open source desktop application, an embedded secret is public by definition. A report that
-hideGit has begun shipping one is a valid security report.
+That is enforced by the type rather than by discipline: a token is a `SecretString`, whose `Debug`
+and `Display` both redact, so a struct that derives `Debug` around one cannot print it either.
+Reading the real value requires calling `expose`, which is named so that grepping for it finds
+every place a token can escape.
+
+**If no keychain is available** — a headless Linux session with no Secret Service — forge features
+are disabled. There is no file fallback, deliberately: silently downgrading to plaintext storage
+would give a user who chose an encrypted credential store a different one without telling them.
+
+Authentication uses the OAuth Device Authorization Flow against hideGit's registered GitHub App,
+with a personal access token as a first-class fallback. hideGit embeds **no client secret** — in an
+open source desktop application, an embedded secret is public by definition. A report that hideGit
+has begun shipping one is a valid security report. The App's *client identifier* is compiled in and
+is not a secret: it names the application and authorises nothing on its own, which is exactly the
+property the device flow is designed around.
 
 Git remote credentials are not handled by hideGit at all. They are delegated to your configured
 Git credential helper, which is one of the reasons operations that touch a remote are delegated

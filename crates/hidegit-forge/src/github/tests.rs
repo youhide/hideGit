@@ -1,22 +1,34 @@
 //! HTTP is mocked. No test here touches the network or needs a real token.
 
+use std::sync::Arc;
+
 use serde_json::{Value, json};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use super::*;
 use crate::model::{CheckState, MergeState, PrRole, ReviewState};
+use crate::token::MemoryStore;
+use crate::{DeviceFlowError, SecretString};
 
-/// A client pointed at a mock server instead of GitHub.
+/// A client pointed at a mock server instead of GitHub, already holding a token.
 async fn client(server: &MockServer) -> GitHub {
-    let crab = Octocrab::builder()
-        .base_uri(server.uri())
-        .expect("a mock server URI is a URI")
-        .personal_token("not-a-real-token".to_owned())
-        .build()
-        .expect("the client builds");
+    let store = Arc::new(MemoryStore::default());
+    store
+        .save(
+            PUBLIC_HOST,
+            &StoredToken::permanent("youhide", SecretString::new("not-a-real-token")),
+        )
+        .expect("an in-memory store always saves");
 
-    GitHub::new(PUBLIC_HOST, crab)
+    let github = GitHub::new(Endpoint::testing(&server.uri()), auth::CLIENT_ID, store);
+    github.resume().await.expect("the stored token loads");
+    github
+}
+
+/// A client with no token yet.
+fn signed_out(server: &MockServer, store: Arc<MemoryStore>) -> GitHub {
+    GitHub::new(Endpoint::testing(&server.uri()), auth::CLIENT_ID, store)
 }
 
 fn repo() -> RepoRef {
@@ -345,14 +357,14 @@ async fn every_web_target_builds_a_url_on_the_configured_host() {
 }
 
 #[tokio::test]
-async fn an_enterprise_host_produces_enterprise_urls() {
+async fn another_host_produces_urls_on_that_host() {
     let server = MockServer::start().await;
-    let crab = Octocrab::builder()
-        .base_uri(server.uri())
-        .unwrap()
-        .build()
-        .unwrap();
-    let github = GitHub::new("github.example.com", crab);
+    let endpoint = Endpoint {
+        host: "github.example.com".to_owned(),
+        api: server.uri(),
+        oauth: server.uri(),
+    };
+    let github = GitHub::new(endpoint, auth::CLIENT_ID, Arc::new(MemoryStore::default()));
 
     let repo = RepoRef {
         host: "github.example.com".to_owned(),
@@ -364,4 +376,318 @@ async fn an_enterprise_host_produces_enterprise_urls() {
         github.web_url(&repo, WebTarget::PullRequest(3)),
         "https://github.example.com/team/thing/pull/3"
     );
+}
+
+// ---- authentication ------------------------------------------------------
+
+/// Answers `/user`-shaped GraphQL viewer queries with `login`.
+async fn viewer_server(login: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "viewer": { "login": login, "name": null, "avatarUrl": null } }
+        })))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn a_personal_access_token_is_proved_before_it_is_stored() {
+    // Reading the login is the first request the new credential makes, which
+    // is also what tells a user their pasted token actually works.
+    let server = viewer_server("youhide").await;
+    let store = Arc::new(MemoryStore::default());
+    let github = signed_out(&server, store.clone());
+
+    let identity = github
+        .authenticate(AuthFlow::Token(SecretString::new("ghp_pasted")))
+        .await
+        .unwrap();
+
+    assert_eq!(identity.login, "youhide");
+
+    let stored = store.load(PUBLIC_HOST).unwrap().expect("it was saved");
+    assert_eq!(stored.login, "youhide");
+    assert_eq!(stored.access.expose(), "ghp_pasted");
+    assert_eq!(
+        stored.expires_at, None,
+        "a personal access token has no expiry hideGit can see, and none is invented"
+    );
+}
+
+#[tokio::test]
+async fn a_token_that_cannot_name_its_owner_is_neither_kept_nor_stored() {
+    // Holding on to it would make every later call fail identically, with no
+    // sign of why.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(401).set_body_json(json!({ "message": "Bad credentials" })),
+        )
+        .mount(&server)
+        .await;
+
+    let store = Arc::new(MemoryStore::default());
+    let github = signed_out(&server, store.clone());
+
+    let outcome = github
+        .authenticate(AuthFlow::Token(SecretString::new("ghp_wrong")))
+        .await;
+
+    assert!(matches!(
+        outcome,
+        Err(ForgeError::NotAuthenticated(ForgeId::GitHub))
+    ));
+    assert_eq!(store.load(PUBLIC_HOST).unwrap(), None, "nothing is stored");
+}
+
+#[tokio::test]
+async fn the_device_flow_shows_a_code_before_it_starts_waiting_for_it() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/login/device/code"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_code": "d-code",
+            "user_code": "WDJB-MJHT",
+            "verification_uri": "https://github.com/login/device",
+            "expires_in": 900,
+            "interval": 1,
+        })))
+        .mount(&server)
+        .await;
+
+    // Pending once, then issued: the ordinary shape of the flow, and the reason
+    // a code has to be on screen before polling begins.
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "error": "authorization_pending",
+            "error_description": "The authorization request is still pending",
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "ghu_issued",
+            "token_type": "bearer",
+            "expires_in": 28_800,
+            "refresh_token": "ghr_issued",
+            "refresh_token_expires_in": 15_811_200,
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": { "viewer": { "login": "youhide", "name": null, "avatarUrl": null } }
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Arc::new(MemoryStore::default());
+    let github = signed_out(&server, store.clone());
+
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let recorder = seen.clone();
+
+    let identity = github
+        .authenticate(AuthFlow::Device(Box::new(move |code| {
+            *recorder.lock().unwrap() = Some(code);
+        })))
+        .await
+        .unwrap();
+
+    let code = seen.lock().unwrap().clone().expect("a code was announced");
+    assert_eq!(code.user_code, "WDJB-MJHT");
+    assert_eq!(code.verification_uri, "https://github.com/login/device");
+
+    assert_eq!(identity.login, "youhide");
+    let stored = store.load(PUBLIC_HOST).unwrap().unwrap();
+    assert_eq!(stored.access.expose(), "ghu_issued");
+    assert!(
+        stored.refresh.is_some(),
+        "a GitHub App's user token expires, so the refresh token is kept with it"
+    );
+    assert!(stored.expires_at.is_some());
+}
+
+#[tokio::test]
+async fn each_way_the_device_flow_can_end_is_reported_as_itself() {
+    // Each of these is a different sentence to show somebody staring at a code
+    // they just typed. "Authorisation failed" would throw away the useful part.
+    for (error, expected) in [
+        ("expired_token", DeviceFlowError::Expired),
+        ("access_denied", DeviceFlowError::Denied),
+        ("device_flow_disabled", DeviceFlowError::Disabled),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/login/device/code"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "device_code": "d-code",
+                "user_code": "WDJB-MJHT",
+                "verification_uri": "https://github.com/login/device",
+                "expires_in": 900,
+                "interval": 1,
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/login/oauth/access_token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "error": error })))
+            .mount(&server)
+            .await;
+
+        let github = signed_out(&server, Arc::new(MemoryStore::default()));
+        let outcome = github
+            .authenticate(AuthFlow::Device(Box::new(|_| {})))
+            .await;
+
+        match outcome {
+            Err(ForgeError::DeviceFlow(got)) => assert_eq!(got, expected, "for {error}"),
+            other => panic!("expected {expected:?} for {error}, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_session_resumes_from_the_keychain_without_asking_github_who_you_are() {
+    // A restart should not cost a request, and it should not cost the user a
+    // sign-in.
+    let server = MockServer::start().await;
+    let store = Arc::new(MemoryStore::default());
+    store
+        .save(
+            PUBLIC_HOST,
+            &StoredToken::permanent("youhide", SecretString::new("ghp_stored")),
+        )
+        .unwrap();
+
+    let identity = signed_out(&server, store)
+        .resume()
+        .await
+        .unwrap()
+        .expect("a stored session resumes");
+
+    assert_eq!(identity.login, "youhide");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        0,
+        "resuming spends no request"
+    );
+}
+
+#[tokio::test]
+async fn a_first_run_resumes_to_nothing_rather_than_to_an_error() {
+    let server = MockServer::start().await;
+    let github = signed_out(&server, Arc::new(MemoryStore::default()));
+
+    assert_eq!(github.resume().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn an_expiring_token_is_refreshed_on_the_way_back_in() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "ghu_fresh",
+            "token_type": "bearer",
+            "expires_in": 28_800,
+            "refresh_token": "ghr_fresh",
+        })))
+        .mount(&server)
+        .await;
+
+    let store = Arc::new(MemoryStore::default());
+    store
+        .save(
+            PUBLIC_HOST,
+            &StoredToken {
+                login: "youhide".to_owned(),
+                access: SecretString::new("ghu_stale"),
+                // Already past. The margin means even a token a minute from
+                // expiry is refreshed rather than raced.
+                expires_at: Some(crate::token::to_unix(
+                    time::OffsetDateTime::now_utc() - time::Duration::minutes(5),
+                )),
+                refresh: Some(SecretString::new("ghr_stale")),
+                refresh_expires_at: None,
+            },
+        )
+        .unwrap();
+
+    let identity = signed_out(&server, store.clone())
+        .resume()
+        .await
+        .unwrap()
+        .expect("a refreshable session resumes");
+
+    assert_eq!(identity.login, "youhide");
+
+    let stored = store.load(PUBLIC_HOST).unwrap().unwrap();
+    assert_eq!(stored.access.expose(), "ghu_fresh");
+    assert_eq!(
+        stored.login, "youhide",
+        "the login survives a refresh rather than costing a request to relearn"
+    );
+}
+
+#[tokio::test]
+async fn a_refresh_token_github_will_not_honour_ends_the_session() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({ "error": "bad_refresh_token" })),
+        )
+        .mount(&server)
+        .await;
+
+    let store = Arc::new(MemoryStore::default());
+    store
+        .save(
+            PUBLIC_HOST,
+            &StoredToken {
+                login: "youhide".to_owned(),
+                access: SecretString::new("ghu_stale"),
+                expires_at: Some(crate::token::to_unix(
+                    time::OffsetDateTime::now_utc() - time::Duration::minutes(5),
+                )),
+                refresh: Some(SecretString::new("ghr_revoked")),
+                refresh_expires_at: None,
+            },
+        )
+        .unwrap();
+
+    assert!(matches!(
+        signed_out(&server, store).resume().await,
+        Err(ForgeError::NotAuthenticated(ForgeId::GitHub))
+    ));
+}
+
+#[tokio::test]
+async fn signing_out_forgets_the_token_here_and_in_the_keychain() {
+    let server = viewer_server("youhide").await;
+    let store = Arc::new(MemoryStore::default());
+    let github = signed_out(&server, store.clone());
+
+    github
+        .authenticate(AuthFlow::Token(SecretString::new("ghp_pasted")))
+        .await
+        .unwrap();
+    assert!(store.load(PUBLIC_HOST).unwrap().is_some());
+
+    github.sign_out().unwrap();
+    assert_eq!(store.load(PUBLIC_HOST).unwrap(), None);
+    assert_eq!(github.resume().await.unwrap(), None);
 }

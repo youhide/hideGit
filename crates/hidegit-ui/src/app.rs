@@ -1303,11 +1303,12 @@ impl Hidegit {
                 repo.draft.amend = on;
                 // Amending starts from the message being replaced, the way
                 // `git commit --amend` opens an editor already holding it.
-                if on && repo.draft.subject.trim().is_empty() {
-                    if let Some(head) = repo.graph.commits.first() {
-                        repo.draft.subject = head.summary.clone();
-                        repo.draft.body = head.body.clone().unwrap_or_default();
-                    }
+                if on
+                    && repo.draft.subject.trim().is_empty()
+                    && let Some(head) = repo.graph.commits.first()
+                {
+                    repo.draft.subject = head.summary.clone();
+                    repo.draft.body = head.body.clone().unwrap_or_default();
                 }
                 Task::none()
             }

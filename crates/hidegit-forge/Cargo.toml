@@ -19,15 +19,26 @@ async-trait = "0.1"
 octocrab = "0.54"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The OS keychain. Default features select the native store on each platform:
+# Keychain Services, Credential Manager, Secret Service.
+keyring = "4"
 thiserror.workspace = true
 # `parsing` for the ISO 8601 timestamps GitHub returns.
 time = { workspace = true, features = ["parsing"] }
+# `time` only: the device flow waits between polls.
+tokio = { version = "1", features = ["time"] }
 tracing.workspace = true
+http = "1.5.0"
 
 [dev-dependencies]
 # HTTP is mocked. No test touches the network or needs a real token.
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
+
+[features]
+# An in-memory token store and a single-server endpoint, for tests in crates
+# that depend on this one. Never a fallback for a missing keychain.
+fake = []
 
 [lints]
 workspace = true

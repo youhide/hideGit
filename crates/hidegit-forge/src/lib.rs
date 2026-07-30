@@ -9,16 +9,22 @@
 //! watcher already uses — the schedule is testable without a window, and the
 //! toolkit stays in one crate.
 
+pub mod auth;
 pub mod detect;
 pub mod error;
 pub mod github;
 pub mod model;
 pub mod secret;
+pub mod token;
 
 pub use error::{DeviceFlowError, ForgeError};
-pub use github::GitHub;
+pub use github::{Endpoint, GitHub};
 pub use model::*;
 pub use secret::SecretString;
+pub use token::{Keychain, StoredToken, TokenStore};
+
+#[cfg(any(test, feature = "fake"))]
+pub use token::MemoryStore;
 
 use std::fmt;
 

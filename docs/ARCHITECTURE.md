@@ -86,8 +86,8 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `criterion` | 0.7 | Benchmarks (dev only) | M1 |
 | `notify-debouncer-full` | 0.6 | Filesystem watching behind automatic status refresh | M2 |
 | `async-trait` | 0.1 | `Forge`'s async methods, which have to be dyn-compatible | M4 |
-| `octocrab` | 0.54 | GitHub API | M4 |
-| `keyring` | — | OS keychain access for forge tokens | M4 |
+| `octocrab` | 0.54 | GitHub API, and the device flow | M4 |
+| `keyring` | 4 | OS keychain access for forge tokens | M4 |
 | `notify-rust` | — | Native desktop notifications | M4 |
 
 Versions are pinned in the workspace `Cargo.toml` and inherited by every crate, so a bump happens
@@ -455,11 +455,37 @@ environments.
 
 **No client secret is embedded.** hideGit is open source, so anything compiled in is public; the
 device flow exists for public clients that cannot hold a secret. Introducing an embedded secret
-would be a security bug.
+would be a security bug. The *client identifier* is compiled in and is not one — it names the
+application and authorises nothing.
 
 Tokens are stored in the OS keychain via `keyring` — never in the config file, never in logs, never
 sent anywhere but the provider's own API. If no keychain is available (a headless Linux session
-with no Secret Service), forge features are disabled rather than falling back to a file.
+with no Secret Service), forge features are disabled rather than falling back to a file. A token is
+a `SecretString`, which redacts in both `Debug` and `Display`, so the promise survives somebody
+adding a `#[derive(Debug)]` later.
+
+### hideGit is registered as a GitHub App
+
+Rather than an OAuth App, which is what ADR-0003 assumed without saying. The device flow, the
+absence of a client secret and the personal-access-token fallback are all unchanged; two things a
+GitHub App adds are not.
+
+**Access is installation-scoped.** A valid token sees nothing in a repository the App has not been
+installed on, and GitHub reports that as a `null` repository rather than as a permission error. So
+"connected, but not installed here" is its own state — `ForgeError::NotInstalled`, carrying the
+install URL — and the sidebar names it. An empty pull request list would say the opposite of the
+truth.
+
+**User tokens expire**, eight hours by default, and arrive with a refresh token. The keychain holds
+the access token, the refresh token and the expiry together, and a token within a minute of expiry
+is refreshed before it is used. If the App has expiry turned off, GitHub issues no refresh token,
+the refresh path is never taken, and nothing has to be configured for either shape to work.
+
+**GitHub Enterprise is not wired up.** A self-hosted instance puts REST on `/api/v3` and GraphQL on
+`/api/graphql` — a different layout rather than a different hostname — and there is no
+configuration surface to supply a host from. `Endpoint` carries the three bases apart so adding it
+is a change in one place; detection alone only ever claims `github.com`, because sending a token to
+a host hideGit merely guessed was GitHub is not a guess worth making.
 
 ### Polling
 

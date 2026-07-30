@@ -7,12 +7,20 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// A token, kept out of every diagnostic.
 ///
 /// `Debug` and `Display` both redact. [`SecretString::expose`] is the only way
 /// to read it, and it is named to be conspicuous at the call site — a grep for
 /// `expose` finds every place a token can escape.
-#[derive(Clone, PartialEq, Eq)]
+///
+/// Serde is derived because a token has exactly one destination that is allowed
+/// to hold the real value: the OS keychain, which stores one JSON string. It is
+/// `transparent`, so the keychain entry holds the token rather than a wrapper
+/// around it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SecretString(String);
 
 impl SecretString {
