@@ -31,7 +31,7 @@ use crate::message::{
 use crate::state::{
     ActionSheet, App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo,
     Operation, PAGE_SIZE, PROMPT_FIELD_IDS, Pane, PrPanel, PrState, Prompt, PromptField,
-    PromptKind, ROW_HEIGHT, Resolver, Screen, Section, Selection,
+    PromptKind, ROW_HEIGHT, RebaseEditor, Resolver, Screen, Section, Selection,
 };
 use crate::{alerts, forge, screen, watcher, widget};
 
@@ -697,6 +697,7 @@ impl Hidegit {
                 ..PrPanel::default()
             },
             resolver: None,
+            plan: None,
         });
         self.caches.insert(index, canvas::Cache::new());
         self.app.active = Some(index);
@@ -1485,6 +1486,75 @@ impl Hidegit {
                     .map(move |r| Message::Repo(index, RepoMessage::SequenceFinished(Box::new(r))))
             }
 
+            RepoMessage::RebasePlanRequested(onto) => {
+                let backend = Arc::clone(&repo.backend);
+                let named = onto.clone();
+                blocking(move || backend.rebase_preview(&onto).map(|c| (named, c))).map(
+                    move |result| {
+                        Message::Repo(index, RepoMessage::RebasePlanLoaded(Box::new(result)))
+                    },
+                )
+            }
+
+            RepoMessage::RebasePlanLoaded(result) => {
+                match *result {
+                    Ok((onto, commits)) => repo.plan = Some(RebaseEditor::new(onto, commits)),
+                    Err(error) => {
+                        repo.plan = None;
+                        self.app.toast(&error);
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanRowSelected(at) => {
+                if let Some(plan) = &mut repo.plan {
+                    plan.select(at);
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanActionChosen(at, action) => {
+                if let Some(plan) = &mut repo.plan {
+                    plan.set_action(at, action);
+                    // Choosing an action also moves the selection there, so the
+                    // move buttons act on the row just touched rather than on
+                    // whatever was selected before.
+                    plan.select(at);
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanRowMoved(delta) => {
+                if let Some(plan) = &mut repo.plan {
+                    plan.move_selected(delta);
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanDismissed => {
+                // Nothing has run, so closing costs nothing and needs no
+                // confirmation. That is the point of planning before acting.
+                repo.plan = None;
+                Task::none()
+            }
+
+            RepoMessage::PlanStarted => {
+                let Some(editor) = &repo.plan else {
+                    return Task::none();
+                };
+                if editor.blocked().is_some() {
+                    return Task::none();
+                }
+
+                let onto = editor.onto.clone();
+                let plan = editor.plan();
+                repo.plan = None;
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || backend.rebase(&onto, &plan))
+                    .map(move |r| Message::Repo(index, RepoMessage::SequenceFinished(Box::new(r))))
+            }
+
             RepoMessage::CherryPickRequested(id) => {
                 let backend = Arc::clone(&repo.backend);
                 blocking(move || backend.cherry_pick(&[id]))
@@ -2029,6 +2099,23 @@ impl Hidegit {
                 {
                     repo.graph.selected = row;
                 }
+
+                // A rewrite can delete the commit the detail pane is showing —
+                // a dropped step in a rebase, a squashed one, anything before a
+                // hard reset. Left alone the pane goes on rendering it from the
+                // copy it already holds, which reads as "still there".
+                //
+                // Only when the whole history is loaded: a commit missing from a
+                // partly-paged graph has probably just not been walked to yet,
+                // and clearing the selection then would fight the user on every
+                // refresh of a large repository.
+                let gone = matches!(repo.selection, Some(Selection::Commit(id))
+                    if !repo.graph.loading_more
+                        && !repo.graph.commits.iter().any(|c| c.id == id));
+                if gone {
+                    repo.selection = repo.graph.commits.first().map(|c| Selection::Commit(c.id));
+                    repo.detail = DetailPane::Empty;
+                }
                 cache.clear();
 
                 let mut tasks = vec![
@@ -2038,6 +2125,14 @@ impl Hidegit {
                     // count never delays the branch list and the graph.
                     self.divergence_task(index),
                 ];
+                // The commit it fell back to has to be loaded, or the pane stays
+                // empty with a selection pointing at it.
+                if gone && let Some(selection) = self.app.repos[index].selection.clone() {
+                    tasks.push(Task::done(Message::Repo(
+                        index,
+                        RepoMessage::Selected(selection),
+                    )));
+                }
                 // The staging view holds diffs, which the write just changed.
                 // Reselecting reloads them through the one path that knows how.
                 if matches!(
@@ -2258,7 +2353,18 @@ impl Hidegit {
                     .get(&index)
                     .expect("every open repository has a canvas cache");
 
-                screen::repository::view(&self.app, repo, index, palette, cache)
+                let base = screen::repository::view(&self.app, repo, index, palette, cache);
+
+                // The plan editor sits over the repository rather than beside
+                // it: it owns the screen until it is run or closed, and nothing
+                // behind it can be acted on meaningfully while a rebase is
+                // being composed.
+                match &repo.plan {
+                    Some(plan) => {
+                        iced::widget::stack![base, widget::plan::view(plan, index, palette)].into()
+                    }
+                    None => base,
+                }
             }
             _ => screen::welcome::view(&self.app.recents, palette),
         }
@@ -2711,6 +2817,7 @@ mod tests {
         ChangeStatus, Commit, Diff, FileChange, Head, RefKind, RefName, Refs, RepoState, Signature,
         WorktreeStatus,
     };
+    use hidegit_core::ops::RebaseAction;
     use time::OffsetDateTime;
 
     fn commits(count: usize) -> Vec<Commit> {
@@ -2886,6 +2993,221 @@ mod tests {
         );
         // And only the destroying one is marked destructive.
         assert_eq!(sheet.items.iter().filter(|i| i.destructive).count(), 1);
+    }
+
+    #[test]
+    fn a_rewrite_that_deletes_the_open_commit_moves_the_selection() {
+        // Dropping a commit in a rebase, squashing one, resetting past one —
+        // all leave the detail pane rendering a commit that no longer exists
+        // from the copy it already holds, which reads as "still there".
+        let mut app = app_with(5);
+        let doomed = app.app.active_repo().unwrap().graph.commits[2].id;
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.selection = Some(Selection::Commit(doomed));
+        }
+
+        // A refresh whose history no longer contains it.
+        let survivors: Vec<_> = commits(5).into_iter().filter(|c| c.id != doomed).collect();
+        let refreshed = Refreshed {
+            head: opened(5).head,
+            refs: Refs::default(),
+            state: RepoState::Clean,
+            status: WorktreeStatus::default(),
+            stashes: Vec::new(),
+            remotes: Vec::new(),
+            total: survivors.len(),
+            first_page: survivors,
+        };
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(refreshed))),
+        ));
+
+        let repo = app.app.active_repo().unwrap();
+        assert_ne!(
+            repo.selection,
+            Some(Selection::Commit(doomed)),
+            "the pane must not go on showing a commit that was rewritten away"
+        );
+        assert!(matches!(repo.selection, Some(Selection::Commit(_))));
+    }
+
+    #[test]
+    fn a_commit_merely_not_paged_in_yet_keeps_its_selection() {
+        // The counterpart: on a large repository the graph is paged, and a
+        // commit missing from the loaded window has usually just not been
+        // walked to. Clearing then would fight the user on every refresh.
+        let mut app = app_with(5);
+        let chosen = app.app.active_repo().unwrap().graph.commits[2].id;
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.selection = Some(Selection::Commit(chosen));
+        }
+
+        let refreshed = Refreshed {
+            head: opened(5).head,
+            refs: Refs::default(),
+            state: RepoState::Clean,
+            status: WorktreeStatus::default(),
+            stashes: Vec::new(),
+            remotes: Vec::new(),
+            // More history exists than arrived, so the graph is still loading.
+            total: 5_000,
+            first_page: commits(2),
+        };
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(refreshed))),
+        ));
+
+        assert_eq!(
+            app.app.active_repo().unwrap().selection,
+            Some(Selection::Commit(chosen)),
+        );
+    }
+
+    /// An app with a three-commit plan open, onto `main`.
+    fn app_planning() -> Hidegit {
+        let mut app = app_with(3);
+        let commits = app.app.active_repo().unwrap().graph.commits.clone();
+        // Oldest first, as `rebase_preview` returns them.
+        let oldest_first: Vec<_> = commits.into_iter().rev().collect();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::RebasePlanLoaded(Box::new(Ok(("main".to_owned(), oldest_first)))),
+        ));
+        app
+    }
+
+    fn plan_of(app: &Hidegit) -> &crate::state::RebaseEditor {
+        app.app.active_repo().unwrap().plan.as_ref().unwrap()
+    }
+
+    #[test]
+    fn a_loaded_plan_starts_as_all_picks() {
+        let app = app_planning();
+        let plan = plan_of(&app);
+
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.kept(), 3);
+        assert!(
+            plan.steps
+                .iter()
+                .all(|s| matches!(s.action, RebaseAction::Pick))
+        );
+        // All picks is exactly an ordinary rebase, so it is runnable as it
+        // stands — opening the editor must not require editing anything.
+        assert!(plan.blocked().is_none());
+    }
+
+    #[test]
+    fn moving_a_step_carries_the_selection_with_it() {
+        let mut app = app_planning();
+        let first = plan_of(&app).steps[0].commit.id;
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowSelected(0)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowMoved(1)));
+
+        let plan = plan_of(&app);
+        assert_eq!(plan.steps[1].commit.id, first, "the step moved down one");
+        assert_eq!(
+            plan.selected, 1,
+            "the selection follows it, or the next move acts on a different commit"
+        );
+    }
+
+    #[test]
+    fn moving_is_clamped_at_both_ends() {
+        // A step that jumped from the top to the bottom would be a reorder
+        // nobody asked for.
+        let mut app = app_planning();
+        let before: Vec<_> = plan_of(&app).steps.iter().map(|s| s.commit.id).collect();
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowSelected(0)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowMoved(-1)));
+
+        let after: Vec<_> = plan_of(&app).steps.iter().map(|s| s.commit.id).collect();
+        assert_eq!(before, after);
+        assert_eq!(plan_of(&app).selected, 0);
+    }
+
+    #[test]
+    fn a_plan_that_squashes_first_says_why_it_cannot_run() {
+        // `squash` folds into the commit above, and the first step has none.
+        // Git refuses it outright, so the editor does too — with the sentence,
+        // because a greyed button that explains nothing is a dead end.
+        let mut app = app_planning();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PlanActionChosen(0, RebaseAction::Squash),
+        ));
+
+        let why = plan_of(&app).blocked().expect("it cannot run");
+        assert!(why.contains("nothing above it"), "got {why:?}");
+    }
+
+    #[test]
+    fn dropping_everything_is_refused() {
+        let mut app = app_planning();
+        for at in 0..3 {
+            let _ = app.update(Message::Repo(
+                0,
+                RepoMessage::PlanActionChosen(at, RebaseAction::Drop),
+            ));
+        }
+
+        let plan = plan_of(&app);
+        assert_eq!(plan.kept(), 0);
+        assert!(
+            plan.blocked().is_some_and(|w| w.contains("nothing")),
+            "a branch with every commit dropped is not what anyone means"
+        );
+    }
+
+    #[test]
+    fn starting_a_blocked_plan_does_nothing_and_keeps_the_editor_open() {
+        let mut app = app_planning();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PlanActionChosen(0, RebaseAction::Squash),
+        ));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanStarted));
+
+        assert!(
+            app.app.active_repo().unwrap().plan.is_some(),
+            "a refused start must not close the screen and lose the plan"
+        );
+    }
+
+    #[test]
+    fn cancelling_needs_no_confirmation_because_nothing_has_run() {
+        let mut app = app_planning();
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanDismissed));
+
+        assert!(app.app.active_repo().unwrap().plan.is_none());
+        assert!(
+            app.app.confirming.is_none(),
+            "nothing touched the repository, so there is nothing to warn about"
+        );
+    }
+
+    #[test]
+    fn the_plan_keeps_the_order_on_screen() {
+        // The editor shows oldest first, which is todo order. If `plan()` did
+        // not preserve it, every reorder would be silently inverted.
+        let mut app = app_planning();
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowSelected(2)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowMoved(-1)));
+
+        let editor = plan_of(&app);
+        let on_screen: Vec<_> = editor.steps.iter().map(|s| s.commit.id).collect();
+        let handed_over: Vec<_> = editor.plan().steps.iter().map(|s| s.commit).collect();
+
+        assert_eq!(on_screen, handed_over);
     }
 
     /// A repository stopped mid-merge with one conflicted path.

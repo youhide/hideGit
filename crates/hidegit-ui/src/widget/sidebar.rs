@@ -473,6 +473,14 @@ fn branch_sheet(
             format!("Rebase {head} onto {name}…"),
             Message::Repo(index, RepoMessage::RebaseRequested(name.clone())),
         );
+        // The interactive form is a separate entry rather than a checkbox on
+        // the first: one runs immediately after a confirmation, the other opens
+        // a screen where nothing happens until you say so, and collapsing them
+        // would make which you get depend on a toggle you might not notice.
+        sheet = sheet.item(
+            format!("Rebase {head} onto {name}, interactively…"),
+            Message::Repo(index, RepoMessage::RebasePlanRequested(name.clone())),
+        );
     }
 
     // Deleting the branch you are standing on is something Git refuses, so it is

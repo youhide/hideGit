@@ -17,7 +17,7 @@ use hidegit_core::model::{
 };
 use hidegit_core::ops::{
     CheckoutTarget, FetchOutcome, ForceMode, MergeOutcome, ProgressUpdate, PullOutcome,
-    PushOutcome, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
+    PushOutcome, RebaseAction, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
 use hidegit_forge::{
@@ -334,6 +334,21 @@ pub enum RepoMessage {
     RebaseRequested(String),
     /// The confirmation was accepted. Only ever sent by the dialog.
     RebaseConfirmed(String),
+    /// Opens the interactive plan editor for a rebase onto this ref. Nothing
+    /// runs until the plan is started.
+    RebasePlanRequested(String),
+    /// The commits the rebase would replay, oldest first.
+    RebasePlanLoaded(Box<Result<(String, Vec<Commit>), UiError>>),
+    /// A row in the plan was picked.
+    PlanRowSelected(usize),
+    /// What to do with one commit, by row.
+    PlanActionChosen(usize, RebaseAction),
+    /// Move the selected row up (-1) or down (1).
+    PlanRowMoved(i32),
+    /// Run the plan as it stands.
+    PlanStarted,
+    /// Close the editor without running anything.
+    PlanDismissed,
     CherryPickRequested(ObjectId),
     RevertRequested(ObjectId),
     /// Asks to reset. A hard reset confirms first; the other two do not, because

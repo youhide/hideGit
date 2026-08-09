@@ -364,6 +364,53 @@ pub(crate) fn stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, GitErro
     Ok(out)
 }
 
+/// The commits a rebase onto `onto` would replay, **oldest first**.
+///
+/// `onto..HEAD` — everything reachable from `HEAD` that `onto` cannot reach.
+/// Oldest first because that is todo order: `git rebase --interactive` lists
+/// the commit it applies first at the top, and a plan editor that showed them
+/// newest-first like the graph would invert every reorder the user made.
+///
+/// An empty result is the ordinary answer for a branch with nothing to replay,
+/// not an error.
+pub(crate) fn rebase_preview(repo: &gix::Repository, onto: &str) -> Result<Vec<Commit>, GitError> {
+    let head = match repo.head_id() {
+        Ok(id) => id.detach(),
+        // An unborn HEAD has nothing to rebase.
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let onto_id = repo
+        .rev_parse_single(onto)
+        .map_err(|_| GitError::RefNotFound(onto.to_owned()))?
+        .detach();
+
+    let walk = repo
+        .rev_walk([head])
+        .with_hidden([onto_id])
+        .all()
+        .map_err(|e| GitError::gix("listing the commits a rebase would replay", e))?;
+
+    let mut entries = Vec::new();
+    for entry in walk {
+        let info =
+            entry.map_err(|e| GitError::gix("listing the commits a rebase would replay", e))?;
+        let commit = repo
+            .find_commit(info.id)
+            .map_err(|e| GitError::gix("reading a commit a rebase would replay", e))?;
+        entries.push(WalkEntry {
+            id: to_id(&info.id),
+            parents: commit.parent_ids().map(|p| to_id(&p)).collect(),
+            time: commit.time().map(|t| t.seconds).unwrap_or_default(),
+        });
+    }
+    // The walk yields newest first.
+    entries.reverse();
+
+    let refs = refs(repo)?;
+    hydrate(repo, &entries, &refs)
+}
+
 /// How many parents `id` has.
 ///
 /// Deliberately not [`commit_detail`], which computes a full tree diff: telling

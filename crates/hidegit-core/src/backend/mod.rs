@@ -211,8 +211,19 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     /// the conflict UI rather than to an error dialog.
     fn merge(&self, from: &str, opts: &MergeOpts) -> Result<MergeOutcome, GitError>;
 
-    /// Lands in M5.
+    /// Replays the current branch onto `onto`.
+    ///
+    /// An empty [`RebasePlan`] is an ordinary rebase; a plan with steps drives
+    /// `git rebase --interactive`. See
+    /// `docs/adr/0007-rebase-plan-through-the-environment.md`.
     fn rebase(&self, onto: &str, plan: &RebasePlan) -> Result<SequenceOutcome, GitError>;
+
+    /// The commits a rebase onto `onto` would replay, **oldest first**.
+    ///
+    /// Oldest first because that is the order `git rebase --interactive` writes
+    /// its todo list in, and the plan editor is that list. Showing them
+    /// newest-first like the graph would invert every reorder the user made.
+    fn rebase_preview(&self, onto: &str) -> Result<Vec<Commit>, GitError>;
 
     /// Applies each of `ids` on top of the current branch, in the order given.
     fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError>;

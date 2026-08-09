@@ -579,6 +579,13 @@ impl GitBackend for FakeBackend {
         Ok(self.sequence_outcome.clone())
     }
 
+    fn rebase_preview(&self, _onto: &str) -> Result<Vec<Commit>, GitError> {
+        self.check()?;
+        // The scripted history, oldest first, which is enough to drive a plan
+        // editor without a repository on disk.
+        Ok(self.commits.iter().rev().cloned().collect())
+    }
+
     fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
         self.record(WriteCall::CherryPick(ids.to_vec()))?;
         Ok(self.sequence_outcome.clone())
