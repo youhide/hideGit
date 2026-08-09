@@ -11,6 +11,7 @@
 
 pub mod backend;
 pub mod clone;
+pub mod conflict;
 pub mod error;
 pub mod graph;
 pub mod model;

@@ -7,6 +7,7 @@
 //! only a real repository tells them apart honestly.
 
 use hidegit_core::backend::GitBackend;
+use hidegit_core::conflict::Resolution;
 use hidegit_core::error::GitError;
 use hidegit_core::fixture::fixture;
 use hidegit_core::model::{ObjectId, RepoState};
@@ -561,4 +562,117 @@ fn a_reflog_for_an_unknown_ref_is_an_error_not_an_empty_list() {
         .reflog("refs/heads/nope", 10)
         .expect_err("an unknown ref is an error");
     assert!(matches!(error, GitError::RefNotFound(_)), "got {error:?}");
+}
+
+// --- conflict markers --------------------------------------------------------
+
+#[test]
+fn the_parser_reads_what_git_actually_wrote() {
+    // The unit tests in `conflict.rs` parse strings this project wrote, which
+    // proves the parser is self-consistent and nothing else. This one parses a
+    // file Git produced.
+    let repo = fixture()
+        .commit("one")
+        .edit("shared.txt", "base\n", "base")
+        .branch("side")
+        .checkout("side")
+        .edit("shared.txt", "theirs\n", "theirs")
+        .checkout("main")
+        .edit("shared.txt", "ours\n", "ours")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .merge("side", &MergeOpts::default())
+        .expect("the merge conflicts");
+
+    let content = read(repo.path(), "shared.txt");
+    let file = hidegit_core::conflict::parse(&content).expect("Git's own markers parse");
+
+    assert_eq!(file.conflict_count(), 1);
+    let region = file.conflicts().next().expect("there is one");
+    assert_eq!(region.ours, vec!["ours\n"]);
+    assert_eq!(region.theirs, vec!["theirs\n"]);
+
+    // Round-tripping an undecided file must be byte-for-byte, or saving a
+    // half-finished resolution would rewrite lines nobody touched.
+    assert_eq!(file.render(&[Resolution::Unresolved]), content);
+}
+
+#[test]
+fn a_resolution_written_back_ends_the_conflict() {
+    // The whole point of the parser: what it renders has to be something Git
+    // accepts as a resolution, not merely something that looks resolved.
+    let repo = fixture()
+        .commit("one")
+        .edit("shared.txt", "base\n", "base")
+        .branch("side")
+        .checkout("side")
+        .edit("shared.txt", "theirs\n", "theirs")
+        .checkout("main")
+        .edit("shared.txt", "ours\n", "ours")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .merge("side", &MergeOpts::default())
+        .expect("the merge conflicts");
+
+    let content = read(repo.path(), "shared.txt");
+    let file = hidegit_core::conflict::parse(&content).expect("the markers parse");
+    let resolved = file.render(&[Resolution::Theirs]);
+
+    std::fs::write(repo.path().join("shared.txt"), &resolved).expect("the write succeeds");
+    backend
+        .stage(&[std::path::Path::new("shared.txt")])
+        .expect("staging the resolution succeeds");
+
+    let outcome = backend
+        .control_sequence(SequenceControl::Continue)
+        .expect("continuing succeeds");
+
+    assert_eq!(outcome, SequenceOutcome::Completed);
+    assert_eq!(backend.repo_state().expect("state reads"), RepoState::Clean);
+    assert_eq!(read(repo.path(), "shared.txt"), "theirs\n");
+}
+
+#[test]
+fn the_parser_reads_diff3_style_when_the_user_configured_it() {
+    // `merge.conflictStyle` is the user's setting, so the base section is
+    // present or absent depending on a config hideGit does not control.
+    let repo = fixture()
+        .commit("one")
+        .edit("shared.txt", "base\n", "base")
+        .branch("side")
+        .checkout("side")
+        .edit("shared.txt", "theirs\n", "theirs")
+        .checkout("main")
+        .edit("shared.txt", "ours\n", "ours")
+        .build();
+
+    GitCommand::new("config")
+        .args(["merge.conflictStyle", "diff3"])
+        .cwd(repo.path())
+        .run()
+        .expect("setting the conflict style succeeds");
+
+    let backend = repo.backend();
+    backend
+        .merge("side", &MergeOpts::default())
+        .expect("the merge conflicts");
+
+    let content = read(repo.path(), "shared.txt");
+    let file = hidegit_core::conflict::parse(&content).expect("diff3 markers parse");
+    let region = file.conflicts().next().expect("there is one");
+
+    let base = region
+        .base
+        .as_ref()
+        .expect("diff3 carries the common ancestor, got {content:?}");
+    assert_eq!(base.lines, vec!["base\n"]);
+    assert!(
+        !base.label.is_empty(),
+        "Git labels the base section with the ancestor's short hash"
+    );
+    assert_eq!(file.render(&[Resolution::Unresolved]), content);
 }
