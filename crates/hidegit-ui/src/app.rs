@@ -9,15 +9,17 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use hidegit_core::conflict::Resolution;
 use hidegit_core::graph::Checkpoints;
-use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RevSpec};
+use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RepoState, RevSpec};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, Patch, ProgressSink,
-    ProgressUpdate, PullOpts, PullOutcome, PushSpec, StashOp, TagSpec,
+    ProgressUpdate, PullOpts, PullOutcome, PushSpec, SequenceControl, SequenceOutcome, StashOp,
+    TagSpec,
 };
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
-use iced::widget::canvas;
+use iced::widget::{canvas, text_editor};
 use iced::{Element as IcedElement, Subscription, Task, keyboard};
 
 use hidegit_forge::{NewPullRequest, WebTarget};
@@ -29,7 +31,7 @@ use crate::message::{
 use crate::state::{
     ActionSheet, App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo,
     Operation, PAGE_SIZE, PROMPT_FIELD_IDS, Pane, PrPanel, PrState, Prompt, PromptField,
-    PromptKind, ROW_HEIGHT, Screen, Section, Selection,
+    PromptKind, ROW_HEIGHT, Resolver, Screen, Section, Selection,
 };
 use crate::{alerts, forge, screen, watcher, widget};
 
@@ -694,6 +696,7 @@ impl Hidegit {
                 repo: forge_repo,
                 ..PrPanel::default()
             },
+            resolver: None,
         });
         self.caches.insert(index, canvas::Cache::new());
         self.app.active = Some(index);
@@ -1431,6 +1434,201 @@ impl Hidegit {
                 write_task(index, move || backend.stash(&StashOp::Drop(at)).map(|_| ()))
             }
 
+            // ---- the conflict resolver ----
+            RepoMessage::ConflictOpenRequested(path) => {
+                // Already open on this file: reopening would throw away every
+                // decision made so far, which is the one thing the resolver
+                // must never do.
+                if repo.resolver.as_ref().is_some_and(|r| r.path == path) {
+                    return Task::none();
+                }
+                let full = repo.path.join(&path);
+                blocking(move || {
+                    let content = std::fs::read_to_string(&full)?;
+                    // The parse failure names the line it happened on, which is
+                    // worth more to someone staring at the file than a generic
+                    // "could not read it".
+                    let file = hidegit_core::conflict::parse(&content).map_err(|error| {
+                        GitError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("{}: {error}", full.display()),
+                        ))
+                    })?;
+                    Ok((path, file))
+                })
+                .map(move |result| {
+                    Message::Repo(index, RepoMessage::ConflictFileLoaded(Box::new(result)))
+                })
+            }
+
+            RepoMessage::ConflictFileLoaded(result) => {
+                match *result {
+                    Ok((path, file)) => repo.resolver = Some(Resolver::new(path, file)),
+                    Err(error) => {
+                        // Leaving the file alone is the honest answer: it may
+                        // have been hand-edited into a shape Git never writes,
+                        // and rewriting it from a half-understood parse would
+                        // lose a side.
+                        repo.resolver = None;
+                        self.app.toast(&error);
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::ConflictResolved(at, resolution) => {
+                if let Some(resolver) = &mut repo.resolver
+                    && let Some(slot) = resolver.resolutions.get_mut(at)
+                {
+                    *slot = resolution;
+                    // A preset supersedes whatever was typed: the editor showed
+                    // the old choice, and leaving it open would show text that
+                    // no longer describes the resolution.
+                    if at == resolver.focused {
+                        resolver.editor = None;
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::ConflictStepped(delta) => {
+                if let Some(resolver) = &mut repo.resolver {
+                    resolver.step(delta);
+                }
+                Task::none()
+            }
+
+            RepoMessage::ConflictEditToggled => {
+                if let Some(resolver) = &mut repo.resolver {
+                    if resolver.editor.is_some() {
+                        resolver.editor = None;
+                    } else if let Some(region) = resolver.focused_region() {
+                        // Seeded with what the current choice would produce, so
+                        // editing starts from a preset rather than from blank.
+                        let current = resolver
+                            .resolutions
+                            .get(resolver.focused)
+                            .cloned()
+                            .unwrap_or_default();
+                        let seed = match current {
+                            Resolution::Unresolved => region.ours.concat(),
+                            other => region.resolved_lines(&other).concat(),
+                        };
+                        resolver.editor = Some(text_editor::Content::with_text(&seed));
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::ConflictEdited(action) => {
+                if let Some(resolver) = &mut repo.resolver {
+                    let focused = resolver.focused;
+                    if let Some(editor) = &mut resolver.editor {
+                        let edited = action.is_edit();
+                        editor.perform(action);
+                        // Only a change to the text is a new resolution. A
+                        // cursor move is not, and treating it as one would mark
+                        // a conflict resolved just for clicking in the pane.
+                        if edited {
+                            let text = editor.text();
+                            if let Some(slot) = resolver.resolutions.get_mut(focused) {
+                                *slot = Resolution::Custom(split_kept(&text));
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::ConflictMarkedResolved => {
+                let Some(resolver) = &repo.resolver else {
+                    return Task::none();
+                };
+                if !resolver.is_resolved() {
+                    return Task::none();
+                }
+
+                let contents = resolver.rendered();
+                let relative = resolver.path.clone();
+                let full = repo.path.join(&relative);
+                let backend = Arc::clone(&repo.backend);
+
+                blocking(move || {
+                    std::fs::write(&full, contents)?;
+                    // Staging is what actually ends the conflict for this path.
+                    // Resolving is not a special kind of write.
+                    backend.stage(&[relative.as_path()])?;
+                    Ok(relative)
+                })
+                .map(move |result| {
+                    Message::Repo(index, RepoMessage::ConflictSaved(Box::new(result)))
+                })
+            }
+
+            RepoMessage::ConflictSaved(result) => match *result {
+                Ok(_) => {
+                    // The file is no longer conflicted, so the resolver has
+                    // nothing left to show. The refresh repopulates the list.
+                    repo.resolver = None;
+                    Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                }
+                Err(error) => {
+                    self.app.toast(&error);
+                    Task::none()
+                }
+            },
+
+            RepoMessage::SequenceControlRequested(control) => {
+                if control == SequenceControl::Abort {
+                    // Abort throws away every resolution made so far and moves
+                    // HEAD back. It says what it will do before doing it.
+                    let verb = operation_verb(repo.state);
+                    self.app.confirming = Some(Confirmation {
+                        title: format!("Abort the {verb}?"),
+                        body: format!(
+                            "The repository goes back to exactly where it was before the {verb} \
+                             started. Every conflict resolved so far is discarded."
+                        ),
+                        confirm_label: format!("Abort {verb}"),
+                        action: Box::new(Message::Repo(index, RepoMessage::SequenceAbortConfirmed)),
+                    });
+                    return Task::none();
+                }
+
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || backend.control_sequence(control)).map(move |result| {
+                    Message::Repo(index, RepoMessage::SequenceFinished(Box::new(result)))
+                })
+            }
+
+            RepoMessage::SequenceAbortConfirmed => {
+                repo.resolver = None;
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || backend.control_sequence(SequenceControl::Abort)).map(
+                    move |result| {
+                        Message::Repo(index, RepoMessage::SequenceFinished(Box::new(result)))
+                    },
+                )
+            }
+
+            RepoMessage::SequenceFinished(result) => {
+                match *result {
+                    Ok(outcome) => {
+                        // Stopping again is ordinary: a rebase hits conflicts on
+                        // one commit after another, and each stop is a new file
+                        // to resolve rather than a failure to report.
+                        if let SequenceOutcome::Stopped { .. } = outcome {
+                            repo.resolver = None;
+                        }
+                        Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                    }
+                    Err(error) => {
+                        self.app.toast(&error);
+                        Task::none()
+                    }
+                }
+            }
+
             // ---- remotes and tags ----
             RepoMessage::RemoteAddRequested { name, url } => {
                 let backend = Arc::clone(&repo.backend);
@@ -1534,7 +1732,30 @@ impl Hidegit {
                     *selected = Some(row);
                     repo.hunk = 0;
                 }
-                Task::none()
+
+                // A conflicted row opens the resolver on its file; any other row
+                // closes it, so the decisions on screen always belong to the
+                // file named above them.
+                match row.section {
+                    Section::Conflicted => {
+                        match repo
+                            .status
+                            .conflicted
+                            .get(row.index)
+                            .map(|c| c.path.clone())
+                        {
+                            Some(path) => Task::done(Message::Repo(
+                                index,
+                                RepoMessage::ConflictOpenRequested(path),
+                            )),
+                            None => Task::none(),
+                        }
+                    }
+                    _ => {
+                        repo.resolver = None;
+                        Task::none()
+                    }
+                }
             }
 
             RepoMessage::SubjectChanged(text) => {
@@ -2173,6 +2394,45 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
 /// Every write reports the same way: nothing on success, because the refresh
 /// that follows says more than a toast could, and the error verbatim on
 /// failure — Git's own stderr is better than any paraphrase of it.
+/// Splits text into lines that keep their own terminators.
+///
+/// The counterpart to what `hidegit_core::conflict` does when it parses, so a
+/// hand-typed resolution goes back through `render` in the same shape every
+/// other side is in. Without it a custom resolution would arrive as one line
+/// containing newlines, and joining it to another side would glue them.
+fn split_kept(text: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        match rest.find('\n') {
+            Some(at) => {
+                lines.push(rest[..=at].to_owned());
+                rest = &rest[at + 1..];
+            }
+            None => {
+                lines.push(rest.to_owned());
+                break;
+            }
+        }
+    }
+    lines
+}
+
+/// Git's own word for the operation in progress, for the sentences around it.
+///
+/// Lowercase because every use is mid-sentence — "Abort the rebase?" — and
+/// [`RepoState`]'s own labels are title-case for the banner.
+fn operation_verb(state: RepoState) -> &'static str {
+    match state {
+        RepoState::Merging => "merge",
+        RepoState::Rebasing => "rebase",
+        RepoState::CherryPicking => "cherry-pick",
+        RepoState::Reverting => "revert",
+        RepoState::Bisecting => "bisect",
+        RepoState::Clean => "operation",
+    }
+}
+
 fn write_task<F>(index: usize, f: F) -> Task<Message>
 where
     F: FnOnce() -> Result<(), GitError> + Send + 'static,
@@ -2365,6 +2625,199 @@ mod tests {
         let mut app = Hidegit::default();
         let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened(count)))));
         app
+    }
+
+    /// A repository stopped mid-merge with one conflicted path.
+    fn conflicted() -> WorktreeStatus {
+        WorktreeStatus {
+            staged: Vec::new(),
+            unstaged: Vec::new(),
+            untracked: Vec::new(),
+            conflicted: vec![hidegit_core::model::Conflict {
+                path: PathBuf::from("shared.txt"),
+                kind: hidegit_core::model::ConflictKind::BothModified,
+            }],
+            state: RepoState::Merging,
+        }
+    }
+
+    const MARKED: &str = "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> side\nafter\n";
+
+    /// An app mid-merge with the resolver already open on `shared.txt`.
+    fn app_resolving() -> Hidegit {
+        let mut app = app_with(3);
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.status = conflicted();
+            repo.state = RepoState::Merging;
+        }
+        let file = hidegit_core::conflict::parse(MARKED).expect("the fixture parses");
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictFileLoaded(Box::new(Ok((PathBuf::from("shared.txt"), file)))),
+        ));
+        app
+    }
+
+    #[test]
+    fn a_loaded_conflict_starts_undecided() {
+        let app = app_resolving();
+        let resolver = app.app.active_repo().unwrap().resolver.as_ref().unwrap();
+
+        assert_eq!(resolver.conflict_count(), 1);
+        assert_eq!(resolver.remaining(), 1);
+        assert!(
+            !resolver.is_resolved(),
+            "nothing is decided until the user decides it"
+        );
+        // Rendering an untouched file must reproduce it, or merely opening the
+        // resolver would rewrite the working tree.
+        assert_eq!(resolver.rendered(), MARKED);
+    }
+
+    #[test]
+    fn choosing_a_side_resolves_that_conflict() {
+        let mut app = app_resolving();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictResolved(0, Resolution::Theirs),
+        ));
+
+        let resolver = app.app.active_repo().unwrap().resolver.as_ref().unwrap();
+        assert!(resolver.is_resolved());
+        assert_eq!(resolver.remaining(), 0);
+        assert_eq!(resolver.rendered(), "before\ntheirs\nafter\n");
+    }
+
+    #[test]
+    fn a_failed_parse_leaves_no_resolver_and_says_so() {
+        let mut app = app_with(3);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictFileLoaded(Box::new(Err(UiError {
+                summary: "line 4 has a `=======` outside any conflict".to_owned(),
+                details: String::new(),
+            }))),
+        ));
+
+        // Leaving the file alone is the honest answer: rewriting it from a
+        // half-understood parse could lose a side.
+        assert!(app.app.active_repo().unwrap().resolver.is_none());
+        assert_eq!(app.app.toasts.len(), 1);
+    }
+
+    #[test]
+    fn stepping_is_clamped_rather_than_wrapping() {
+        // Wrapping past the last conflict looks identical to having finished,
+        // and the difference is the whole point of the screen.
+        let mut app = app_resolving();
+
+        let _ = app.update(Message::Repo(0, RepoMessage::ConflictStepped(1)));
+        assert_eq!(
+            app.app
+                .active_repo()
+                .unwrap()
+                .resolver
+                .as_ref()
+                .unwrap()
+                .focused,
+            0
+        );
+
+        let _ = app.update(Message::Repo(0, RepoMessage::ConflictStepped(-1)));
+        assert_eq!(
+            app.app
+                .active_repo()
+                .unwrap()
+                .resolver
+                .as_ref()
+                .unwrap()
+                .focused,
+            0
+        );
+    }
+
+    #[test]
+    fn selecting_a_different_row_closes_the_resolver() {
+        let mut app = app_resolving();
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.status.unstaged = vec![change("changed.txt", ChangeStatus::Modified)];
+        }
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StagingRowSelected(crate::state::StagingRow {
+                section: Section::Unstaged,
+                index: 0,
+            }),
+        ));
+
+        // The decisions on screen must always belong to the file named above
+        // them.
+        assert!(app.app.active_repo().unwrap().resolver.is_none());
+    }
+
+    #[test]
+    fn reopening_the_same_file_keeps_the_decisions_made_so_far() {
+        // The watcher refreshes status on every save, and the spec says
+        // navigation must never lose a partial resolution.
+        let mut app = app_resolving();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictResolved(0, Resolution::Ours),
+        ));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictOpenRequested(PathBuf::from("shared.txt")),
+        ));
+
+        let resolver = app.app.active_repo().unwrap().resolver.as_ref().unwrap();
+        assert!(
+            resolver.is_resolved(),
+            "reopening the file already open must not discard the decision"
+        );
+    }
+
+    #[test]
+    fn aborting_confirms_before_it_throws_anything_away() {
+        let mut app = app_resolving();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SequenceControlRequested(SequenceControl::Abort),
+        ));
+
+        let confirming = app.app.confirming.as_ref().expect("abort confirms first");
+        assert!(
+            confirming.title.contains("merge"),
+            "it names the operation being abandoned, got {:?}",
+            confirming.title
+        );
+        assert!(
+            app.app.active_repo().unwrap().resolver.is_some(),
+            "nothing is discarded until the confirmation is accepted"
+        );
+    }
+
+    #[test]
+    fn a_custom_resolution_keeps_its_line_terminators() {
+        // A hand-typed resolution goes back through `render` alongside the
+        // other sides, so it has to arrive in the same shape: one entry per
+        // line, terminator included.
+        assert_eq!(
+            split_kept("one\ntwo\n"),
+            vec!["one\n".to_owned(), "two\n".to_owned()]
+        );
+        // A last line with no terminator stays that way.
+        assert_eq!(
+            split_kept("one\ntwo"),
+            vec!["one\n".to_owned(), "two".to_owned()]
+        );
+        assert!(split_kept("").is_empty());
     }
 
     #[test]

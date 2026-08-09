@@ -9,19 +9,22 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use hidegit_core::conflict::{ConflictFile, Resolution};
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{
     Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
     WorktreeStatus,
 };
 use hidegit_core::ops::{
-    CheckoutTarget, FetchOutcome, ForceMode, ProgressUpdate, PullOutcome, PushOutcome, StartPoint,
-    StashOp,
+    CheckoutTarget, FetchOutcome, ForceMode, ProgressUpdate, PullOutcome, PushOutcome,
+    SequenceControl, SequenceOutcome, StartPoint, StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
 use hidegit_forge::{
     DeviceCode, ForgeError, GitHub, Identity, PullRequest, PullRequestDetail, RateBudget,
 };
+
+use iced::widget::text_editor;
 
 use crate::state::{ActionSheet, Pane, Prompt, Selection, StagingRow};
 
@@ -315,6 +318,40 @@ pub enum RepoMessage {
     StashDropRequested(usize),
     /// The confirmation was accepted. Only ever sent by the dialog.
     StashDropConfirmed(usize),
+
+    // ---- the conflict resolver ----
+    /// A conflicted file was opened. The file is read and parsed off the UI
+    /// thread, so this only asks for it.
+    ConflictOpenRequested(PathBuf),
+    /// The file was read and parsed, or could not be.
+    ///
+    /// A parse failure is not a crash: the file may have been edited by hand
+    /// into a shape Git never writes, and the honest answer is to say so and
+    /// leave the file alone.
+    ConflictFileLoaded(Box<Result<(PathBuf, ConflictFile), UiError>>),
+    /// A preset or a hand edit for one conflict, by index.
+    ConflictResolved(usize, Resolution),
+    /// `Cmd+]` / `Cmd+[`, or the arrows on the action bar.
+    ConflictStepped(i32),
+    /// The Edit button: opens the result pane for typing, seeded with whatever
+    /// the current resolution would produce.
+    ConflictEditToggled,
+    /// A keystroke in the result pane's editor.
+    ConflictEdited(text_editor::Action),
+    /// Writes the resolved file and stages it, which is what ends the conflict
+    /// for this path. Ordinary staging — resolving is not a special write.
+    ConflictMarkedResolved,
+    /// The file was written and staged.
+    ConflictSaved(Box<Result<PathBuf, UiError>>),
+    /// Continue, abort or skip whatever the repository is in the middle of.
+    ///
+    /// Abort confirms first: it throws away every resolution made so far, which
+    /// is exactly the kind of thing the spec says must be unmistakable.
+    SequenceControlRequested(SequenceControl),
+    /// The confirmation was accepted. Only ever sent by the dialog.
+    SequenceAbortConfirmed,
+    /// The sequence finished, or stopped again on the next commit.
+    SequenceFinished(Box<Result<SequenceOutcome, UiError>>),
 
     // ---- remotes and tags ----
     RemoteAddRequested {

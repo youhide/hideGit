@@ -40,6 +40,7 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
             repo.diff_mode,
             &repo.draft,
             repo.state,
+            repo.resolver.as_ref(),
             palette,
         ),
         // The one pane whose contents did not come from the repository.

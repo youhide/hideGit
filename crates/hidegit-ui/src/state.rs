@@ -9,6 +9,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use hidegit_core::conflict::{ConflictFile, ConflictRegion, Resolution};
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
 use hidegit_core::model::{
     Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
@@ -20,6 +21,8 @@ use hidegit_forge::{
     Activity, Alert, AlertPrefs, DeviceCode, GitHub, Identity, Notifier, PrRole, PullRequest,
     PullRequestDetail, RepoRef, Schedule, Watcher,
 };
+
+use iced::widget::text_editor;
 
 use crate::message::{Message, UiError};
 use crate::theme::Theme;
@@ -646,6 +649,88 @@ pub struct OpenRepo {
     pub draft: Draft,
     /// Pull requests for this repository, and what the last poll learned.
     pub prs: PrPanel,
+    /// The conflicted file open in the resolver, if one is.
+    pub resolver: Option<Resolver>,
+}
+
+/// One conflicted file, and the decisions made about it so far.
+///
+/// Kept on the repository rather than in the widget for the same reason the
+/// commit draft is: the watcher refreshes status on every file save, and a
+/// resolver that lived in the view would lose a half-finished resolution every
+/// time it fired. The spec names that failure mode explicitly.
+#[derive(Debug)]
+pub struct Resolver {
+    pub path: PathBuf,
+    pub file: ConflictFile,
+    /// One per conflict in `file`, in the same order.
+    pub resolutions: Vec<Resolution>,
+    /// Which conflict the action bar acts on.
+    pub focused: usize,
+    /// The result pane's editor, open only while the focused conflict is being
+    /// edited by hand.
+    ///
+    /// `None` means the presets are driving it. The editor is not kept open
+    /// across a move between conflicts, because its content belongs to the
+    /// conflict it was opened on.
+    pub editor: Option<text_editor::Content>,
+}
+
+impl Resolver {
+    pub fn new(path: PathBuf, file: ConflictFile) -> Self {
+        let resolutions = vec![Resolution::Unresolved; file.conflict_count()];
+        Self {
+            path,
+            file,
+            resolutions,
+            focused: 0,
+            editor: None,
+        }
+    }
+
+    pub fn conflict_count(&self) -> usize {
+        self.file.conflict_count()
+    }
+
+    /// How many conflicts still have no decision.
+    ///
+    /// Shown next to a disabled Continue, because "you cannot continue yet" is
+    /// only useful with "and here is how much is left".
+    pub fn remaining(&self) -> usize {
+        self.resolutions.iter().filter(|r| !r.is_resolved()).count()
+    }
+
+    pub fn is_resolved(&self) -> bool {
+        self.file.is_resolved(&self.resolutions)
+    }
+
+    /// The region the action bar acts on.
+    pub fn focused_region(&self) -> Option<&ConflictRegion> {
+        self.file.conflicts().nth(self.focused)
+    }
+
+    /// Moves the focus by `delta`, clamped to the conflicts that exist.
+    ///
+    /// Clamped rather than wrapping: wrapping past the last conflict looks
+    /// identical to having finished, and the difference matters when the point
+    /// of the screen is knowing whether you are done.
+    pub fn step(&mut self, delta: i32) {
+        let count = self.conflict_count();
+        if count == 0 {
+            return;
+        }
+        let target = (self.focused as i32 + delta).clamp(0, count as i32 - 1);
+        if target as usize != self.focused {
+            self.focused = target as usize;
+            // The editor's content belongs to the conflict it was opened on.
+            self.editor = None;
+        }
+    }
+
+    /// The file as it would be written right now.
+    pub fn rendered(&self) -> String {
+        self.file.render(&self.resolutions)
+    }
 }
 
 /// The commit message in progress.

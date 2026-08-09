@@ -18,7 +18,7 @@ use hidegit_core::model::{ChangeStatus, Conflict, Diff, FileChange, RepoState, W
 
 use crate::Element;
 use crate::message::RepoMessage;
-use crate::state::{DiffMode, Draft, Section, StagingRow};
+use crate::state::{DiffMode, Draft, Resolver, Section, StagingRow};
 use crate::theme::Palette;
 use crate::widget::diff;
 use crate::widget::sidebar::{heading, item_style};
@@ -37,6 +37,7 @@ pub fn view<'a>(
     mode: DiffMode,
     draft: &'a Draft,
     state: RepoState,
+    resolver: Option<&'a Resolver>,
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
     // Even a clean tree gets the composer: amending the last commit is a real
@@ -110,6 +111,9 @@ pub fn view<'a>(
                 lines,
                 focused_hunk,
                 mode,
+                state,
+                resolver,
+                status.conflicted.len(),
                 palette,
             ))
             .width(Fill),
@@ -132,6 +136,9 @@ fn pane<'a>(
     lines: &'a std::collections::BTreeSet<(usize, usize)>,
     focused_hunk: usize,
     mode: DiffMode,
+    state: RepoState,
+    resolver: Option<&'a Resolver>,
+    conflicted_paths: usize,
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
     let Some(row) = selected else {
@@ -152,10 +159,15 @@ fn pane<'a>(
         // An untracked file has no diff to show: nothing in the repository has
         // ever seen it, so every line would be an addition against nothing.
         Section::Untracked => placeholder("Untracked — stage it to see it as a diff", palette),
-        Section::Conflicted => placeholder(
-            "Conflicted — resolving conflicts inside hideGit arrives in M5",
-            palette,
-        ),
+        // The resolver loads its file asynchronously, so between selecting the
+        // row and the file arriving there is genuinely nothing to show. Saying
+        // so beats an empty pane that looks broken.
+        Section::Conflicted => match resolver {
+            Some(resolver) => {
+                crate::widget::resolver::view(resolver, state, conflicted_paths, palette)
+            }
+            None => placeholder("Reading the conflicted file…", palette),
+        },
     }
 }
 

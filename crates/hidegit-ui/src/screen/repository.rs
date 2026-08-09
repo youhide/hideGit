@@ -1,6 +1,7 @@
 //! The main window: toolbar, sidebar, graph and detail pane.
 
 use hidegit_core::model::RepoState;
+use hidegit_core::ops::SequenceControl;
 use iced::widget::{Space, button, column, container, responsive, row, text, tooltip};
 use iced::{Center, Fill, Font, Length, Padding};
 
@@ -38,7 +39,9 @@ pub fn view<'a>(
     // repository genuinely is in that state, and hiding it is how people lose
     // work.
     if repo.state.is_in_progress() {
-        stack = stack.push(operation_banner(repo.state, palette).map(repo_message));
+        stack = stack.push(
+            operation_banner(repo.state, repo.status.conflicted.len(), palette).map(repo_message),
+        );
     }
 
     stack = stack.push(divider(border).map(repo_message));
@@ -374,37 +377,119 @@ fn describe_state(state: RepoState) -> &'static str {
     }
 }
 
-fn operation_banner<'a>(state: RepoState, palette: &Palette) -> Element<'a, RepoMessage> {
-    let (label, detail) = match state {
-        RepoState::Merging => ("Merging", "Finish or abort the merge with `git merge`."),
-        RepoState::Rebasing => ("Rebasing", "Finish or abort the rebase with `git rebase`."),
-        RepoState::CherryPicking => ("Cherry-picking", "Finish or abort with `git cherry-pick`."),
-        RepoState::Reverting => ("Reverting", "Finish or abort with `git revert`."),
-        RepoState::Bisecting => ("Bisecting", "Finish with `git bisect reset`."),
+/// The persistent banner for a repository that is mid-operation.
+///
+/// `conflicted` is how many paths are still conflicted, which is what decides
+/// whether continuing is offered: continuing is per operation, so it stays out
+/// of reach until nothing anywhere is conflicted.
+fn operation_banner<'a>(
+    state: RepoState,
+    conflicted: usize,
+    palette: &Palette,
+) -> Element<'a, RepoMessage> {
+    let label = match state {
+        RepoState::Merging => "Merging",
+        RepoState::Rebasing => "Rebasing",
+        RepoState::CherryPicking => "Cherry-picking",
+        RepoState::Reverting => "Reverting",
+        RepoState::Bisecting => "Bisecting",
         RepoState::Clean => return Space::new().height(0).into(),
     };
 
+    let detail = if state == RepoState::Bisecting {
+        // Bisect has its own vocabulary — `git bisect good`, not `--continue` —
+        // and is not something hideGit drives. Saying so beats a button that
+        // would send the wrong command.
+        "Finish with `git bisect reset`.".to_owned()
+    } else if conflicted > 0 {
+        format!(
+            "{conflicted} {} conflicted. Resolve {} to continue.",
+            if conflicted == 1 {
+                "file is"
+            } else {
+                "files are"
+            },
+            if conflicted == 1 { "it" } else { "them" },
+        )
+    } else {
+        "Nothing is conflicted. Continue, or abort to go back.".to_owned()
+    };
+
     let warning = palette.warning;
-    container(
-        row![
-            text(label).size(12.0).color(warning).font(Font {
-                weight: iced::font::Weight::Semibold,
-                ..Font::DEFAULT
-            }),
-            // hideGit cannot continue or abort until M5, and says so rather
-            // than offering a button that does not work.
-            text(detail).size(12.0).color(palette.muted),
-        ]
-        .spacing(10)
-        .align_y(Center),
-    )
-    .width(Fill)
-    .padding(Padding::from([6, 14]))
-    .style(move |_| container::Style {
-        background: Some(iced::Color { a: 0.15, ..warning }.into()),
-        ..container::Style::default()
-    })
-    .into()
+    let mut bar = row![
+        text(label).size(12.0).color(warning).font(Font {
+            weight: iced::font::Weight::Semibold,
+            ..Font::DEFAULT
+        }),
+        text(detail).size(12.0).color(palette.muted),
+    ]
+    .spacing(10)
+    .align_y(Center);
+
+    // Bisect is the one state hideGit does not drive, so it gets no buttons.
+    if state != RepoState::Bisecting {
+        let muted = palette.muted;
+        let text_colour = palette.text;
+        let surface = palette.surface;
+        let border = palette.border;
+        let background = palette.background;
+
+        let mut carry_on =
+            button(text("Continue").size(11.0))
+                .padding([3, 9])
+                .style(move |_, status| button::Style {
+                    background: Some(
+                        match status {
+                            button::Status::Disabled => surface,
+                            _ => warning,
+                        }
+                        .into(),
+                    ),
+                    text_color: match status {
+                        button::Status::Disabled => muted,
+                        _ => background,
+                    },
+                    border: iced::Border {
+                        radius: 3.0.into(),
+                        ..iced::Border::default()
+                    },
+                    ..button::Style::default()
+                });
+        if conflicted == 0 {
+            carry_on = carry_on.on_press(RepoMessage::SequenceControlRequested(
+                SequenceControl::Continue,
+            ));
+        }
+
+        bar = bar.push(Space::new().width(Fill));
+        bar = bar.push(carry_on);
+        bar = bar.push(
+            button(text("Abort").size(11.0))
+                .padding([3, 9])
+                .style(move |_, _| button::Style {
+                    background: Some(surface.into()),
+                    text_color: text_colour,
+                    border: iced::Border {
+                        color: border,
+                        width: 1.0,
+                        radius: 3.0.into(),
+                    },
+                    ..button::Style::default()
+                })
+                .on_press(RepoMessage::SequenceControlRequested(
+                    SequenceControl::Abort,
+                )),
+        );
+    }
+
+    container(bar)
+        .width(Fill)
+        .padding(Padding::from([6, 14]))
+        .style(move |_| container::Style {
+            background: Some(iced::Color { a: 0.15, ..warning }.into()),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 fn divider<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
