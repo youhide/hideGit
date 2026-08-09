@@ -57,6 +57,13 @@ option as `--opt=value`, never as a bare argument. Git's own commands are not un
 needs the name attached because `switch` accepts only one reference after `--`. Either shape keeps the
 text one element of the argument vector.
 
+`--` is not the separator to reach for everywhere. It means *paths follow*, so on a command that
+takes revisions and no paths it changes the request: `git reset --hard -- HEAD~1` asks to reset a
+path named `HEAD~1`. Use `GitCommand::revisions`, which emits `--end-of-options`, for `reset`,
+`rev-parse` and `rev-list`; `GitCommand::operands`, which emits `--`, for everything that takes
+paths or refs — `merge`, `cherry-pick`, `revert`, `switch`. When adding a command, run it before
+assuming which one it takes.
+
 Three places read *human* output deliberately: `--progress` on stderr, which has no machine form, and
 the fetch and push summaries. The push case is a documented exception to preferring machine formats —
 `--porcelain` would move Git's actionable hint off stderr — and all three fail soft. See

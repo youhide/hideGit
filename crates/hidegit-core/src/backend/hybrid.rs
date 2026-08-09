@@ -14,13 +14,14 @@ use std::sync::{Arc, Mutex, RwLock};
 use super::{GitBackend, gix_read, not_implemented};
 use crate::error::{GitError, classify_remote_failure};
 use crate::model::{
-    Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, Refs,
-    Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
+    Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, ReflogEntry,
+    Refs, Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
 };
 use crate::ops::{
-    Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, ForceMode, MergeOpts,
-    MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome, PushSpec, RebasePlan,
-    SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
+    Blame, CancelToken, CheckoutTarget, CommitOpts, FastForward, FetchOpts, FetchOutcome,
+    ForceMode, MergeOpts, MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome,
+    PushSpec, RebasePlan, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
+    StashOutcome, TagSpec,
 };
 use crate::process::GitCommand;
 
@@ -100,6 +101,109 @@ impl HybridBackend {
             StartPoint::Commit(id) => id.to_hex(),
             StartPoint::Ref(name) => name.clone(),
         }
+    }
+
+    /// The commit `HEAD` currently points at.
+    ///
+    /// Read through `git rev-parse` rather than gitoxide because every caller
+    /// asks *after* a write, and the point is to see what that write produced —
+    /// including whatever the user's hooks and GPG signing did to it.
+    fn head_id(&self) -> Result<ObjectId, GitError> {
+        let head = GitCommand::new("rev-parse")
+            .arg("HEAD")
+            .cwd(&self.workdir)
+            .run()?;
+        ObjectId::from_hex(head.trimmed_stdout().trim())
+            .ok_or_else(|| GitError::RefNotFound("HEAD".to_owned()))
+    }
+
+    /// True when `id` has more than one parent.
+    ///
+    /// This is how a merge tells a fast-forward from a merge commit: the two
+    /// differ in the shape of the commit that came out, and reading that is
+    /// stable in a way that parsing `git merge`'s localised summary is not.
+    fn is_merge_commit(&self, id: ObjectId) -> Result<bool, GitError> {
+        Ok(gix_read::parent_count(&self.repo(), id)? > 1)
+    }
+
+    /// The commit a stopped sequence is sitting on, if it is stopped at all.
+    ///
+    /// Git records it in a pseudo-ref whose name depends on the operation —
+    /// `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD` — and none of them
+    /// exists when nothing is in progress, so a missing ref is a plain `None`
+    /// rather than a failure.
+    fn stopped_at(&self) -> Result<Option<ObjectId>, GitError> {
+        for name in ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"] {
+            let found = GitCommand::new("rev-parse")
+                .arg("--verify")
+                .arg("--quiet")
+                .revisions([name])
+                .cwd(&self.workdir)
+                .run();
+            if let Ok(output) = found
+                && let Some(id) = ObjectId::from_hex(output.trimmed_stdout().trim())
+            {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Whether a sequence that just ran is finished or stopped part-way.
+    ///
+    /// Both look like a successful `git` invocation — a cherry-pick that stops
+    /// on an `edit` step exits zero — so the repository is asked rather than
+    /// the exit status believed.
+    fn sequence_state(&self) -> Result<SequenceOutcome, GitError> {
+        if !self.repo_state()?.is_in_progress() {
+            return Ok(SequenceOutcome::Completed);
+        }
+        Ok(SequenceOutcome::Stopped {
+            at: self.stopped_at()?.unwrap_or(self.head_id()?),
+            conflicts: gix_read::status(&self.repo())?.conflicted,
+        })
+    }
+
+    /// Runs `cherry-pick` or `revert` over `ids`, in the order given.
+    ///
+    /// The two commands take the same arguments and stop the same way, so they
+    /// share this; what differs is only which commit the user is reasoning
+    /// about, and that is the caller's distinction to keep.
+    fn sequence(
+        &self,
+        subcommand: &'static str,
+        ids: &[ObjectId],
+    ) -> Result<SequenceOutcome, GitError> {
+        self.guard_index()?;
+
+        if ids.is_empty() {
+            // Git would take an empty argument list as "no commits given" and
+            // fail with a usage message about the command rather than about
+            // what was asked. Nothing to do is not an error.
+            return Ok(SequenceOutcome::Completed);
+        }
+
+        let result = GitCommand::new(subcommand)
+            // Without this, a multi-commit sequence opens an editor per commit.
+            .env("GIT_EDITOR", "true")
+            .operands(ids.iter().map(|id| id.to_hex()))
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run();
+        self.invalidate();
+
+        if let Err(error) = result {
+            let conflicts = gix_read::status(&self.repo())?.conflicted;
+            if !conflicts.is_empty() {
+                return Ok(SequenceOutcome::Stopped {
+                    at: self.stopped_at()?.unwrap_or(self.head_id()?),
+                    conflicts,
+                });
+            }
+            return Err(error);
+        }
+
+        self.sequence_state()
     }
 
     /// Returns the memoised walk for `spec`, computing it if needed.
@@ -728,16 +832,151 @@ impl GitBackend for HybridBackend {
         }
     }
 
-    fn merge(&self, _from: &str, _opts: &MergeOpts) -> Result<MergeOutcome, GitError> {
-        Err(not_implemented("merge", "M5"))
+    fn merge(&self, from: &str, opts: &MergeOpts) -> Result<MergeOutcome, GitError> {
+        self.guard_index()?;
+
+        let before = self.head_id()?;
+
+        let mut command = GitCommand::new("merge");
+        match opts.fast_forward {
+            FastForward::Allow => {}
+            FastForward::Only => command = command.arg("--ff-only"),
+            FastForward::Never => command = command.arg("--no-ff"),
+        }
+        if let Some(message) = &opts.message {
+            // `--file=-` is not available on `git merge`, so the message is
+            // attached to its option instead. One argv element either way, so a
+            // message beginning with a dash stays a message.
+            command = command.arg(format!("--message={message}"));
+        }
+
+        let result = command
+            .operands([from])
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run();
+        self.invalidate();
+
+        if let Err(error) = result {
+            // A merge that conflicts is the outcome the user asked for arriving
+            // in the state that needs resolving, not a failure. Anything else —
+            // an unknown ref, a refused `--ff-only` — is a real error and keeps
+            // Git's own message.
+            let conflicts = gix_read::status(&self.repo())?.conflicted;
+            if !conflicts.is_empty() {
+                return Ok(MergeOutcome::Conflicted(conflicts));
+            }
+            return Err(error);
+        }
+
+        // Which of the three success shapes happened is read back from the
+        // repository rather than parsed out of `git merge`'s human summary,
+        // whose wording is localised and has changed between versions.
+        let after = self.head_id()?;
+        if after == before {
+            return Ok(MergeOutcome::UpToDate);
+        }
+        if self.is_merge_commit(after)? {
+            Ok(MergeOutcome::Merged(after))
+        } else {
+            Ok(MergeOutcome::FastForwarded(after))
+        }
     }
 
     fn rebase(&self, _onto: &str, _plan: &RebasePlan) -> Result<SequenceOutcome, GitError> {
         Err(not_implemented("rebase", "M5"))
     }
 
-    fn cherry_pick(&self, _ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
-        Err(not_implemented("cherry-pick", "M5"))
+    fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
+        self.sequence("cherry-pick", ids)
+    }
+
+    fn revert(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
+        self.sequence("revert", ids)
+    }
+
+    fn reset(&self, target: &StartPoint, mode: ResetMode) -> Result<(), GitError> {
+        self.guard_index()?;
+
+        // No `--` and no pathspec: this is the whole-tree reset. A path-scoped
+        // `git reset` means something different — it unstages — and that is
+        // `unstage`, which is a separate method for exactly that reason.
+        self.write(
+            GitCommand::new("reset")
+                .arg(mode.flag())
+                .revisions([Self::start_point(target)]),
+        )
+    }
+
+    fn control_sequence(&self, control: SequenceControl) -> Result<SequenceOutcome, GitError> {
+        self.guard_index()?;
+
+        let state = self.repo_state()?;
+        // Git has no single verb for "continue what is in progress", so the
+        // pairing is made here from the state hideGit already reads. Asking the
+        // caller to pass it would let the UI send `rebase --continue` to a
+        // repository that is mid-merge.
+        let subcommand = match state {
+            RepoState::Merging => "merge",
+            RepoState::Rebasing => "rebase",
+            RepoState::CherryPicking => "cherry-pick",
+            RepoState::Reverting => "revert",
+            // Bisect has its own vocabulary — `git bisect good`, not
+            // `--continue` — and is not part of this milestone.
+            RepoState::Bisecting | RepoState::Clean => {
+                return Err(GitError::NothingInProgress(state));
+            }
+        };
+
+        let flag = match control {
+            SequenceControl::Continue => "--continue",
+            SequenceControl::Abort => "--abort",
+            SequenceControl::Skip => "--skip",
+        };
+
+        // A merge is one step, so there is nothing to skip past; Git rejects it
+        // and the message is about `git merge` rather than about what the user
+        // clicked. Refusing here says the useful thing instead.
+        if control == SequenceControl::Skip && state == RepoState::Merging {
+            return Err(GitError::NotSkippable);
+        }
+
+        let result = GitCommand::new(subcommand)
+            .arg(flag)
+            // `--continue` opens an editor for the commit message unless told
+            // not to, and an editor hideGit cannot see would hang the task
+            // forever. The message Git already prepared is the right one: the
+            // user edits it in the resolver, not in `vi`.
+            .env("GIT_EDITOR", "true")
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run();
+        self.invalidate();
+
+        if let Err(error) = result {
+            // Continuing with conflicts still unresolved leaves the repository
+            // exactly where it was, which is a state to report rather than an
+            // error to raise.
+            let conflicts = gix_read::status(&self.repo())?.conflicted;
+            if !conflicts.is_empty() {
+                return Ok(SequenceOutcome::Stopped {
+                    at: self.stopped_at()?.unwrap_or(self.head_id()?),
+                    conflicts,
+                });
+            }
+            return Err(error);
+        }
+
+        // An abort finishes by definition; anything else may have stopped again
+        // on the next commit in the sequence.
+        if control == SequenceControl::Abort {
+            return Ok(SequenceOutcome::Completed);
+        }
+        self.sequence_state()
+    }
+
+    fn reflog(&self, ref_name: &str, limit: usize) -> Result<Vec<ReflogEntry>, GitError> {
+        gix_read::reflog(&self.repo(), ref_name, limit)
     }
 }
 

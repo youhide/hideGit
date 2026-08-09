@@ -204,6 +204,29 @@ pub struct StashEntry {
     pub branch: Option<String>,
 }
 
+/// One entry in a reference's reflog.
+///
+/// The reflog is how a rewritten history stays recoverable: every operation in
+/// M5 that moves a branch leaves an entry naming where it was, and that old
+/// commit stays reachable until it is garbage-collected. It is the difference
+/// between a hard reset being frightening and being reversible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReflogEntry {
+    /// Position from the top, which is the `n` in `HEAD@{n}`.
+    pub index: usize,
+    /// What the reference pointed at *before* this entry's operation.
+    pub old_id: ObjectId,
+    /// What it pointed at after.
+    pub new_id: ObjectId,
+    /// Who made the change, and when.
+    pub who: Signature,
+    /// Git's own description — `commit: …`, `rebase (finish): …`, `reset: …`.
+    ///
+    /// Shown verbatim rather than re-worded: the vocabulary is Git's, and a
+    /// user who searches for what it says will find Git's documentation.
+    pub message: String,
+}
+
 /// A tag. Annotated tags carry their own object; lightweight ones do not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {

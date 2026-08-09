@@ -799,21 +799,9 @@ fn operations_from_later_milestones_say_which_milestone_they_land_in() {
         ),
         (
             backend
-                .merge("main", &hidegit_core::ops::MergeOpts::default())
-                .map(|_| ()),
-            "merge",
-            "M5",
-        ),
-        (
-            backend
                 .rebase("main", &hidegit_core::ops::RebasePlan::default())
                 .map(|_| ()),
             "rebase",
-            "M5",
-        ),
-        (
-            backend.cherry_pick(&[repo.id("A")]).map(|_| ()),
-            "cherry-pick",
             "M5",
         ),
     ];

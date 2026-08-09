@@ -63,6 +63,11 @@ security-sensitive boundary in the application, so it is constrained:
   metacharacters in a branch name, path or remote URL are not interpreted.
 - **`--` separates options from operands** wherever Git supports it, so a ref or path beginning
   with `-` cannot be absorbed as a flag.
+- **`--end-of-options` is used instead where the command takes revisions and no paths.** To
+  `git reset`, `git rev-parse` and `git rev-list`, `--` means *paths follow*, so
+  `git reset --hard -- HEAD~1` asks to reset a path named `HEAD~1` and fails. `--end-of-options`
+  ends flag parsing without making that claim, which is the guarantee actually wanted. Using `--`
+  reflexively on those commands trades a real bug for an imagined one.
 - **`GIT_TERMINAL_PROMPT=0`** — a subprocess must never silently block waiting on hidden input.
 - The environment passed to the subprocess is controlled, not inherited wholesale.
 

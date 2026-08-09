@@ -14,12 +14,14 @@ use super::{GitBackend, not_implemented};
 use crate::error::GitError;
 use crate::model::{
     Blob, Commit, CommitDetail, Diff, DiffStats, DiffTarget, Divergence, FileChange, Head, LogPage,
-    ObjectId, RefKind, RefName, Refs, Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
+    ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState, RevSpec, StashEntry,
+    WorktreeStatus,
 };
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
     MergeOutcome, Patch, ProgressSink, ProgressUpdate, PullOpts, PullOutcome, PushOutcome,
-    PushSpec, RebasePlan, SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
+    PushSpec, RebasePlan, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
+    StashOutcome, TagSpec,
 };
 
 /// An error the fake should return instead of data.
@@ -81,6 +83,11 @@ pub enum WriteCall {
     Pull(PullOpts),
     Push { remote: String, spec: PushSpec },
     Stash(StashOp),
+    Merge { from: String, opts: MergeOpts },
+    CherryPick(Vec<ObjectId>),
+    Revert(Vec<ObjectId>),
+    Reset { target: StartPoint, mode: ResetMode },
+    ControlSequence(SequenceControl),
 }
 
 /// A backend whose answers are set up in advance.
@@ -101,6 +108,13 @@ pub struct FakeBackend {
     write_failure: Option<Failure>,
     /// Progress the network operations replay through the sink they are given.
     progress: Vec<ProgressUpdate>,
+    /// Reflog entries, newest first, as [`GitBackend::reflog`] returns them.
+    reflog: Vec<ReflogEntry>,
+    /// What a merge should answer, so the conflict path can be driven without
+    /// building two divergent histories on disk.
+    merge_outcome: MergeOutcome,
+    /// What a cherry-pick, revert or continue should answer.
+    sequence_outcome: SequenceOutcome,
     /// Every write asked for, in order.
     writes: Mutex<Vec<WriteCall>>,
     /// How many times [`GitBackend::invalidate`] has been called, so a test can
@@ -129,6 +143,12 @@ impl Default for FakeBackend {
             failure: None,
             write_failure: None,
             progress: Vec::new(),
+            reflog: Vec::new(),
+            // A clean merge is the boring default; the interesting cases are
+            // set up per test, because a fixture that conflicts by default
+            // would make every unrelated test assert its way past a conflict.
+            merge_outcome: MergeOutcome::UpToDate,
+            sequence_outcome: SequenceOutcome::Completed,
             writes: Mutex::new(Vec::new()),
             invalidations: AtomicUsize::new(0),
         }
@@ -203,6 +223,29 @@ impl FakeBackend {
     /// Cancel button can be driven without a remote.
     pub fn with_progress(mut self, progress: Vec<ProgressUpdate>) -> Self {
         self.progress = progress;
+        self
+    }
+
+    /// Reflog entries, newest first, as [`GitBackend::reflog`] returns them.
+    pub fn with_reflog(mut self, reflog: Vec<ReflogEntry>) -> Self {
+        self.reflog = reflog;
+        self
+    }
+
+    /// What a merge answers — a conflict, most usefully, so the resolver can be
+    /// driven without two divergent histories on disk.
+    pub fn with_merge_outcome(mut self, outcome: MergeOutcome) -> Self {
+        self.merge_outcome = outcome;
+        self
+    }
+
+    /// What a cherry-pick, revert or `--continue` answers.
+    ///
+    /// Pair it with [`Self::with_state`]: a fake that reports a sequence
+    /// stopped on a conflict but a `Clean` repository is a state Git cannot
+    /// produce, and a test built on one proves nothing.
+    pub fn with_sequence_outcome(mut self, outcome: SequenceOutcome) -> Self {
+        self.sequence_outcome = outcome;
         self
     }
 
@@ -519,16 +562,52 @@ impl GitBackend for FakeBackend {
         })
     }
 
-    fn merge(&self, _from: &str, _opts: &MergeOpts) -> Result<MergeOutcome, GitError> {
-        Err(not_implemented("merge", "M5"))
+    fn merge(&self, from: &str, opts: &MergeOpts) -> Result<MergeOutcome, GitError> {
+        self.record(WriteCall::Merge {
+            from: from.to_owned(),
+            opts: opts.clone(),
+        })?;
+        Ok(self.merge_outcome.clone())
     }
 
     fn rebase(&self, _onto: &str, _plan: &RebasePlan) -> Result<SequenceOutcome, GitError> {
         Err(not_implemented("rebase", "M5"))
     }
 
-    fn cherry_pick(&self, _ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
-        Err(not_implemented("cherry-pick", "M5"))
+    fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
+        self.record(WriteCall::CherryPick(ids.to_vec()))?;
+        Ok(self.sequence_outcome.clone())
+    }
+
+    fn revert(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
+        self.record(WriteCall::Revert(ids.to_vec()))?;
+        Ok(self.sequence_outcome.clone())
+    }
+
+    fn reset(&self, target: &StartPoint, mode: ResetMode) -> Result<(), GitError> {
+        self.record(WriteCall::Reset {
+            target: target.clone(),
+            mode,
+        })
+    }
+
+    fn control_sequence(&self, control: SequenceControl) -> Result<SequenceOutcome, GitError> {
+        // The real backend refuses this before it records anything, and a test
+        // asserting that the UI keeps the button disabled needs the same
+        // refusal rather than a recorded call that never happened.
+        if !self.state.is_in_progress() {
+            return Err(GitError::NothingInProgress(self.state));
+        }
+        self.record(WriteCall::ControlSequence(control))?;
+        match control {
+            SequenceControl::Abort => Ok(SequenceOutcome::Completed),
+            _ => Ok(self.sequence_outcome.clone()),
+        }
+    }
+
+    fn reflog(&self, _ref_name: &str, limit: usize) -> Result<Vec<ReflogEntry>, GitError> {
+        self.check()?;
+        Ok(self.reflog.iter().take(limit).cloned().collect())
     }
 }
 

@@ -145,6 +145,29 @@ impl GitCommand {
         self
     }
 
+    /// Appends `--end-of-options` followed by revisions.
+    ///
+    /// The counterpart to [`GitCommand::operands`] for commands that take
+    /// revisions and no paths. `--` cannot be used there: to `git reset`,
+    /// `git rev-parse` and `git rev-list` it means *paths follow*, so
+    /// `git reset --hard -- HEAD~1` is a request to reset the path `HEAD~1`
+    /// and fails with "Cannot do hard reset with paths". `--end-of-options`
+    /// stops flag parsing without claiming what comes next is a path, which is
+    /// the guarantee actually wanted: a revision that begins with a dash stays
+    /// a revision and never becomes a flag.
+    ///
+    /// Available since Git 2.24, comfortably under the 2.30 hideGit requires.
+    pub fn revisions<I, S>(mut self, revisions: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        self.args.push(OsString::from("--end-of-options"));
+        self.args
+            .extend(revisions.into_iter().map(|a| a.as_ref().to_os_string()));
+        self
+    }
+
     /// The argument vector, lossily stringified for logs and error reports.
     pub fn argv(&self) -> Vec<String> {
         self.args

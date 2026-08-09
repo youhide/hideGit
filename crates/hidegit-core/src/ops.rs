@@ -232,6 +232,60 @@ pub enum SequenceOutcome {
     },
 }
 
+/// How far a reset moves, and what it does to the index and working tree.
+///
+/// The three are spelled out rather than collapsed into a boolean because the
+/// difference between them is exactly the difference between losing work and
+/// not: `Hard` is the only Git operation in hideGit that destroys uncommitted
+/// changes without writing them anywhere first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResetMode {
+    /// Move `HEAD`. The index and working tree are left alone, so what the
+    /// commits contained shows up as staged changes.
+    Soft,
+    /// Move `HEAD` and reset the index. Changes survive as unstaged.
+    #[default]
+    Mixed,
+    /// Move `HEAD`, the index *and* the working tree. Uncommitted work is
+    /// gone, and no reflog entry brings it back.
+    Hard,
+}
+
+impl ResetMode {
+    /// The `git reset` flag for this mode.
+    pub fn flag(self) -> &'static str {
+        match self {
+            ResetMode::Soft => "--soft",
+            ResetMode::Mixed => "--mixed",
+            ResetMode::Hard => "--hard",
+        }
+    }
+
+    /// True when the mode can discard uncommitted work.
+    ///
+    /// The UI reads this to decide whether the action needs the confirmation
+    /// that names what is about to be lost.
+    pub fn is_destructive(self) -> bool {
+        matches!(self, ResetMode::Hard)
+    }
+}
+
+/// What to do with an operation the repository is in the middle of.
+///
+/// Every one of merge, rebase, cherry-pick and revert can stop part-way, and
+/// all four are continued and aborted by the same three verbs, so they share
+/// one type rather than growing a near-identical enum each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceControl {
+    /// Record the resolution and carry on with the remaining steps.
+    Continue,
+    /// Restore the repository to exactly its state before the operation began.
+    Abort,
+    /// Drop the current commit and move to the next. Not valid for a merge,
+    /// which has a single step to skip.
+    Skip,
+}
+
 /// What to do to the stash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StashOp {
