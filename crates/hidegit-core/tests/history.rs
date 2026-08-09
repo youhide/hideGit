@@ -12,7 +12,8 @@ use hidegit_core::error::GitError;
 use hidegit_core::fixture::fixture;
 use hidegit_core::model::{ObjectId, RepoState};
 use hidegit_core::ops::{
-    FastForward, MergeOpts, MergeOutcome, ResetMode, SequenceControl, SequenceOutcome, StartPoint,
+    FastForward, MergeOpts, MergeOutcome, RebaseAction, RebasePlan, RebaseStep, ResetMode,
+    SequenceControl, SequenceOutcome, StartPoint,
 };
 use hidegit_core::process::GitCommand;
 
@@ -675,4 +676,256 @@ fn the_parser_reads_diff3_style_when_the_user_configured_it() {
         "Git labels the base section with the ancestor's short hash"
     );
     assert_eq!(file.render(&[Resolution::Unresolved]), content);
+}
+
+// --- rebase ------------------------------------------------------------------
+
+/// Commit subjects on the current branch, oldest first.
+fn subjects(path: &std::path::Path) -> Vec<String> {
+    let out = GitCommand::new("log")
+        .args(["--reverse", "--format=%s"])
+        .cwd(path)
+        .run()
+        .expect("git log succeeds");
+    out.trimmed_stdout().lines().map(|l| l.to_owned()).collect()
+}
+
+fn id_of(path: &std::path::Path, rev: &str) -> ObjectId {
+    let out = GitCommand::new("rev-parse")
+        .arg("--verify")
+        .revisions([rev])
+        .cwd(path)
+        .run()
+        .expect("rev-parse succeeds");
+    ObjectId::from_hex(out.trimmed_stdout().trim()).expect("a valid id")
+}
+
+#[test]
+fn a_plain_rebase_replays_the_branch() {
+    let repo = fixture()
+        .commit("base")
+        .branch("side")
+        .checkout("side")
+        .edit("mine.txt", "mine\n", "mine")
+        .checkout("main")
+        .edit("theirs.txt", "theirs\n", "theirs")
+        .checkout("side")
+        .build();
+    let backend = repo.backend();
+
+    let outcome = backend
+        .rebase("main", &RebasePlan::default())
+        .expect("a clean rebase succeeds");
+
+    assert_eq!(outcome, SequenceOutcome::Completed);
+    assert_eq!(
+        subjects(repo.path()),
+        vec!["base", "theirs", "mine"],
+        "the branch is replayed on top of main"
+    );
+}
+
+#[test]
+fn a_conflicting_rebase_stops_with_the_conflict() {
+    let repo = fixture()
+        .commit("base")
+        .edit("shared.txt", "base\n", "shared base")
+        .branch("side")
+        .checkout("side")
+        .edit("shared.txt", "mine\n", "mine")
+        .checkout("main")
+        .edit("shared.txt", "theirs\n", "theirs")
+        .checkout("side")
+        .build();
+    let backend = repo.backend();
+
+    let outcome = backend
+        .rebase("main", &RebasePlan::default())
+        .expect("a conflicting rebase reports rather than fails");
+
+    match outcome {
+        SequenceOutcome::Stopped { conflicts, .. } => {
+            assert_eq!(conflicts.len(), 1);
+            assert_eq!(conflicts[0].path, std::path::Path::new("shared.txt"));
+        }
+        other => panic!("expected to stop, got {other:?}"),
+    }
+    assert_eq!(
+        backend.repo_state().expect("state reads"),
+        RepoState::Rebasing
+    );
+
+    // And it can be abandoned, which is the promise the resolver rests on.
+    backend
+        .control_sequence(SequenceControl::Abort)
+        .expect("aborting succeeds");
+    assert_eq!(backend.repo_state().expect("state reads"), RepoState::Clean);
+    assert_eq!(read(repo.path(), "shared.txt"), "mine\n");
+}
+
+#[test]
+fn an_interactive_plan_squashes_and_drops() {
+    let repo = fixture()
+        .commit("base")
+        .edit("a.txt", "a\n", "keep me")
+        .edit("b.txt", "b\n", "squash me")
+        .edit("c.txt", "c\n", "drop me")
+        .build();
+    let backend = repo.backend();
+
+    let base = id_of(repo.path(), "HEAD~3");
+    let plan = RebasePlan {
+        steps: vec![
+            RebaseStep {
+                action: RebaseAction::Pick,
+                commit: id_of(repo.path(), "HEAD~2"),
+            },
+            RebaseStep {
+                action: RebaseAction::Squash,
+                commit: id_of(repo.path(), "HEAD~1"),
+            },
+            RebaseStep {
+                action: RebaseAction::Drop,
+                commit: id_of(repo.path(), "HEAD"),
+            },
+        ],
+    };
+
+    let outcome = backend
+        .rebase(&base.to_hex(), &plan)
+        .expect("the planned rebase succeeds");
+
+    assert_eq!(outcome, SequenceOutcome::Completed);
+    // "squash me" folded into "keep me", and "drop me" is gone entirely.
+    assert_eq!(
+        subjects(repo.path()).len(),
+        2,
+        "base plus the squashed pair"
+    );
+    assert!(repo.path().join("a.txt").exists());
+    assert!(
+        repo.path().join("b.txt").exists(),
+        "a squash keeps the changes, only the commit goes"
+    );
+    assert!(
+        !repo.path().join("c.txt").exists(),
+        "a dropped commit takes its changes with it"
+    );
+}
+
+#[test]
+fn a_plan_reorders_commits() {
+    let repo = fixture()
+        .commit("base")
+        .edit("a.txt", "a\n", "first")
+        .edit("b.txt", "b\n", "second")
+        .build();
+    let backend = repo.backend();
+
+    let base = id_of(repo.path(), "HEAD~2");
+    // The plan is applied in the order given, which is what makes reordering a
+    // plan change rather than a separate operation.
+    let plan = RebasePlan {
+        steps: vec![
+            RebaseStep {
+                action: RebaseAction::Pick,
+                commit: id_of(repo.path(), "HEAD"),
+            },
+            RebaseStep {
+                action: RebaseAction::Pick,
+                commit: id_of(repo.path(), "HEAD~1"),
+            },
+        ],
+    };
+
+    backend
+        .rebase(&base.to_hex(), &plan)
+        .expect("the reordering rebase succeeds");
+
+    assert_eq!(subjects(repo.path()), vec!["base", "second", "first"]);
+}
+
+#[test]
+fn an_edit_step_stops_the_rebase_for_the_user() {
+    let repo = fixture()
+        .commit("base")
+        .edit("a.txt", "a\n", "stop here")
+        .edit("b.txt", "b\n", "and then this")
+        .build();
+    let backend = repo.backend();
+
+    let base = id_of(repo.path(), "HEAD~2");
+    let plan = RebasePlan {
+        steps: vec![
+            RebaseStep {
+                action: RebaseAction::Edit,
+                commit: id_of(repo.path(), "HEAD~1"),
+            },
+            RebaseStep {
+                action: RebaseAction::Pick,
+                commit: id_of(repo.path(), "HEAD"),
+            },
+        ],
+    };
+
+    // An `edit` step exits zero, so a backend that trusted the exit status
+    // would report this finished while the repository is mid-rebase.
+    let outcome = backend
+        .rebase(&base.to_hex(), &plan)
+        .expect("the rebase runs");
+
+    match outcome {
+        SequenceOutcome::Stopped { conflicts, .. } => {
+            assert!(conflicts.is_empty(), "stopping to edit is not a conflict");
+        }
+        other => panic!("expected to stop on the edit step, got {other:?}"),
+    }
+    assert_eq!(
+        backend.repo_state().expect("state reads"),
+        RepoState::Rebasing
+    );
+
+    backend
+        .control_sequence(SequenceControl::Continue)
+        .expect("continuing finishes the rest of the plan");
+    assert_eq!(backend.repo_state().expect("state reads"), RepoState::Clean);
+    assert_eq!(
+        subjects(repo.path()),
+        vec!["base", "stop here", "and then this"]
+    );
+}
+
+#[test]
+fn a_commit_subject_never_reaches_the_sequence_editor() {
+    // The todo list is handed to `sh` through an environment variable, so a
+    // commit subject containing shell syntax is the case that would prove the
+    // plan is data rather than code. It is also ordinary: plenty of real
+    // subjects contain `$`, backticks or quotes.
+    let repo = fixture()
+        .commit("base")
+        .edit(
+            "a.txt",
+            "a\n",
+            "fix `rm -rf $HOME` in the docs; echo \"pwned\"",
+        )
+        .build();
+    let backend = repo.backend();
+
+    let base = id_of(repo.path(), "HEAD~1");
+    let plan = RebasePlan {
+        steps: vec![RebaseStep {
+            action: RebaseAction::Pick,
+            commit: id_of(repo.path(), "HEAD"),
+        }],
+    };
+
+    backend
+        .rebase(&base.to_hex(), &plan)
+        .expect("a hostile subject rebases like any other");
+
+    assert_eq!(
+        subjects(repo.path()),
+        vec!["base", "fix `rm -rf $HOME` in the docs; echo \"pwned\""],
+        "the subject survives unchanged, having never been interpreted"
+    );
 }

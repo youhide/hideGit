@@ -20,8 +20,8 @@ use crate::model::{
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FastForward, FetchOpts, FetchOutcome,
     ForceMode, MergeOpts, MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome,
-    PushSpec, RebasePlan, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
-    StashOutcome, TagSpec,
+    PushSpec, RebaseAction, RebasePlan, ResetMode, SequenceControl, SequenceOutcome, StartPoint,
+    StashOp, StashOutcome, TagSpec,
 };
 use crate::process::GitCommand;
 
@@ -883,8 +883,52 @@ impl GitBackend for HybridBackend {
         }
     }
 
-    fn rebase(&self, _onto: &str, _plan: &RebasePlan) -> Result<SequenceOutcome, GitError> {
-        Err(not_implemented("rebase", "M5"))
+    fn rebase(&self, onto: &str, plan: &RebasePlan) -> Result<SequenceOutcome, GitError> {
+        self.guard_index()?;
+
+        let mut command = GitCommand::new("rebase")
+            // Without this, a `reword` or a conflict opens an editor hideGit
+            // cannot see, and the task hangs forever with no way to answer it.
+            .env("GIT_EDITOR", "true");
+
+        if plan.steps.is_empty() {
+            // No plan is an ordinary rebase, which needs no todo list and no
+            // sequence editor at all.
+            command = command.operands([onto]);
+        } else {
+            // The plan goes in an environment variable and the sequence editor
+            // is a fixed string that copies it into the todo file Git hands it.
+            // The alternative — interpolating the plan into the editor command —
+            // would put commit ids and actions through `sh`. Keeping the code
+            // constant and the data in a variable means nothing from the plan is
+            // ever parsed as shell syntax. See ADR-0007.
+            command = command
+                .arg("--interactive")
+                .env("HIDEGIT_REBASE_TODO", plan_to_todo(plan))
+                .env(
+                    "GIT_SEQUENCE_EDITOR",
+                    r#"printf "%s" "$HIDEGIT_REBASE_TODO" >"#,
+                )
+                .operands([onto]);
+        }
+
+        let result = command.cwd(&self.workdir).takes_locks().run();
+        self.invalidate();
+
+        if let Err(error) = result {
+            let conflicts = gix_read::status(&self.repo())?.conflicted;
+            if !conflicts.is_empty() {
+                return Ok(SequenceOutcome::Stopped {
+                    at: self.stopped_at()?.unwrap_or(self.head_id()?),
+                    conflicts,
+                });
+            }
+            return Err(error);
+        }
+
+        // A rebase that stops on an `edit` step exits zero, so finished and
+        // stopped look identical from here and the repository is asked instead.
+        self.sequence_state()
     }
 
     fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
@@ -978,6 +1022,36 @@ impl GitBackend for HybridBackend {
     fn reflog(&self, ref_name: &str, limit: usize) -> Result<Vec<ReflogEntry>, GitError> {
         gix_read::reflog(&self.repo(), ref_name, limit)
     }
+}
+
+/// Renders a [`RebasePlan`] as the todo list `git rebase --interactive` reads.
+///
+/// Only the action and the full commit id are written. Git accepts a trailing
+/// subject and ignores it, and leaving it out keeps a commit message — which is
+/// untrusted text from a repository that may have been cloned from anywhere —
+/// out of a file whose format is line-oriented.
+///
+/// `Reword` is written as `edit`. Git's own `reword` opens `GIT_EDITOR` at that
+/// point in the sequence, and hideGit runs with the editor stubbed out, so it
+/// would silently keep the old message — the one thing a reword must not do.
+/// `edit` stops after applying the commit, which hands control back so the
+/// message can be changed by an amend from hideGit's own editor.
+fn plan_to_todo(plan: &RebasePlan) -> String {
+    let mut todo = String::new();
+    for step in &plan.steps {
+        let verb = match step.action {
+            RebaseAction::Pick => "pick",
+            RebaseAction::Reword | RebaseAction::Edit => "edit",
+            RebaseAction::Squash => "squash",
+            RebaseAction::Fixup => "fixup",
+            RebaseAction::Drop => "drop",
+        };
+        todo.push_str(verb);
+        todo.push(' ');
+        todo.push_str(&step.commit.to_hex());
+        todo.push('\n');
+    }
+    todo
 }
 
 /// The flag `git` puts in the first column of a fetch or push result line.

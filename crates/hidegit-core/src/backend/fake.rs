@@ -84,6 +84,7 @@ pub enum WriteCall {
     Push { remote: String, spec: PushSpec },
     Stash(StashOp),
     Merge { from: String, opts: MergeOpts },
+    Rebase { onto: String, plan: RebasePlan },
     CherryPick(Vec<ObjectId>),
     Revert(Vec<ObjectId>),
     Reset { target: StartPoint, mode: ResetMode },
@@ -570,8 +571,12 @@ impl GitBackend for FakeBackend {
         Ok(self.merge_outcome.clone())
     }
 
-    fn rebase(&self, _onto: &str, _plan: &RebasePlan) -> Result<SequenceOutcome, GitError> {
-        Err(not_implemented("rebase", "M5"))
+    fn rebase(&self, onto: &str, plan: &RebasePlan) -> Result<SequenceOutcome, GitError> {
+        self.record(WriteCall::Rebase {
+            onto: onto.to_owned(),
+            plan: plan.clone(),
+        })?;
+        Ok(self.sequence_outcome.clone())
     }
 
     fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {

@@ -45,7 +45,7 @@ It must not depend on `iced`, on `hidegit-forge`, or on an HTTP client. That con
 lets the domain logic be tested without a window and without a token. Code that needs a widget or
 a request belongs in `hidegit-ui` or `hidegit-forge`.
 
-**3. Never build a `git` command as a shell string.**
+**3. Never build a `git` command as a shell string.** One documented exception, below.
 Arguments go in a vector, no shell is spawned, `GIT_TERMINAL_PROMPT=0` is always set, machine
 formats (`--porcelain=v2`, `-z`) are preferred over human output, and `stderr` is surfaced
 to the user verbatim on failure. Branch names, paths and remote URLs come from untrusted
@@ -56,6 +56,13 @@ option as `--opt=value`, never as a bare argument. Git's own commands are not un
 `git commit --file -` reads stdin, `git stash push --message` does not, and `git switch --create`
 needs the name attached because `switch` accepts only one reference after `--`. Either shape keeps the
 text one element of the argument vector.
+
+The exception is `GIT_SEQUENCE_EDITOR`, which drives interactive rebase. Git runs every editor
+through `sh -c`, so that variable is shell source whether hideGit likes it or not. It holds a
+**constant string literal**, and the rebase plan reaches it as *data* in a second environment
+variable the shell expands as a value. Nothing from the repository is ever concatenated into shell
+code. See [ADR-0007](./docs/adr/0007-rebase-plan-through-the-environment.md); if you find yourself
+building that string with `format!`, you are undoing the decision.
 
 `--` is not the separator to reach for everywhere. It means *paths follow*, so on a command that
 takes revisions and no paths it changes the request: `git reset --hard -- HEAD~1` asks to reset a
