@@ -25,6 +25,7 @@ pub mod widget {
     pub mod graph;
     pub mod overlay;
     pub mod pr;
+    pub mod resolver;
     pub mod sidebar;
     pub mod staging;
 }

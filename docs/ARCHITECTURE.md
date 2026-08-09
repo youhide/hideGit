@@ -219,6 +219,7 @@ helper wraps every invocation and enforces:
 |---|---|
 | Arguments passed as a vector; **no shell is ever spawned** | Metacharacters in a branch name or path are never interpreted |
 | `--` before operands wherever Git accepts it | A ref or path starting with `-` cannot be absorbed as a flag |
+| `--end-of-options` instead, on commands that take revisions and no paths | On those, `--` means *paths follow*, which is a different and wrong request |
 | `GIT_TERMINAL_PROMPT=0` | A subprocess blocking on a hidden prompt is an app that appears to hang |
 | `GIT_OPTIONAL_LOCKS=0` for read-adjacent commands | Background invocations never contend for `index.lock` |
 | `LC_ALL=C` | Git's output does not shift under the user's locale |
@@ -233,6 +234,14 @@ That last row has two shapes because Git's own commands do. `git commit --file -
 the literal message — and `git switch --create` needs its name attached because `switch` accepts
 exactly one reference after `--`. Either way the text is one element of the argument vector and can
 never be reinterpreted.
+
+The two separator rows differ for the same reason. `--` is Git's *options from paths* marker, and
+on a command with no paths to separate it changes what is being asked: `git reset --hard -- HEAD~1`
+requests a path-scoped reset and fails with "Cannot do hard reset with paths", and
+`git rev-parse --end-of-options side` without `--verify` prints the marker back as though it were a
+revision. `--end-of-options` ends flag parsing and says nothing about paths, so it is what `reset`,
+`rev-parse` and `rev-list` get; `merge`, `cherry-pick` and `revert` accept `--` and keep it. Which
+marker a command wants is not derivable from its signature — it was found by running each one.
 
 ### Long-running commands
 

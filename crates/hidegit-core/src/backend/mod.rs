@@ -32,13 +32,13 @@ use std::path::Path;
 
 use crate::error::GitError;
 use crate::model::{
-    Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, Refs,
-    Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
+    Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, ReflogEntry,
+    Refs, Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
 };
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
     MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome, PushSpec, RebasePlan,
-    SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
+    ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
 };
 
 /// Everything hideGit can ask of a repository.
@@ -204,14 +204,46 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
 
     fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError>;
 
-    /// Lands in M5.
+    /// Merges `from` into the current branch.
+    ///
+    /// A conflict is a [`MergeOutcome`], not a `GitError`: it is what the user
+    /// asked for arriving in the state that needs resolving, and it routes to
+    /// the conflict UI rather than to an error dialog.
     fn merge(&self, from: &str, opts: &MergeOpts) -> Result<MergeOutcome, GitError>;
 
     /// Lands in M5.
     fn rebase(&self, onto: &str, plan: &RebasePlan) -> Result<SequenceOutcome, GitError>;
 
-    /// Lands in M5.
+    /// Applies each of `ids` on top of the current branch, in the order given.
     fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError>;
+
+    /// Applies the inverse of each of `ids`, in the order given.
+    ///
+    /// Separate from [`GitBackend::cherry_pick`] despite the near-identical
+    /// shape: the two differ in which commit the user is reasoning about, and
+    /// folding them into one method with a direction flag would put that
+    /// distinction in a boolean at every call site.
+    fn revert(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError>;
+
+    /// Moves `HEAD` to `target`, taking the index and working tree with it as
+    /// far as `mode` says.
+    fn reset(&self, target: &StartPoint, mode: ResetMode) -> Result<(), GitError>;
+
+    /// Continues, aborts or skips the operation currently in progress.
+    ///
+    /// Which `git` command this runs depends on [`RepoState`], because Git has
+    /// no single verb for it: a merge in progress is continued by
+    /// `git merge --continue` and a rebase by `git rebase --continue`. Reading
+    /// the state here rather than asking the caller to pass it means the UI
+    /// cannot get the pairing wrong.
+    fn control_sequence(&self, control: SequenceControl) -> Result<SequenceOutcome, GitError>;
+
+    /// The reflog for `ref_name`, most recent entry first.
+    ///
+    /// This is what makes the destructive operations in this milestone
+    /// recoverable, so it is part of the milestone rather than a later
+    /// convenience.
+    fn reflog(&self, ref_name: &str, limit: usize) -> Result<Vec<ReflogEntry>, GitError>;
 }
 
 /// Builds the error returned by a method whose milestone has not landed.

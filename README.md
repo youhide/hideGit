@@ -13,14 +13,16 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 > scroll its history, read any commit's diff, stage by file, by hunk or by individual line, commit,
 > branch, stash, and fetch, pull and push — with progress you can watch and cancel. Sign in to
 > GitHub and open pull requests appear in the sidebar with their review and CI state, with desktop
-> notifications when one of them changes. History rewriting is what is missing: merge, rebase,
-> cherry-pick and the conflict resolution UI arrive in
-> [M5](./docs/ROADMAP.md#m5--history-operations).
+> notifications when one of them changes. History rewriting works too: merge, rebase, cherry-pick,
+> revert and reset, with a three-pane conflict resolver — a rebase that conflicts on three separate
+> commits can be finished without opening a terminal.
 >
-> Two caveats worth knowing before you rely on it. Pushing over SSH with a passphrase, or over HTTPS
-> with a credential helper, has not been verified — it should work, since hideGit hands those
-> operations to your own `git`, but every remote in the test suite is a local path. And on macOS,
-> notifications are attributed to whatever binary sent them, so run the bundle from
+> Three caveats worth knowing before you rely on it. **Interactive rebase — reorder, squash, fixup,
+> drop — is not reachable from the interface yet**; the machinery is there and the plan editor that
+> drives it is [M6](./docs/ROADMAP.md#m6--polish--release). Pushing over SSH with a passphrase, or
+> over HTTPS with a credential helper, has not been verified — it should work, since hideGit hands
+> those operations to your own `git`, but every remote in the test suite is a local path. And on
+> macOS, notifications are attributed to whatever binary sent them, so run the bundle from
 > `cargo run -p xtask -- bundle-macos` rather than `cargo run` if you want them to say hideGit.
 >
 > See [ROADMAP](./docs/ROADMAP.md) for what ships when, and
@@ -56,8 +58,8 @@ refused rather than being retried with `--force`.
 | ✅ | Stage / unstage by file, hunk and line, discard, commit, amend | [M2](./docs/ROADMAP.md#m2--working-directory) |
 | ✅ | Clone, branches, tags, stash, remotes, fetch / pull / push with progress | [M3](./docs/ROADMAP.md#m3--branches--remotes) |
 | ✅ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
-| ⬜ | Merge, rebase, cherry-pick, revert, conflict resolution UI | [M5](./docs/ROADMAP.md#m5--history-operations) |
-| ⬜ | Themes, keyboard navigation, multi-repo tabs, installers | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| ✅ | Merge, rebase, cherry-pick, revert, reset, conflict resolution UI | [M5](./docs/ROADMAP.md#m5--history-operations) |
+| ⬜ | Interactive rebase editor, drag-and-drop, themes, keyboard navigation, installers | [M6](./docs/ROADMAP.md#m6--polish--release) |
 | ⬜ | GitLab & Bitbucket, submodules, worktrees, LFS, PT-BR translation | [Post-1.0](./docs/ROADMAP.md#post-10) |
 
 Legend: ⬜ planned · 🟡 in progress · ✅ shipped

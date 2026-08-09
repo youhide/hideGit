@@ -359,7 +359,19 @@ fn local_branch_row<'a>(
         label = label.push(text(drift).size(HEADING_SIZE).color(palette.muted));
     }
 
-    let sheet = branch_sheet(branch, index, is_head, repo.refs.locals.len());
+    // A detached HEAD has no branch to merge *into*, so those two actions are
+    // absent rather than pointing at nothing.
+    let head_name = match &repo.head {
+        hidegit_core::model::Head::Branch { name, .. } => Some(name.short.clone()),
+        _ => None,
+    };
+    let sheet = branch_sheet(
+        branch,
+        index,
+        is_head,
+        repo.refs.locals.len(),
+        head_name.as_deref(),
+    );
 
     row![
         button(container(label).padding(Padding::from([3, 12])))
@@ -405,7 +417,16 @@ fn divergence_label(divergence: Option<Divergence>) -> Option<String> {
 ///
 /// Takes what it needs rather than the whole repository, so the rules about which
 /// actions are offered can be exercised without building one.
-fn branch_sheet(branch: &Branch, index: usize, is_head: bool, local_count: usize) -> ActionSheet {
+/// `head_name` is the branch `HEAD` is on, if it is on one. A detached `HEAD`
+/// has no branch to merge *into*, so those actions are absent rather than
+/// pointing at nothing.
+fn branch_sheet(
+    branch: &Branch,
+    index: usize,
+    is_head: bool,
+    local_count: usize,
+    head_name: Option<&str>,
+) -> ActionSheet {
     let name = branch.name.short.clone();
     let mut sheet = ActionSheet::new(name.clone());
 
@@ -438,6 +459,21 @@ fn branch_sheet(branch: &Branch, index: usize, is_head: bool, local_count: usize
             fields: vec![PromptField::prefilled("New name", name.clone())],
         })),
     );
+
+    // Merging or rebasing a branch onto itself is a no-op Git would refuse, so
+    // neither is offered on the branch you are standing on. Both name the
+    // current branch, because "Merge" alone leaves the direction to be guessed
+    // and getting the direction wrong is the classic way to ruin an afternoon.
+    if !is_head && let Some(head) = head_name {
+        sheet = sheet.item(
+            format!("Merge {name} into {head}"),
+            Message::Repo(index, RepoMessage::MergeRequested(name.clone())),
+        );
+        sheet = sheet.item(
+            format!("Rebase {head} onto {name}…"),
+            Message::Repo(index, RepoMessage::RebaseRequested(name.clone())),
+        );
+    }
 
     // Deleting the branch you are standing on is something Git refuses, so it is
     // not offered either. Nor is deleting the only branch there is.
@@ -869,12 +905,63 @@ mod tests {
     }
 
     #[test]
+    fn merge_and_rebase_name_both_branches() {
+        // "Merge" alone leaves the direction to be guessed, and guessing the
+        // direction wrong is the classic way to ruin an afternoon.
+        let other = branch("feature", None);
+        let sheet = branch_sheet(&other, 0, false, 2, Some("main"));
+        let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
+
+        assert!(
+            labels.contains(&"Merge feature into main"),
+            "got {labels:?}"
+        );
+        assert!(
+            labels.contains(&"Rebase main onto feature…"),
+            "got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn the_current_branch_offers_neither_merge_nor_rebase() {
+        // Both would be a no-op Git refuses.
+        let head = branch("main", None);
+        let sheet = branch_sheet(&head, 0, true, 2, Some("main"));
+        let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
+
+        assert!(
+            !labels.iter().any(|l| l.starts_with("Merge")),
+            "got {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l.starts_with("Rebase")),
+            "got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn a_detached_head_has_no_branch_to_merge_into() {
+        let other = branch("feature", None);
+        let sheet = branch_sheet(&other, 0, false, 2, None);
+        let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
+
+        assert!(
+            !labels.iter().any(|l| l.starts_with("Merge")),
+            "got {labels:?}"
+        );
+        assert!(
+            !labels.iter().any(|l| l.starts_with("Rebase")),
+            "got {labels:?}"
+        );
+    }
+
+    #[test]
     fn a_sheet_does_not_offer_actions_that_would_be_refused() {
         // Checking out the branch you are already on is a no-op, and deleting it
         // is something Git refuses outright. An action that cannot work is worse
         // than an absent one.
         let head = branch("main", Some("refs/remotes/origin/main"));
-        let sheet = branch_sheet(&head, 0, true, 2);
+        let sheet = branch_sheet(&head, 0, true, 2, Some("main"));
         let offered = labels(&sheet);
 
         assert!(!offered.contains(&"Checkout"), "already on it: {offered:?}");
@@ -885,7 +972,7 @@ mod tests {
     #[test]
     fn a_branch_that_is_not_checked_out_offers_everything() {
         let other = branch("feat/graph", None);
-        let sheet = branch_sheet(&other, 0, false, 2);
+        let sheet = branch_sheet(&other, 0, false, 2, Some("main"));
         let offered = labels(&sheet);
 
         assert!(offered.contains(&"Checkout"));
@@ -898,7 +985,7 @@ mod tests {
         // Git refuses to leave a repository with no branches, so the action is
         // not offered rather than offered and then refused.
         let only = branch("main", None);
-        let sheet = branch_sheet(&only, 0, false, 1);
+        let sheet = branch_sheet(&only, 0, false, 1, Some("main"));
         let offered = labels(&sheet);
 
         assert!(!offered.contains(&"Delete"), "got {offered:?}");
@@ -907,7 +994,7 @@ mod tests {
     #[test]
     fn a_deletion_is_marked_destructive_so_it_does_not_look_like_the_rest() {
         let other = branch("feat/graph", None);
-        let sheet = branch_sheet(&other, 0, false, 2);
+        let sheet = branch_sheet(&other, 0, false, 2, Some("main"));
 
         let delete = sheet
             .items

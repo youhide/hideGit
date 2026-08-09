@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::model::Conflict;
+use crate::model::{Conflict, RepoState};
 
 /// Anything that can go wrong reading or writing a repository.
 #[derive(Debug, Error)]
@@ -38,6 +38,21 @@ pub enum GitError {
     /// live process owns corrupts the index.
     #[error("the index is locked by {}", .0.display())]
     IndexLocked(PathBuf),
+
+    /// Continue, abort or skip was asked for with nothing to continue.
+    ///
+    /// Reachable without a bug: the repository is shared with a terminal, so an
+    /// operation the UI still shows as running can have been finished elsewhere
+    /// between the panel rendering and the button being pressed.
+    #[error("there is no operation in progress to continue or abort")]
+    NothingInProgress(RepoState),
+
+    /// Skip was asked for during a merge, which has a single step.
+    ///
+    /// Git's own refusal talks about `git merge` rather than about what the
+    /// user clicked, so this says the useful thing instead.
+    #[error("a merge has a single step, so there is nothing to skip; continue or abort it")]
+    NotSkippable,
 
     #[error(transparent)]
     Auth(#[from] AuthError),

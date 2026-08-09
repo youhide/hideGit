@@ -9,12 +9,15 @@ GUI toolkit, licensed GPL-3.0. Alongside the usual repository operations it prov
 alerts: native desktop notifications for review requests, CI status changes and newly conflicting
 PRs.
 
-**Current status: pre-alpha.** M1, M2 and M3 have landed: the workspace, CI, the `gix` read backend,
-the commit graph, a read-only viewer, the working directory — status, staging by file, hunk and line,
-discard, commit, a filesystem watcher — and everything that touches a remote: clone, branches, tags,
-the stash, named remotes, and fetch, pull and push with progress and cancellation. History rewriting
-is M5 and pull request alerts are M4. Check [ROADMAP.md](./docs/ROADMAP.md) before assuming a feature
-exists, and check the code before referring to a module.
+**Current status: pre-alpha.** M1–M5 have landed: the workspace, CI, the `gix` read backend, the
+commit graph, a read-only viewer, the working directory — status, staging by file, hunk and line,
+discard, commit, a filesystem watcher — everything that touches a remote, pull request alerts over
+GitHub, and history rewriting: merge, rebase, cherry-pick, revert, reset, the reflog and a three-pane
+conflict resolver. Two M5 scope items were deferred to M6 and are named in the roadmap: **drag-and-drop
+on the graph**, and **the interactive rebase plan editor** — the backend takes a full plan but the UI
+only ever sends an empty one, so interactive rebase is not reachable from the interface. Check
+[ROADMAP.md](./docs/ROADMAP.md) before assuming a feature exists, and check the code before referring
+to a module.
 
 ## Read before making architectural changes
 
@@ -45,7 +48,7 @@ It must not depend on `iced`, on `hidegit-forge`, or on an HTTP client. That con
 lets the domain logic be tested without a window and without a token. Code that needs a widget or
 a request belongs in `hidegit-ui` or `hidegit-forge`.
 
-**3. Never build a `git` command as a shell string.**
+**3. Never build a `git` command as a shell string.** One documented exception, below.
 Arguments go in a vector, no shell is spawned, `GIT_TERMINAL_PROMPT=0` is always set, machine
 formats (`--porcelain=v2`, `-z`) are preferred over human output, and `stderr` is surfaced
 to the user verbatim on failure. Branch names, paths and remote URLs come from untrusted
@@ -56,6 +59,20 @@ option as `--opt=value`, never as a bare argument. Git's own commands are not un
 `git commit --file -` reads stdin, `git stash push --message` does not, and `git switch --create`
 needs the name attached because `switch` accepts only one reference after `--`. Either shape keeps the
 text one element of the argument vector.
+
+The exception is `GIT_SEQUENCE_EDITOR`, which drives interactive rebase. Git runs every editor
+through `sh -c`, so that variable is shell source whether hideGit likes it or not. It holds a
+**constant string literal**, and the rebase plan reaches it as *data* in a second environment
+variable the shell expands as a value. Nothing from the repository is ever concatenated into shell
+code. See [ADR-0007](./docs/adr/0007-rebase-plan-through-the-environment.md); if you find yourself
+building that string with `format!`, you are undoing the decision.
+
+`--` is not the separator to reach for everywhere. It means *paths follow*, so on a command that
+takes revisions and no paths it changes the request: `git reset --hard -- HEAD~1` asks to reset a
+path named `HEAD~1`. Use `GitCommand::revisions`, which emits `--end-of-options`, for `reset`,
+`rev-parse` and `rev-list`; `GitCommand::operands`, which emits `--`, for everything that takes
+paths or refs — `merge`, `cherry-pick`, `revert`, `switch`. When adding a command, run it before
+assuming which one it takes.
 
 Three places read *human* output deliberately: `--progress` on stderr, which has no machine form, and
 the fetch and push summaries. The push case is a documented exception to preferring machine formats —

@@ -791,32 +791,11 @@ fn operations_from_later_milestones_say_which_milestone_they_land_in() {
     // The whole write surface is declared from M1 so the read/write split stays
     // auditable in one file, and a method whose milestone has not landed says so
     // rather than being absent. These are the ones that have not.
-    let unimplemented: Vec<(Result<(), GitError>, &str, &str)> = vec![
-        (
-            backend.blame(Path::new("A.txt"), repo.id("A")).map(|_| ()),
-            "blame",
-            "M6",
-        ),
-        (
-            backend
-                .merge("main", &hidegit_core::ops::MergeOpts::default())
-                .map(|_| ()),
-            "merge",
-            "M5",
-        ),
-        (
-            backend
-                .rebase("main", &hidegit_core::ops::RebasePlan::default())
-                .map(|_| ()),
-            "rebase",
-            "M5",
-        ),
-        (
-            backend.cherry_pick(&[repo.id("A")]).map(|_| ()),
-            "cherry-pick",
-            "M5",
-        ),
-    ];
+    let unimplemented: Vec<(Result<(), GitError>, &str, &str)> = vec![(
+        backend.blame(Path::new("A.txt"), repo.id("A")).map(|_| ()),
+        "blame",
+        "M6",
+    )];
 
     for (result, expected_operation, expected_milestone) in unimplemented {
         match result {

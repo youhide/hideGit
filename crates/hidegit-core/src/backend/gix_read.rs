@@ -16,8 +16,8 @@ use crate::error::GitError;
 use crate::model::{
     Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
     DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind,
-    ObjectId, RefKind, RefName, Refs, Remote, RepoState, RevSpec, Signature, StashEntry, Tag,
-    WorktreeStatus,
+    ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState, RevSpec, Signature,
+    StashEntry, Tag, WorktreeStatus,
 };
 
 /// Files past this size get a placeholder instead of a diff.
@@ -358,6 +358,78 @@ pub(crate) fn stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, GitErro
             // borrowed kind a commit hands out.
             time: to_time(line.signature.time),
             branch,
+        });
+    }
+
+    Ok(out)
+}
+
+/// How many parents `id` has.
+///
+/// Deliberately not [`commit_detail`], which computes a full tree diff: telling
+/// a fast-forward from a merge commit needs one field of the commit header, and
+/// paying for a diff to read it would make every merge slower for nothing.
+pub(crate) fn parent_count(repo: &gix::Repository, id: ObjectId) -> Result<usize, GitError> {
+    let commit = repo
+        .find_commit(to_gix_id(id))
+        .map_err(|e| GitError::gix("reading a commit to count its parents", e))?;
+    Ok(commit.parent_ids().count())
+}
+
+/// Reads up to `limit` reflog entries for `ref_name`, most recent first.
+///
+/// A reference with no log is not an error — a branch created by a tool that
+/// does not write one, or a repository with `core.logAllRefUpdates` off, simply
+/// has nothing to show — so it comes back empty rather than failing.
+pub(crate) fn reflog(
+    repo: &gix::Repository,
+    ref_name: &str,
+    limit: usize,
+) -> Result<Vec<ReflogEntry>, GitError> {
+    let Some(reference) = repo
+        .try_find_reference(ref_name)
+        .map_err(|e| GitError::gix("looking for a reference to read its reflog", e))?
+    else {
+        return Err(GitError::RefNotFound(ref_name.to_owned()));
+    };
+
+    let mut platform = reference.log_iter();
+    // Newest first, which is the order `HEAD@{0}` means and the order the view
+    // shows: the entry you want after a mistake is almost always the last one.
+    let Some(entries) = platform
+        .rev()
+        .map_err(|e| GitError::gix("reading a reflog", e))?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::new();
+    for (index, entry) in entries.enumerate() {
+        if out.len() >= limit {
+            break;
+        }
+        let line = match entry {
+            Ok(line) => line,
+            // One unreadable entry must not blank the whole log — the entries
+            // around it are still what makes a mistake recoverable.
+            Err(e) => {
+                tracing::warn!(error = %e, index, ref_name, "skipping unreadable reflog entry");
+                continue;
+            }
+        };
+
+        out.push(ReflogEntry {
+            index,
+            old_id: to_id(&line.previous_oid),
+            new_id: to_id(&line.new_oid),
+            who: Signature {
+                name: line.signature.name.to_str_lossy().trim().to_owned(),
+                email: line.signature.email.to_str_lossy().trim().to_owned(),
+                // An owned reflog signature carries its time directly, unlike
+                // the borrowed kind a commit hands out.
+                time: to_time(line.signature.time),
+            },
+            message: line.message.to_str_lossy().trim().to_owned(),
         });
     }
 
