@@ -101,22 +101,53 @@ fn commit<'a>(
         weight: iced::font::Weight::Semibold,
         ..Font::DEFAULT
     }));
-    header = header.push(
-        row![
-            text(c.id.short(10))
-                .size(12.0)
-                .font(Font::MONOSPACE)
-                .color(palette.muted),
-            text("·").size(12.0).color(palette.muted),
-            text(c.author.name.clone()).size(12.0).color(palette.muted),
-            text("·").size(12.0).color(palette.muted),
-            text(format::timestamp(c.time))
-                .size(12.0)
-                .color(palette.muted),
-        ]
-        .spacing(8)
-        .align_y(Center),
-    );
+    let mut identity = row![
+        text(c.id.short(10))
+            .size(12.0)
+            .font(Font::MONOSPACE)
+            .color(palette.muted),
+        text("·").size(12.0).color(palette.muted),
+        text(c.author.name.clone()).size(12.0).color(palette.muted),
+        text("·").size(12.0).color(palette.muted),
+        text(format::timestamp(c.time))
+            .size(12.0)
+            .color(palette.muted),
+    ]
+    .spacing(8)
+    .align_y(Center);
+
+    // A stash is a commit, but cherry-picking or resetting to one is not what
+    // anybody means by acting on a stash — the stash rows carry apply, pop and
+    // drop, and offering these here as well would be two vocabularies for the
+    // same object.
+    if stash.is_none() {
+        let id = c.id;
+        let muted = palette.muted;
+        let surface = palette.surface;
+        identity = identity.push(Space::new().width(Fill));
+        identity = identity.push(
+            button(text("⋯").size(12.0).color(muted))
+                .padding([1, 6])
+                .style(move |_, status| button::Style {
+                    background: Some(
+                        match status {
+                            button::Status::Hovered => surface,
+                            _ => iced::Color::TRANSPARENT,
+                        }
+                        .into(),
+                    ),
+                    text_color: muted,
+                    border: iced::Border {
+                        radius: 3.0.into(),
+                        ..iced::Border::default()
+                    },
+                    ..button::Style::default()
+                })
+                .on_press(RepoMessage::CommitActionsRequested(id)),
+        );
+    }
+
+    header = header.push(identity);
     header = header.spacing(6);
 
     // Author and committer differ after a rebase or an applied patch, and that

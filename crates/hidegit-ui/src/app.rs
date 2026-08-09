@@ -13,9 +13,9 @@ use hidegit_core::conflict::Resolution;
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RepoState, RevSpec};
 use hidegit_core::ops::{
-    CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, Patch, ProgressSink,
-    ProgressUpdate, PullOpts, PullOutcome, PushSpec, SequenceControl, SequenceOutcome, StashOp,
-    TagSpec,
+    CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, MergeOpts, Patch, ProgressSink,
+    ProgressUpdate, PullOpts, PullOutcome, PushSpec, RebasePlan, ResetMode, SequenceControl,
+    SequenceOutcome, StartPoint, StashOp, TagSpec,
 };
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
@@ -1434,6 +1434,113 @@ impl Hidegit {
                 write_task(index, move || backend.stash(&StashOp::Drop(at)).map(|_| ()))
             }
 
+            // ---- history operations ----
+            RepoMessage::CommitActionsRequested(id) => {
+                // Every one of these moves or rewrites history, and none of them
+                // is legal while an operation already owns HEAD.
+                if repo.state.is_in_progress() {
+                    return Task::none();
+                }
+                self.app.sheet = Some(commit_sheet(index, id));
+                Task::none()
+            }
+
+            RepoMessage::MergeRequested(from) => {
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || backend.merge(&from, &MergeOpts::default()))
+                    .map(move |r| Message::Repo(index, RepoMessage::MergeFinished(Box::new(r))))
+            }
+
+            RepoMessage::MergeFinished(result) => match *result {
+                Ok(_) => {
+                    // A conflict is reported by the refreshed state — the banner
+                    // and the conflicted list — rather than by a toast, because
+                    // the next thing to do is on screen, not in a message.
+                    Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                }
+                Err(error) => {
+                    self.app.toast(&error);
+                    Task::none()
+                }
+            },
+
+            RepoMessage::RebaseRequested(onto) => {
+                self.app.confirming = Some(Confirmation {
+                    title: format!("Rebase onto {onto}?"),
+                    body: format!(
+                        "Every commit on this branch that is not already on {onto} is rewritten \
+                         with a new id. If the branch is pushed, the next push has to be forced."
+                    ),
+                    confirm_label: "Rebase".to_owned(),
+                    action: Box::new(Message::Repo(index, RepoMessage::RebaseConfirmed(onto))),
+                });
+                Task::none()
+            }
+
+            RepoMessage::RebaseConfirmed(onto) => {
+                let backend = Arc::clone(&repo.backend);
+                // An empty plan is an ordinary rebase. The plan editor is what
+                // fills one in, and it is not built yet.
+                blocking(move || backend.rebase(&onto, &RebasePlan::default()))
+                    .map(move |r| Message::Repo(index, RepoMessage::SequenceFinished(Box::new(r))))
+            }
+
+            RepoMessage::CherryPickRequested(id) => {
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || backend.cherry_pick(&[id]))
+                    .map(move |r| Message::Repo(index, RepoMessage::SequenceFinished(Box::new(r))))
+            }
+
+            RepoMessage::RevertRequested(id) => {
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || backend.revert(&[id]))
+                    .map(move |r| Message::Repo(index, RepoMessage::SequenceFinished(Box::new(r))))
+            }
+
+            RepoMessage::ResetRequested { to, mode } => {
+                // Only a hard reset destroys anything. Confirming the other two
+                // would teach people to click through the warning that matters.
+                if !mode.is_destructive() {
+                    return Task::done(Message::Repo(
+                        index,
+                        RepoMessage::ResetConfirmed { to, mode },
+                    ));
+                }
+
+                let changes = repo.status.change_count();
+                self.app.confirming = Some(Confirmation {
+                    title: format!("Hard reset to {}?", to.short(7)),
+                    body: if changes == 0 {
+                        "Commits after this one are left with no branch pointing at them. The \
+                         reflog can still reach them."
+                            .to_owned()
+                    } else {
+                        // Naming the count is the difference between a warning
+                        // and a warning someone reads.
+                        format!(
+                            "{changes} uncommitted {} discarded, with nothing to undo it. Commits \
+                             after this one stay reachable through the reflog.",
+                            if changes == 1 {
+                                "change is"
+                            } else {
+                                "changes are"
+                            },
+                        )
+                    },
+                    confirm_label: "Hard reset".to_owned(),
+                    action: Box::new(Message::Repo(
+                        index,
+                        RepoMessage::ResetConfirmed { to, mode },
+                    )),
+                });
+                Task::none()
+            }
+
+            RepoMessage::ResetConfirmed { to, mode } => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.reset(&StartPoint::Commit(to), mode))
+            }
+
             // ---- the conflict resolver ----
             RepoMessage::ConflictOpenRequested(path) => {
                 // Already open on this file: reopening would throw away every
@@ -2394,6 +2501,56 @@ fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError>
 /// Every write reports the same way: nothing on success, because the refresh
 /// that follows says more than a toast could, and the error verbatim on
 /// failure — Git's own stderr is better than any paraphrase of it.
+/// What can be done to one commit.
+///
+/// Built here rather than in the detail widget because a sheet is an
+/// application-level [`Message`] and the detail pane speaks [`RepoMessage`].
+fn commit_sheet(index: usize, id: ObjectId) -> ActionSheet {
+    let short = id.short(7);
+    ActionSheet::new(short.clone())
+        .item(
+            "Cherry-pick onto this branch",
+            Message::Repo(index, RepoMessage::CherryPickRequested(id)),
+        )
+        .item(
+            "Revert",
+            Message::Repo(index, RepoMessage::RevertRequested(id)),
+        )
+        // The three resets are spelled out rather than hidden behind one
+        // "Reset" with a mode picker: the difference between them is the
+        // difference between keeping your work and losing it.
+        .item(
+            format!("Reset to {short}, keeping the changes staged"),
+            Message::Repo(
+                index,
+                RepoMessage::ResetRequested {
+                    to: id,
+                    mode: ResetMode::Soft,
+                },
+            ),
+        )
+        .item(
+            format!("Reset to {short}, keeping the changes"),
+            Message::Repo(
+                index,
+                RepoMessage::ResetRequested {
+                    to: id,
+                    mode: ResetMode::Mixed,
+                },
+            ),
+        )
+        .destructive(
+            format!("Reset to {short}, discarding the changes"),
+            Message::Repo(
+                index,
+                RepoMessage::ResetRequested {
+                    to: id,
+                    mode: ResetMode::Hard,
+                },
+            ),
+        )
+}
+
 /// Splits text into lines that keep their own terminators.
 ///
 /// The counterpart to what `hidegit_core::conflict` does when it parses, so a
@@ -2625,6 +2782,110 @@ mod tests {
         let mut app = Hidegit::default();
         let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened(count)))));
         app
+    }
+
+    #[test]
+    fn a_hard_reset_names_what_it_will_destroy() {
+        let mut app = app_with(3);
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.status = dirty();
+        }
+        let id = app.app.active_repo().unwrap().graph.commits[1].id;
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ResetRequested {
+                to: id,
+                mode: ResetMode::Hard,
+            },
+        ));
+
+        let confirming = app.app.confirming.as_ref().expect("a hard reset confirms");
+        // A warning that counts what is at stake is one people read.
+        assert!(
+            confirming.body.contains('3'),
+            "it names how much is at stake, got {:?}",
+            confirming.body
+        );
+        assert_eq!(confirming.confirm_label, "Hard reset");
+    }
+
+    #[test]
+    fn the_gentler_resets_do_not_confirm() {
+        // Confirming a soft reset would teach people to click through the
+        // warning that matters.
+        for mode in [ResetMode::Soft, ResetMode::Mixed] {
+            let mut app = app_with(3);
+            let id = app.app.active_repo().unwrap().graph.commits[1].id;
+
+            let _ = app.update(Message::Repo(
+                0,
+                RepoMessage::ResetRequested { to: id, mode },
+            ));
+
+            assert!(
+                app.app.confirming.is_none(),
+                "{mode:?} keeps the work as changes and needs no warning"
+            );
+        }
+    }
+
+    #[test]
+    fn rebasing_confirms_because_it_rewrites_history() {
+        let mut app = app_with(3);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::RebaseRequested("main".to_owned()),
+        ));
+
+        let confirming = app.app.confirming.as_ref().expect("a rebase confirms");
+        assert!(
+            confirming.body.contains("new id"),
+            "it says the commits are rewritten, got {:?}",
+            confirming.body
+        );
+    }
+
+    #[test]
+    fn a_commit_mid_operation_offers_no_history_actions() {
+        // A merge or rebase owns HEAD until it is finished or aborted, and every
+        // action on the sheet moves it.
+        let mut app = app_with(3);
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.state = RepoState::Merging;
+        }
+        let id = app.app.active_repo().unwrap().graph.commits[0].id;
+
+        let _ = app.update(Message::Repo(0, RepoMessage::CommitActionsRequested(id)));
+
+        assert!(app.app.sheet.is_none());
+    }
+
+    #[test]
+    fn the_commit_sheet_spells_the_three_resets_out() {
+        let mut app = app_with(3);
+        let id = app.app.active_repo().unwrap().graph.commits[0].id;
+
+        let _ = app.update(Message::Repo(0, RepoMessage::CommitActionsRequested(id)));
+
+        let sheet = app.app.sheet.as_ref().expect("the sheet opens");
+        let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
+
+        assert!(labels.iter().any(|l| l.starts_with("Cherry-pick")));
+        assert!(labels.contains(&"Revert"));
+        // Three separate entries, not one "Reset" behind a mode picker: the
+        // difference between them is the difference between keeping your work
+        // and losing it.
+        assert_eq!(
+            labels.iter().filter(|l| l.starts_with("Reset")).count(),
+            3,
+            "got {labels:?}"
+        );
+        // And only the destroying one is marked destructive.
+        assert_eq!(sheet.items.iter().filter(|i| i.destructive).count(), 1);
     }
 
     /// A repository stopped mid-merge with one conflicted path.

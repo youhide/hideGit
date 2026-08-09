@@ -16,8 +16,8 @@ use hidegit_core::model::{
     WorktreeStatus,
 };
 use hidegit_core::ops::{
-    CheckoutTarget, FetchOutcome, ForceMode, ProgressUpdate, PullOutcome, PushOutcome,
-    SequenceControl, SequenceOutcome, StartPoint, StashOp,
+    CheckoutTarget, FetchOutcome, ForceMode, MergeOutcome, ProgressUpdate, PullOutcome,
+    PushOutcome, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
 use hidegit_forge::{
@@ -318,6 +318,35 @@ pub enum RepoMessage {
     StashDropRequested(usize),
     /// The confirmation was accepted. Only ever sent by the dialog.
     StashDropConfirmed(usize),
+
+    // ---- history operations ----
+    /// The `⋯` on a commit. `update` builds the sheet, because a sheet is an
+    /// application-level `Message` and the detail pane speaks `RepoMessage`.
+    CommitActionsRequested(ObjectId),
+    /// Merge a branch into the current one.
+    ///
+    /// Not confirmed: a merge adds a commit and can be undone by resetting, and
+    /// the outcome — including a conflict — is reported rather than assumed.
+    MergeRequested(String),
+    MergeFinished(Box<Result<MergeOutcome, UiError>>),
+    /// Asks to rebase the current branch onto `onto`, which confirms first:
+    /// rebasing rewrites every commit it moves.
+    RebaseRequested(String),
+    /// The confirmation was accepted. Only ever sent by the dialog.
+    RebaseConfirmed(String),
+    CherryPickRequested(ObjectId),
+    RevertRequested(ObjectId),
+    /// Asks to reset. A hard reset confirms first; the other two do not, because
+    /// they keep the work as changes.
+    ResetRequested {
+        to: ObjectId,
+        mode: ResetMode,
+    },
+    /// The confirmation was accepted. Only ever sent by the dialog.
+    ResetConfirmed {
+        to: ObjectId,
+        mode: ResetMode,
+    },
 
     // ---- the conflict resolver ----
     /// A conflicted file was opened. The file is read and parsed off the UI
