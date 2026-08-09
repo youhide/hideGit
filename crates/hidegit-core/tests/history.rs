@@ -929,3 +929,162 @@ fn a_commit_subject_never_reaches_the_sequence_editor() {
         "the subject survives unchanged, having never been interpreted"
     );
 }
+
+// --- the milestone's own bar ---------------------------------------------------
+
+/// Resolves every conflicted path with `choice`, then stages them.
+///
+/// What the resolver does, without the window: parse the markers, choose a
+/// side, write the file back, stage it.
+///
+/// Which side to pass is not obvious during a rebase, and getting it wrong is
+/// how this helper was written the first time. Git replays your commits *onto*
+/// the upstream, so `ours` is the branch being rebased onto and `theirs` is the
+/// commit being replayed — the reverse of what "ours" means during a merge.
+/// Taking `ours` through a rebase therefore discards every commit it moves.
+fn resolve_all(backend: &impl GitBackend, path: &std::path::Path, choice: Resolution) -> usize {
+    let conflicts = backend.status().expect("status reads").conflicted;
+    for conflict in &conflicts {
+        let full = path.join(&conflict.path);
+        let content = std::fs::read_to_string(&full).expect("the conflicted file reads");
+        let file = hidegit_core::conflict::parse(&content).expect("Git's markers parse");
+        let choices = vec![choice.clone(); file.conflict_count()];
+        std::fs::write(&full, file.render(&choices)).expect("the write succeeds");
+        backend
+            .stage(&[conflict.path.as_path()])
+            .expect("staging the resolution succeeds");
+    }
+    conflicts.len()
+}
+
+#[test]
+fn a_rebase_conflicting_on_three_commits_can_be_finished_here() {
+    // M5's acceptance bar, as ROADMAP.md states it. Three commits that each
+    // touch the same line, rebased onto a branch that also touched it, so the
+    // rebase stops three separate times.
+    // Each side commit changes a different file, and main changed all three, so
+    // every replayed commit conflicts on its own. Three commits against the
+    // *same* file do not do this: resolving the first leaves exactly the
+    // content the second expects, and the rest apply cleanly.
+    let repo = fixture()
+        .commit("base")
+        .edit("a.txt", "base a\n", "base a")
+        .edit("b.txt", "base b\n", "base b")
+        .edit("c.txt", "base c\n", "base c")
+        .branch("side")
+        .checkout("side")
+        .edit("a.txt", "side a\n", "side one")
+        .edit("b.txt", "side b\n", "side two")
+        .edit("c.txt", "side c\n", "side three")
+        .checkout("main")
+        .edit("a.txt", "main a\n", "main moved a")
+        .edit("b.txt", "main b\n", "main moved b")
+        .edit("c.txt", "main c\n", "main moved c")
+        .checkout("side")
+        .build();
+    let backend = repo.backend();
+
+    let mut outcome = backend
+        .rebase("main", &RebasePlan::default())
+        .expect("the rebase starts");
+
+    let mut stops = 0;
+    while let SequenceOutcome::Stopped { .. } = outcome {
+        stops += 1;
+        assert!(stops <= 5, "the rebase is not converging");
+        assert_eq!(
+            backend.repo_state().expect("state reads"),
+            RepoState::Rebasing
+        );
+
+        // `Theirs` is the commit being replayed, which is what keeping your own
+        // work means during a rebase.
+        let resolved = resolve_all(&backend, repo.path(), Resolution::Theirs);
+        assert!(resolved > 0, "a stop with nothing conflicted is a bug");
+
+        outcome = backend
+            .control_sequence(SequenceControl::Continue)
+            .expect("continuing succeeds");
+    }
+
+    assert_eq!(outcome, SequenceOutcome::Completed);
+    assert_eq!(
+        stops, 3,
+        "each of the three commits conflicts on its own, so the rebase stops three times"
+    );
+    assert_eq!(backend.repo_state().expect("state reads"), RepoState::Clean);
+    assert_eq!(
+        subjects(repo.path()),
+        vec![
+            "base",
+            "base a",
+            "base b",
+            "base c",
+            "main moved a",
+            "main moved b",
+            "main moved c",
+            "side one",
+            "side two",
+            "side three",
+        ],
+        "the branch is replayed on top of main with every commit kept"
+    );
+    // And the resolutions are what survived, not main's side.
+    assert_eq!(read(repo.path(), "a.txt"), "side a\n");
+    assert_eq!(read(repo.path(), "b.txt"), "side b\n");
+    assert_eq!(read(repo.path(), "c.txt"), "side c\n");
+}
+
+#[test]
+fn aborting_a_rebase_part_way_restores_exactly_the_prior_state() {
+    // The other half of the bar: aborting *at any point* puts the repository
+    // back exactly as it was. Here that means after resolving one conflict and
+    // stopping on the next, which is the case a plain abort-at-the-start test
+    // would miss.
+    let repo = fixture()
+        .commit("base")
+        .edit("a.txt", "base a\n", "base a")
+        .edit("b.txt", "base b\n", "base b")
+        .branch("side")
+        .checkout("side")
+        .edit("a.txt", "side a\n", "side one")
+        .edit("b.txt", "side b\n", "side two")
+        .checkout("main")
+        .edit("a.txt", "main a\n", "main moved a")
+        .edit("b.txt", "main b\n", "main moved b")
+        .checkout("side")
+        .build();
+    let backend = repo.backend();
+
+    let before_head = head_of(repo.path());
+    let before_subjects = subjects(repo.path());
+    let before_a = read(repo.path(), "a.txt");
+    let before_b = read(repo.path(), "b.txt");
+
+    backend
+        .rebase("main", &RebasePlan::default())
+        .expect("the rebase starts");
+    resolve_all(&backend, repo.path(), Resolution::Theirs);
+    let outcome = backend
+        .control_sequence(SequenceControl::Continue)
+        .expect("continuing succeeds");
+    assert!(
+        matches!(outcome, SequenceOutcome::Stopped { .. }),
+        "the second commit conflicts too, got {outcome:?}"
+    );
+
+    backend
+        .control_sequence(SequenceControl::Abort)
+        .expect("aborting succeeds");
+
+    assert_eq!(backend.repo_state().expect("state reads"), RepoState::Clean);
+    assert_eq!(head_of(repo.path()), before_head);
+    assert_eq!(subjects(repo.path()), before_subjects);
+    assert_eq!(read(repo.path(), "a.txt"), before_a);
+    assert_eq!(read(repo.path(), "b.txt"), before_b);
+    let status = backend.status().expect("status reads");
+    assert!(
+        status.staged.is_empty() && status.unstaged.is_empty() && status.conflicted.is_empty(),
+        "abort leaves nothing behind, got {status:?}"
+    );
+}

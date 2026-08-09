@@ -9,12 +9,15 @@ GUI toolkit, licensed GPL-3.0. Alongside the usual repository operations it prov
 alerts: native desktop notifications for review requests, CI status changes and newly conflicting
 PRs.
 
-**Current status: pre-alpha.** M1, M2 and M3 have landed: the workspace, CI, the `gix` read backend,
-the commit graph, a read-only viewer, the working directory — status, staging by file, hunk and line,
-discard, commit, a filesystem watcher — and everything that touches a remote: clone, branches, tags,
-the stash, named remotes, and fetch, pull and push with progress and cancellation. History rewriting
-is M5 and pull request alerts are M4. Check [ROADMAP.md](./docs/ROADMAP.md) before assuming a feature
-exists, and check the code before referring to a module.
+**Current status: pre-alpha.** M1–M5 have landed: the workspace, CI, the `gix` read backend, the
+commit graph, a read-only viewer, the working directory — status, staging by file, hunk and line,
+discard, commit, a filesystem watcher — everything that touches a remote, pull request alerts over
+GitHub, and history rewriting: merge, rebase, cherry-pick, revert, reset, the reflog and a three-pane
+conflict resolver. Two M5 scope items were deferred to M6 and are named in the roadmap: **drag-and-drop
+on the graph**, and **the interactive rebase plan editor** — the backend takes a full plan but the UI
+only ever sends an empty one, so interactive rebase is not reachable from the interface. Check
+[ROADMAP.md](./docs/ROADMAP.md) before assuming a feature exists, and check the code before referring
+to a module.
 
 ## Read before making architectural changes
 

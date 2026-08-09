@@ -12,7 +12,7 @@ behaviour someone can check, not a feeling of completeness.
 | ✅ | [M2 — Working directory](#m2--working-directory) | Make commits |
 | ✅ | [M3 — Branches & remotes](#m3--branches--remotes) | Daily driver |
 | ✅ | [M4 — Pull request alerts](#m4--pull-request-alerts) | Forge integration |
-| ⬜ | [M5 — History operations](#m5--history-operations) | Stop dropping to a terminal |
+| ✅ | [M5 — History operations](#m5--history-operations) | Stop dropping to a terminal |
 | ⬜ | [M6 — Polish & release](#m6--polish--release) | 1.0 |
 | ⬜ | [Post-1.0](#post-10) | Breadth |
 
@@ -274,6 +274,51 @@ client that cannot finish a conflicted rebase is not one you can start a rebase 
 completed entirely inside hideGit — and aborting at any point restores the repository to exactly
 its prior state.
 
+**Status: the bar is met; two scope items are deferred and named below.** The three-conflict rebase
+is a test rather than a claim — `a_rebase_conflicting_on_three_commits_can_be_finished_here` starts
+it, resolves each stop and finishes, and `aborting_a_rebase_part_way_restores_exactly_the_prior_state`
+aborts *after* one resolution and asserts `HEAD`, the subjects, both files and the whole status came
+back. The same path was driven by hand through the window: merge, conflict, resolve, continue; and
+cherry-pick, conflict, abort.
+
+Three things fell out of building it that the plan did not anticipate.
+
+**`--` is the wrong separator for half of these commands.** It means *paths follow*, so
+`git reset --hard -- HEAD~1` asks to reset a path named `HEAD~1` and fails with "Cannot do hard reset
+with paths"; `git rev-parse` without `--verify` prints the marker back as though it were a revision.
+Commands taking revisions and no paths use `--end-of-options`, which ends flag parsing without making
+that claim. `merge`, `cherry-pick` and `revert` accept `--` and keep it. Which one a command wants is
+not derivable from its signature — each was run to find out. [SECURITY.md](../SECURITY.md) records it,
+because the reflex to reach for `--` everywhere is a security habit producing a correctness bug.
+
+**`ours` and `theirs` are inverted for everything that replays a commit.** A rebase applies your
+commits *onto* the upstream, so Git's `ours` is the branch being rebased onto and `theirs` is your own
+commit. Resolving a rebase by taking "ours" therefore discards every commit it moves, silently — the
+first version of the acceptance test did exactly that and ended with the three commits gone. The
+resolver says so in the operations where it applies rather than swapping the panes, because swapping
+would make hideGit disagree with `git status`, with every tutorial, and with the terminal someone
+drops to when it goes wrong.
+
+**Three commits against the same file do not produce three conflicts.** Resolving the first leaves
+exactly the content the second expects, so the rest apply cleanly and the rebase stops once. The
+acceptance fixture needed a *different* file per commit — which is worth knowing before writing any
+test that counts conflicts.
+
+**Deferred, deliberately, to M6.** Two scope items above are not built, and both are listed there
+rather than quietly dropped:
+
+- **Drag-and-drop on the graph** for merge and rebase. Both operations are reachable — from the branch
+  row's action sheet, naming both branches so the direction cannot be guessed wrong — so this is
+  discoverability rather than capability. It also wants the graph to become a drop target, which is
+  M6's interaction work.
+- **The interactive rebase plan editor.** The backend takes a full plan — reorder, squash, fixup, edit,
+  drop, covered by tests and by [ADR-0007](./adr/0007-rebase-plan-through-the-environment.md) — and the
+  UI only ever sends an empty one, which is an ordinary rebase. The editor is a screen of its own and
+  belongs with M6's keyboard and layout work rather than bolted on here.
+
+  Saying it plainly: **interactive rebase is not usable from the interface yet.** Nothing else in M5
+  is missing.
+
 ---
 
 ## M6 — Polish & release
@@ -284,6 +329,11 @@ Everything between "works" and "someone who does not write Rust can install it".
 
 - Themes: dark and light, both designed rather than inverted; custom theme files
 - Complete keyboard navigation; a discoverable shortcut reference
+- **Drag-and-drop on the graph** for merge and rebase, with a confirmation step — deferred from
+  [M5](#m5--history-operations), where both operations landed as action-sheet entries instead
+- **The interactive rebase plan editor** — reorder, squash, fixup, edit, drop. The backend takes a
+  full plan already; this is the screen that builds one, and until it exists interactive rebase is
+  not reachable from the interface
 - Multi-repository tabs, with per-repository state preserved
 - Settings UI covering everything currently in TOML
 - Search: commits by message, author, hash; file search within a commit

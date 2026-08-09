@@ -61,7 +61,7 @@ pub fn view<'a>(
         .unwrap_or_default();
 
     column![
-        header(resolver, palette),
+        header(resolver, state, palette),
         panes(resolver, region, &chosen, palette),
         action_bar(resolver, &chosen, palette),
         footer(resolver, state, conflicted_paths, palette),
@@ -71,7 +71,11 @@ pub fn view<'a>(
 }
 
 /// The file being resolved, and how much of it is left.
-fn header<'a>(resolver: &'a Resolver, palette: &'a Palette) -> Element<'a, RepoMessage> {
+fn header<'a>(
+    resolver: &'a Resolver,
+    state: RepoState,
+    palette: &'a Palette,
+) -> Element<'a, RepoMessage> {
     let remaining = resolver.remaining();
     let status = if remaining == 0 {
         text("all conflicts resolved")
@@ -83,7 +87,7 @@ fn header<'a>(resolver: &'a Resolver, palette: &'a Palette) -> Element<'a, RepoM
             .color(palette.warning)
     };
 
-    container(
+    let mut stack = column![
         row![
             text(resolver.path.display().to_string())
                 .size(12.0)
@@ -93,10 +97,40 @@ fn header<'a>(resolver: &'a Resolver, palette: &'a Palette) -> Element<'a, RepoM
         ]
         .align_y(Center)
         .spacing(8),
-    )
-    .padding([6, 10])
-    .width(Fill)
-    .into()
+    ]
+    .spacing(3);
+
+    // Rebase, cherry-pick and revert all replay a commit *onto* something, so
+    // Git's `ours` is the thing being replayed onto and `theirs` is the commit
+    // you wrote — the reverse of a merge. This is the single most expensive
+    // confusion in the whole screen: taking "ours" through a rebase discards
+    // every commit it moves, and Git will not warn you.
+    //
+    // Said rather than silently swapped. Swapping the panes would make hideGit
+    // disagree with `git status`, with every tutorial, and with the terminal
+    // the user drops to when something goes wrong.
+    if let Some(note) = inversion_note(state) {
+        stack = stack.push(text(note).size(11.0).color(palette.warning));
+    }
+
+    container(stack).padding([6, 10]).width(Fill).into()
+}
+
+/// The warning about `ours` and `theirs` for operations that replay commits.
+///
+/// `None` for a merge, where the two words mean what everyone expects.
+fn inversion_note(state: RepoState) -> Option<&'static str> {
+    match state {
+        RepoState::Rebasing => Some(
+            "During a rebase, OURS is the branch you are rebasing onto and THEIRS is your \
+             commit being replayed — the reverse of a merge.",
+        ),
+        RepoState::CherryPicking => {
+            Some("OURS is this branch; THEIRS is the commit being cherry-picked onto it.")
+        }
+        RepoState::Reverting => Some("OURS is this branch; THEIRS is the commit being undone."),
+        RepoState::Merging | RepoState::Bisecting | RepoState::Clean => None,
+    }
 }
 
 fn panes<'a>(
@@ -485,5 +519,25 @@ fn danger_style(status: button::Status, palette: &Palette) -> button::Style {
             radius: 3.0.into(),
         },
         ..button::Style::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_replaying_operations_warn_about_ours_and_theirs() {
+        // A merge means what everyone expects, so a note there would be noise
+        // that teaches people to skip the one that matters.
+        assert!(inversion_note(RepoState::Merging).is_none());
+        assert!(inversion_note(RepoState::Clean).is_none());
+
+        // Taking "ours" through a rebase discards every commit it moves, and
+        // Git gives no warning of its own.
+        let rebase = inversion_note(RepoState::Rebasing).expect("a rebase inverts them");
+        assert!(rebase.contains("rebasing onto"), "got {rebase:?}");
+        assert!(inversion_note(RepoState::CherryPicking).is_some());
+        assert!(inversion_note(RepoState::Reverting).is_some());
     }
 }
