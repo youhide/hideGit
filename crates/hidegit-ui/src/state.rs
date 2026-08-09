@@ -16,6 +16,10 @@ use hidegit_core::model::{
 };
 use hidegit_core::ops::{CancelToken, ProgressUpdate, StartPoint};
 use hidegit_core::{GitBackend, LogPage};
+use hidegit_forge::{
+    Activity, Alert, AlertPrefs, DeviceCode, GitHub, Identity, Notifier, PrRole, PullRequest,
+    PullRequestDetail, RepoRef, Schedule, Watcher,
+};
 
 use crate::message::{Message, UiError};
 use crate::theme::Theme;
@@ -88,6 +92,12 @@ pub enum Selection {
     /// stash subcommand takes, and it is what the list is keyed by. The id is
     /// looked up from `stashes` when the diff is loaded.
     Stash(usize),
+    /// A pull request, by number.
+    ///
+    /// The number rather than a position, because the list is reordered by every
+    /// poll and a position would select a different pull request each time one
+    /// is updated.
+    PullRequest(u64),
 }
 
 /// Unified or side-by-side, remembered per user.
@@ -131,7 +141,101 @@ pub enum DetailPane {
         /// mean nothing against a different diff.
         lines: BTreeSet<(usize, usize)>,
     },
+    /// A pull request, read from the forge rather than from the repository.
+    PullRequest(Box<PullRequestDetail>),
     Failed(UiError),
+}
+
+/// The forge session, which is application-wide rather than per repository.
+///
+/// One token signs you in to every repository you have open, so this does not
+/// live on `OpenRepo` — and a second repository from the same host must not
+/// prompt for a second sign-in.
+#[derive(Debug, Default)]
+pub struct ForgeSession {
+    /// Built at boot; `None` only before the first task has run.
+    pub client: Option<Arc<GitHub>>,
+    /// Who the stored token belongs to. `None` means signed out.
+    pub identity: Option<Identity>,
+    /// The device code currently on screen, while the flow waits for it.
+    pub connecting: Option<DeviceCode>,
+    /// Set when there is no OS keychain.
+    ///
+    /// Forge features are disabled rather than downgraded to a file, so the UI
+    /// has to say which of the two it is: "sign in" and "hideGit cannot store a
+    /// token on this machine" call for entirely different next actions.
+    pub no_keychain: bool,
+}
+
+impl ForgeSession {
+    pub fn is_connected(&self) -> bool {
+        self.identity.is_some()
+    }
+}
+
+/// Pull requests for one repository.
+#[derive(Debug, Default)]
+pub struct PrPanel {
+    /// Which forge repository the remotes point at.
+    ///
+    /// `None` when no remote names one — a repository with only a local remote
+    /// has no pull requests to have, which is different from having none.
+    pub repo: Option<RepoRef>,
+    /// The last successful poll's list, kept across a failed one so the panel
+    /// can go stale rather than empty.
+    pub items: Vec<PullRequest>,
+    pub state: PrState,
+    /// When to ask next: the interval, the backoff and the budget.
+    pub schedule: Schedule,
+    /// What was seen last time, so a poll produces *transitions* rather than
+    /// state. Per repository, because the numbers are.
+    pub watcher: Watcher,
+}
+
+impl PrPanel {
+    pub fn find(&self, number: u64) -> Option<&PullRequest> {
+        self.items.iter().find(|pr| pr.number == number)
+    }
+
+    /// The pull requests under each heading, strongest role first.
+    ///
+    /// A pull request appears once, under its strongest role, because listing
+    /// one you wrote *and* were assigned to under two headings would make the
+    /// panel's counts disagree with its contents.
+    pub fn grouped(&self) -> Vec<(PrRole, Vec<&PullRequest>)> {
+        [PrRole::Author, PrRole::Reviewer, PrRole::Assignee]
+            .into_iter()
+            .filter_map(|role| {
+                let items: Vec<&PullRequest> = self
+                    .items
+                    .iter()
+                    .filter(|pr| pr.primary_role() == Some(role))
+                    .collect();
+                (!items.is_empty()).then_some((role, items))
+            })
+            .collect()
+    }
+}
+
+/// What the panel last learned.
+///
+/// The four non-empty states read almost alike in a sidebar and mean entirely
+/// different things, which is why they are distinct rather than a bool and a
+/// list: "not signed in", "signed in but hideGit cannot see this repository",
+/// "nothing open", and "this is what it looked like before the network went".
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum PrState {
+    /// Nothing has been asked for — no forge repository, or not signed in.
+    #[default]
+    Idle,
+    Loading,
+    Loaded,
+    /// Authenticated, but the app is not installed on this repository.
+    NotInstalled {
+        install_url: String,
+    },
+    /// The last poll failed. `items` still holds the previous result.
+    Stale(String),
 }
 
 /// A row in the staging view, identifying which list it came from.
@@ -299,6 +403,12 @@ pub enum PromptKind {
     /// One field: the URL. The destination is chosen with the platform's picker
     /// afterwards, because typing a path is worse than pointing at one.
     Clone,
+    /// One field: the token. Accepted with no repository open, because signing
+    /// in is not something you do to a repository.
+    PersonalAccessToken,
+    /// Two fields: title, then body. The branches are already decided — you
+    /// open a pull request *from* where you are standing.
+    NewPullRequest { head: String, base: String },
 }
 
 impl Prompt {
@@ -534,6 +644,8 @@ pub struct OpenRepo {
     pub hunk: usize,
     /// The commit message being written, and whether it is being amended.
     pub draft: Draft,
+    /// Pull requests for this repository, and what the last poll learned.
+    pub prs: PrPanel,
 }
 
 /// The commit message in progress.
@@ -733,6 +845,16 @@ pub struct App {
     pub sheet: Option<ActionSheet>,
     /// The prompt currently on screen, if any.
     pub prompt: Option<Prompt>,
+    /// The forge session: one token, every open repository.
+    pub forge: ForgeSession,
+    /// Where a notification goes. A trait object because nothing in CI can
+    /// receive one, so everything that *decides* to notify is tested against a
+    /// recorder instead.
+    pub notifier: Arc<dyn Notifier>,
+    /// Whether the window has focus. Half of what decides the poll interval.
+    pub focused: bool,
+    /// Which alerts to send, and when not to.
+    pub alerts: AlertPrefs,
     next_toast_id: u64,
 }
 
@@ -748,6 +870,13 @@ impl Default for App {
             confirming: None,
             sheet: None,
             prompt: None,
+            forge: ForgeSession::default(),
+            notifier: Arc::new(hidegit_forge::Desktop),
+            // Assumed focused until told otherwise: a window that has just
+            // opened is being looked at, and iced reports focus by event rather
+            // than on demand.
+            focused: true,
+            alerts: AlertPrefs::default(),
             next_toast_id: 0,
         }
     }
@@ -770,6 +899,50 @@ impl App {
     /// While one is, it owns the keyboard: letting a bare key reach the screen
     /// behind a question the user has to answer is the worst possible moment to
     /// act on a stray press.
+    /// How often to poll, given what is on screen.
+    ///
+    /// `Foreground` needs somebody actually reading the answer, which is what a
+    /// selected pull request means. Being focused with the graph open is
+    /// ordinary use, not a reason to ask every minute.
+    pub fn activity(&self) -> Activity {
+        if !self.focused {
+            return Activity::Background;
+        }
+        let reading = self
+            .active_repo()
+            .is_some_and(|repo| matches!(repo.selection, Some(Selection::PullRequest(_))));
+
+        if reading {
+            Activity::Foreground
+        } else {
+            Activity::Normal
+        }
+    }
+
+    /// Sends whatever the preferences allow, for one repository.
+    ///
+    /// The one place that reads the clock and consults the preferences, so
+    /// there is exactly one answer to "why did that not notify me?" — rather
+    /// than a filter at each of the two call sites that produce alerts.
+    pub fn notify(&self, alerts: &[Alert], repository: &str) {
+        // The local hour, because quiet hours are the user's evening rather
+        // than UTC's. A machine with no discoverable offset falls back to UTC:
+        // being an hour out on a quiet-hours boundary beats not applying them.
+        let hour = time::OffsetDateTime::now_local()
+            .unwrap_or_else(|_| time::OffsetDateTime::now_utc())
+            .hour();
+
+        let allowed: Vec<Alert> = alerts
+            .iter()
+            .filter(|alert| self.alerts.allows(alert.event, repository, hour))
+            .cloned()
+            .collect();
+
+        for (summary, body) in hidegit_forge::notify::compose(&allowed, repository) {
+            self.notifier.notify(&summary, &body);
+        }
+    }
+
     pub fn is_modal(&self) -> bool {
         self.confirming.is_some() || self.sheet.is_some() || self.prompt.is_some()
     }

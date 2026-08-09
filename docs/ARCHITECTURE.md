@@ -3,10 +3,10 @@
 How hideGit is put together, and why. Decisions summarised here are argued in full in the
 [ADRs](./adr/README.md).
 
-**Status:** M1, M2 and M3 have landed, so the reads, the working-directory writes, and everything
-that touches a remote described here are code that exists. History rewriting — merge, rebase,
-cherry-pick — is still design: those methods are declared and return `NotImplementedYet` with the
-milestone they arrive in.
+**Status:** M1 through M4 have landed, so the reads, the working-directory writes, everything that
+touches a remote, and the forge integration described here are code that exists. History
+rewriting — merge, rebase, cherry-pick — is still design: those methods are declared and return
+`NotImplementedYet` with the milestone they arrive in.
 
 ## Contents
 
@@ -85,9 +85,11 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `thiserror` | 2 | Error types in libraries | M1 |
 | `criterion` | 0.7 | Benchmarks (dev only) | M1 |
 | `notify-debouncer-full` | 0.6 | Filesystem watching behind automatic status refresh | M2 |
-| `octocrab` | 0.54 | GitHub API | M4 |
-| `keyring` | — | OS keychain access for forge tokens | M4 |
-| `notify-rust` | — | Native desktop notifications | M4 |
+| `async-trait` | 0.1 | `Forge`'s async methods, which have to be dyn-compatible | M4 |
+| `octocrab` | 0.54 | GitHub API, and the device flow | M4 |
+| `keyring` | 4 | OS keychain access for forge tokens | M4 |
+| `notify-rust` | 4 | Native desktop notifications | M4 |
+| `open` | 5 | Handing a URL to the platform's browser | M4 |
 
 Versions are pinned in the workspace `Cargo.toml` and inherited by every crate, so a bump happens
 in one place. Crates whose milestone has not arrived carry no version here — recording a number
@@ -258,7 +260,8 @@ iced's `update` runs on the UI thread. Blocking it drops frames, so nothing bloc
 | `gix` calls (blocking) | `Task::perform` onto `tokio`'s blocking pool |
 | `git` subprocesses | Run on the blocking pool, awaited off the UI thread |
 | Long operations (clone, fetch, pull, push) | `Task::stream` yielding progress `Message`s and then the outcome; cancellable |
-| PR polling | Long-lived `Subscription` in `hidegit-forge` |
+| PR polling | Schedule in `hidegit-forge`, `Subscription` in `hidegit-ui` |
+| Keychain reads and writes | `spawn_blocking`, always — see below |
 | Filesystem watching | `Subscription` over a debounced watcher, triggering status refresh |
 
 The flow is uniform: `Message` → `update` returns a `Task` → work happens off-thread → completion
@@ -271,6 +274,14 @@ a `ProgressSink` that pushes into a channel; the sink is moved into the blocking
 sender drops exactly when the work returns, which is what tells the stream to stop waiting and
 collect the result. Operations carry a monotonic id, because a cancelled one's last report can arrive
 after the operation that replaced it has started and must not redraw its banner.
+
+**The keychain counts as blocking work, and it is easy to forget that it does.** `keyring` is
+synchronous, and on macOS it can raise an authorisation dialog that waits for a human — so a call
+made straight from an `async fn` stops that executor thread from serving anything else. It showed up
+as a repository that never opened, because the keychain prompt at startup was still up and the task
+that would have opened it never ran. Every keychain touch therefore goes through a `spawn_blocking`
+helper inside `hidegit-forge`, and none of those helpers is public: there is no way to reach a token
+store from async code without leaving the runtime alone.
 
 Every operation that mutates the repository ends by emitting `RepositoryChanged`, which triggers a
 refresh of status, refs, remotes and the stash. One code path for "something changed", rather than
@@ -392,14 +403,14 @@ provider.
 
 ```rust
 #[async_trait]
-pub trait Forge: Send + Sync {
+pub trait Forge: Send + Sync + Debug {
     fn id(&self) -> ForgeId;
     fn detect(remote_url: &str) -> Option<RepoRef> where Self: Sized;
 
     async fn authenticate(&self, flow: AuthFlow) -> Result<Identity, ForgeError>;
     async fn current_user(&self) -> Result<Identity, ForgeError>;
 
-    /// `since` carries the cache validator from the previous poll.
+    /// `since` carries the cursor from the previous poll.
     async fn pull_requests(&self, repo: &RepoRef, since: Option<PollCursor>)
         -> Result<PollResult<Vec<PullRequest>>, ForgeError>;
     async fn pull_request(&self, repo: &RepoRef, number: u64)
@@ -407,18 +418,44 @@ pub trait Forge: Send + Sync {
     async fn create_pull_request(&self, repo: &RepoRef, draft: NewPullRequest)
         -> Result<PullRequest, ForgeError>;
 
-    fn web_url(&self, repo: &RepoRef, target: WebTarget) -> Url;
+    fn web_url(&self, repo: &RepoRef, target: WebTarget) -> String;
 }
 
 pub struct PollResult<T> {
     pub data:   Option<T>,     // None ⇒ unchanged since `cursor`
-    pub cursor: PollCursor,    // ETag or equivalent, fed into the next poll
-    pub budget: RateBudget,    // remaining requests and reset time
+    pub cursor: PollCursor,    // opaque, provider-defined; fed into the next poll
+    pub budget: RateBudget,    // remaining budget and reset time
 }
 ```
 
-`PollResult` is shaped this way because rate limits and conditional requests are not details a
-provider can hide — the poll scheduler needs both to behave.
+`PollResult` is shaped this way because rate limits are not a detail a provider can hide — the poll
+scheduler widens its interval on the budget, so it rides on every result rather than being asked
+for separately.
+
+**`PollCursor` is opaque rather than an `ETag` string.** The GitHub implementation polls over
+GraphQL, which has no conditional requests, and always returns an empty cursor; a REST-based forge
+would put an `ETag` in it. Keeping the shape provider-defined is what lets both exist behind one
+trait. See [ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md).
+
+`AuthFlow::Device` carries a callback rather than returning twice, because the flow is not one
+round trip: the user code has to reach the screen before polling for the token starts, and the
+caller is what knows how to put it there. `authenticate` still returns once, with an `Identity`, so
+nothing outside `hidegit-forge` has to know the flow has two halves.
+
+### Detecting a forge repository
+
+`RepoRef` is read out of a remote's fetch URL, covering every shape Git writes one in: `https`,
+`http`, `git` and `ssh` URLs, and the scp-like `git@github.com:owner/repo.git`. That last form is
+why the parser is hand-written rather than delegated to a URL crate — it has no scheme and its
+colon separates a path rather than a port, so a conforming parser rejects it.
+
+**Remote URLs come from repositories that may have been cloned from anywhere**, and an owner or
+repository name read from one is interpolated into an API request. Names are therefore held to a
+narrower character set than any provider's real rule, and anything unrecognised returns `None`
+rather than being sanitised into something acceptable. A path that is not exactly two segments is
+refused too: a GitLab subgroup path is three or more, and silently reading its last two would name
+a repository that does not exist. Any credential embedded in the URL is dropped and never reaches
+a `RepoRef`, which is logged and displayed.
 
 ### Authentication and tokens
 
@@ -428,17 +465,50 @@ environments.
 
 **No client secret is embedded.** hideGit is open source, so anything compiled in is public; the
 device flow exists for public clients that cannot hold a secret. Introducing an embedded secret
-would be a security bug.
+would be a security bug. The *client identifier* is compiled in and is not one — it names the
+application and authorises nothing.
 
 Tokens are stored in the OS keychain via `keyring` — never in the config file, never in logs, never
 sent anywhere but the provider's own API. If no keychain is available (a headless Linux session
-with no Secret Service), forge features are disabled rather than falling back to a file.
+with no Secret Service), forge features are disabled rather than falling back to a file. A token is
+a `SecretString`, which redacts in both `Debug` and `Display`, so the promise survives somebody
+adding a `#[derive(Debug)]` later.
+
+### hideGit is registered as a GitHub App
+
+Rather than an OAuth App, which is what ADR-0003 assumed without saying. The device flow, the
+absence of a client secret and the personal-access-token fallback are all unchanged; two things a
+GitHub App adds are not.
+
+**Access is installation-scoped.** A valid token sees nothing in a repository the App has not been
+installed on, and GitHub reports that as a `null` repository rather than as a permission error. So
+"connected, but not installed here" is its own state — `ForgeError::NotInstalled`, carrying the
+install URL — and the sidebar names it. An empty pull request list would say the opposite of the
+truth.
+
+**User tokens expire**, eight hours by default, and arrive with a refresh token. The keychain holds
+the access token, the refresh token and the expiry together, and a token within a minute of expiry
+is refreshed before it is used. If the App has expiry turned off, GitHub issues no refresh token,
+the refresh path is never taken, and nothing has to be configured for either shape to work.
+
+**GitHub Enterprise is not wired up.** A self-hosted instance puts REST on `/api/v3` and GraphQL on
+`/api/graphql` — a different layout rather than a different hostname — and there is no
+configuration surface to supply a host from. `Endpoint` carries the three bases apart so adding it
+is a change in one place; detection alone only ever claims `github.com`, because sending a token to
+a host hideGit merely guessed was GitHub is not a guess worth making.
 
 ### Polling
 
-Only repositories currently open in hideGit are polled. Every request sends `If-None-Match` with
-the previous `ETag`; a `304 Not Modified` does not count against GitHub's rate limit, which is what
-makes a short interval affordable at all.
+Only repositories currently open in hideGit are polled. **One GraphQL query per repository per
+poll** returns every field the sidebar and every notification need — review decision, check rollup,
+mergeable state — whatever the number of open pull requests.
+
+This replaces an earlier design that used conditional REST requests and free `304`s. It had to go
+because a check run completing does not modify the pull request it belongs to, so an `ETag` on the
+pull request stays valid across the entire life of a CI run and `ChecksFailed` would never fire.
+The full reasoning and the rejected alternatives are in
+[ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md), which also records why the query's
+nested page sizes are a rate-limit decision rather than a display one.
 
 | Condition | Interval |
 |---|---|
@@ -446,14 +516,40 @@ makes a short interval affordable at all.
 | Window focused, PR panel open | 60 seconds |
 | Application in background | 15 minutes |
 
-`x-ratelimit-remaining` and `x-ratelimit-reset` are read on every response: below 20% remaining the
-interval widens, below 5% polling stops until reset and says so in the UI. `Retry-After` is
-honoured exactly. Network failures back off exponentially from 30s to a 30-minute ceiling with
-jitter, and never produce a notification — a failed poll updates a status indicator.
+The budget is read from the `rateLimit` block inside each response, and from
+`x-ratelimit-remaining` / `x-ratelimit-reset` alongside it: below 20% remaining the interval
+widens, below 5% polling stops until reset and says so in the UI. `Retry-After` is honoured
+exactly. Network failures back off exponentially from 30s to a 30-minute ceiling with jitter, and
+never produce a notification — a failed poll updates a status indicator.
+
+**The scheduler lives in `hidegit-forge`; the `Subscription` that drives it lives in `hidegit-ui`.**
+An interval is arithmetic and a transition is a comparison — neither needs a window, and both are
+miserable to test through a toolkit. It is the same split `hidegit_core::watch` and
+`hidegit-ui`'s `watcher` already use for the filesystem. The interval is part of the subscription's
+identity, so a failure or a thin budget replaces the timer rather than being noticed on the next
+tick.
 
 Notifications fire on *transitions*, not on state, and the first poll after startup establishes a
 baseline silently so launching the app never produces a burst of alerts for things already known.
-Events and their defaults are listed in [UI_SPEC.md](./UI_SPEC.md#pr-panel).
+Signing in as a different account resets that baseline for the same reason: every role changes, and
+the change is not news about the pull requests. Events and their defaults are listed in
+[UI_SPEC.md](./UI_SPEC.md#pr-panel).
+
+**An ending arrives as an absence.** The poll asks only for open pull requests, so a merge and a
+close both look like a row disappearing — and `PrMerged` and `PrClosed` are different events. Each
+disappearance of a pull request *you wrote* therefore costs one extra request to read its state.
+That is a handful a day rather than one per poll, and it is the alternative to reporting both as
+the same thing.
+
+**Delivery is behind a `Notifier` trait.** Nothing in CI can receive a notification — a Linux runner
+has no notification daemon and a macOS runner has no bundle to send from — so everything that
+*decides* to notify is tested against a recorder. On macOS `notify-rust` goes through
+`mac-notification-sys`, which attributes a notification to whatever executable sent it: run from
+`cargo run`, macOS raises its authorization prompt naming that binary rather than hideGit, and any
+alert that follows is attributed to it. Checking alerts there therefore means
+`cargo run -p xtask -- bundle-macos` and running the bundle, whose identifier is what makes the
+notification say hideGit. `show()` returns `Ok` either way, so nothing in the code can detect the
+difference — `cargo test -p hidegit-forge -- --ignored a_real_notification` is the manual check.
 
 ## Error taxonomy
 
@@ -504,7 +600,7 @@ Paths come from `directories`, so each platform gets its conventional location.
 
 | What | Location | Format |
 |---|---|---|
-| Settings, repository list, alert preferences | Config dir | TOML |
+| Settings, repository list, alert preferences | Config dir | TOML — `AlertPrefs` is defined in `hidegit-forge`, so config and UI share one definition |
 | Graph layout cache, avatars, forge response cache | Cache dir | Binary; safe to delete |
 | Window geometry, recent repositories | Data dir | TOML |
 | **Tokens** | **OS keychain** | Never a file |
@@ -552,10 +648,21 @@ Stated plainly, because a reader should meet these here rather than discover the
    manual check on a developer's machine.
 5. **GitHub only until post-1.0.** The `Forge` trait exists so GitLab and Bitbucket are additions
    rather than rewrites, but a trait designed against one implementation usually needs adjusting
-   when the second arrives. Expect to revise it.
-6. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
+   when the second arrives. Expect to revise it. **GitHub Enterprise is not wired up either** — a
+   self-hosted instance puts REST on `/api/v3` and GraphQL on `/api/graphql`, and there is no
+   configuration surface to name a host from. `Endpoint` carries the three bases apart so adding it
+   is a change in one place.
+6. **Pull request alerts have not been verified against a real account.** Every forge test mocks
+   HTTP, which is what keeps the suite hermetic — and it means the milestone's own bar, a real
+   review request producing a real notification, is a manual check. So is a full day of running
+   without a rate-limit warning.
+7. **A reply inside an existing review thread does not notify.** `PrCommented` watches a count of
+   issue comments plus review threads, and a reply changes neither. Catching those would mean
+   reading every thread on every pull request on every poll, which is the N+1
+   [ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md) exists to avoid.
+8. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
    expected. Isolating iced types to `hidegit-ui` keeps that blast radius to one crate.
-7. **Opening a very large repository takes about a second.** Ordering 100,000 commits
+9. **Opening a very large repository takes about a second.** Ordering 100,000 commits
    topologically measures at 1.01s, and it happens before the first screen appears. Scrolling is
    fast once open — laying out a visible window costs 52µs — but the initial pass is real, and
    nothing yet shows progress during it. Numbers and method in

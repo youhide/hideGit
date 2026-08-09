@@ -177,6 +177,14 @@ the working-directory row instead, and only when there is something to stash.
 badges on their commits. Selecting a row updates the detail pane. Full rendering rules in
 [COMMIT_GRAPH.md](./COMMIT_GRAPH.md).
 
+**The scrollbar is draggable, and it takes the click before the rows do.** A strip along the right
+edge wider than the bar it draws answers to a press — an 8px target is one people miss, and missing
+it would select whatever commit sits behind it. Dragging past the bottom edge keeps scrolling,
+because that is how anyone reaches the end. Clicking the track jumps the thumb under the pointer and
+then drags from its middle, so the page follows the cursor rather than leaping once and stopping.
+The thumb has a minimum height: at a hundred thousand commits its proportional size is under a
+pixel, and a thumb nobody can grab is the same as no thumb.
+
 **Detail pane** — commit metadata and changed files when a commit is selected; the staging view
 when the working directory is selected.
 
@@ -376,21 +384,75 @@ A sidebar section, alongside branches, tags and stashes. The transport is descri
 - Selecting a PR shows its detail in the detail pane; opening it goes to the browser
 - A stale-data marker when the last poll failed — a status indicator, never a dialog
 
+**A pull request is listed once, under its strongest role** — author, then reviewer, then assignee
+— because listing one you wrote *and* were assigned to under two headings would make the section's
+count disagree with what is under it. Having already reviewed something keeps it under *awaiting
+your review*: otherwise approving it drops it the instant you act, and there is nowhere left to see
+that checks later failed on it.
+
+**Check and review state are glyphs in fixed positions, not colours.** Passing and failing would
+otherwise differ only in hue. "No checks configured" shows nothing at all, which is a different
+thing from "no check has reported yet" and must not get the same marker. A conflict marker appears
+only when a pull request is *known* to conflict — GitHub computes mergeability lazily, and marking
+its "still checking" answer would be a guess the user acts on.
+
+**The section is absent when no remote names a forge repository.** A repository whose only remote is
+a path on disk has no pull requests to have, which is not the same as having none — and every remote
+in hideGit's own test suite is exactly that. Where several remotes qualify, `origin` wins: in a fork
+configured with `origin` for your copy and `upstream` for the project, yours is the one you are
+working in.
+
+**Four states that look alike as an absence, and mean opposite things**, so each gets its own row
+with its own next action: not signed in → Connect; signed in but the app is not installed on this
+repository → Install, with the URL; installed with nothing open → "no open pull requests"; the last
+poll failed → a stale marker *above the previous result*, which stays on screen. A network blip must
+not read as every pull request having been closed.
+
+**No keychain, no forge features.** On a machine with no credential store there is nothing to retry
+and nothing to dismiss, so it is not a toast — the panel says so where somebody would look for pull
+requests, which is where the question comes up.
+
 Notifications are native OS notifications, individually toggleable, with per-repository enable and
 quiet hours. Clicking one focuses hideGit with that PR selected.
+
+Preferences live in `config.toml` under `[alerts]`, and every value has a working default, so the
+section need not exist:
+
+```toml
+[alerts]
+enabled = true          # the master switch; the panel keeps working either way
+muted   = ["owner/noisy"]   # repositories to stay silent about, by owner/name
+
+[alerts.events]
+checks_passed = true    # off by default; see the table below
+
+[alerts.quiet_hours]
+enabled = true
+from = 22               # local hours, `from` inclusive and `to` exclusive
+to   = 8                # `from > to` wraps midnight, which is the usual case
+```
+
+Toggles are named fields rather than a map keyed by event name, so a misspelled setting is an error
+rather than one that silently turns nothing on.
 
 | Event | Fires when | Default |
 |---|---|---|
 | `ReviewRequested` | You are added as a reviewer | on |
 | `ReviewSubmitted` | Someone approves or requests changes on your PR | on |
-| `PrCommented` | A new comment or review comment on your PR | on |
+| `PrCommented` | A new comment, or a new review thread, on your PR | on |
 | `ChecksFailed` | CI transitions to failing on your PR | on |
-| `ChecksPassed` | CI transitions to passing on your PR | off |
+| `ChecksPassed` | CI transitions to passing on your PR | off — every other event needs your attention; a build going green is the *absence* of a problem |
 | `PrConflicting` | Your open PR becomes conflicted | on |
 | `PrMerged` / `PrClosed` | A PR you authored is merged or closed | on |
 
 Actions you take yourself never notify you, and multiple events in one poll collapse into a single
 summary above a threshold.
+
+**One gap worth knowing about.** `PrCommented` fires on a change in the number of issue comments
+plus review threads, so a *reply inside an existing review thread* does not produce a notification.
+Catching those would mean reading every thread on every pull request on every poll, which is the
+N+1 that [ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md) exists to avoid. A new comment
+and a new review thread both do notify.
 
 ## Keyboard shortcuts
 
@@ -399,6 +461,7 @@ summary above a threshold.
 | Key | Action |
 |---|---|
 | `Cmd+O` | Open repository |
+| `Esc` | Close the device-code dialog — the sign-in continues in the background |
 | `Cmd+Shift+O` | Clone repository — checked before the unshifted `O`, or it would open a picker |
 | `Cmd+1` … `Cmd+9` | Switch repository tab |
 | `Cmd+,` | Settings |
@@ -503,9 +566,11 @@ reported rather than silently removed. See
 [ADR-0005](./adr/0005-progress-and-cancellation.md).
 
 **Errors.** Recoverable errors appear inline where the action was attempted, with the action that
-fixes them. Unexpected errors become a toast with a "copy details" action containing the argument
-vector and Git's own stderr. Git's error messages are good; hideGit shows them rather than
-paraphrasing.
+fixes them. Unexpected errors become a toast with a **Copy details** action containing the argument
+vector and Git's own stderr — or, for a forge failure, the provider's own message. Git's error
+messages are good; hideGit shows them rather than paraphrasing. The copy action matters more than it
+looks: an `iced` `text` is not selectable, so without it the one thing a bug report needs can be read
+on screen and taken nowhere. Copying does not dismiss the toast.
 
 **Empty states** carry the next action, not just an absence: no repositories → Open / Clone; no
 PRs → connect GitHub, or "you have no open pull requests"; clean working directory → the last

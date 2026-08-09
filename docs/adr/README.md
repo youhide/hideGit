@@ -14,6 +14,7 @@ and re-litigated every six months.
 | [0003](./0003-forge-github-first.md) | GitHub first, behind a `Forge` trait; device flow, no embedded secret | Accepted |
 | [0004](./0004-license-gpl3.md) | License under GPL-3.0 | Accepted |
 | [0005](./0005-progress-and-cancellation.md) | Progress and cancellation by parsing stderr and killing the child | Accepted |
+| [0006](./0006-poll-pull-requests-over-graphql.md) | Poll pull request state over GraphQL, not conditional REST | Accepted |
 
 ## Conventions
 

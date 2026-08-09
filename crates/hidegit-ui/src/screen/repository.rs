@@ -6,7 +6,7 @@ use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
 use crate::message::{Message, RepoMessage};
-use crate::state::{OpenRepo, Pane, ROW_HEIGHT};
+use crate::state::{App, OpenRepo, Pane, ROW_HEIGHT};
 use crate::theme::Palette;
 use crate::widget::{detail, graph, sidebar};
 
@@ -17,6 +17,7 @@ use crate::widget::{detail, graph, sidebar};
 /// addressing one repository. `index` is what lets a row wrap its own
 /// `RepoMessage` up for later dispatch.
 pub fn view<'a>(
+    app: &'a App,
     repo: &'a OpenRepo,
     index: usize,
     palette: &'a Palette,
@@ -43,7 +44,7 @@ pub fn view<'a>(
     stack = stack.push(divider(border).map(repo_message));
     stack = stack.push(
         row![
-            sidebar::view(repo, index, palette),
+            sidebar::view(app, repo, index, palette),
             vertical_rule(border).map(repo_message),
             column![
                 graph_pane(repo, palette, cache).map(repo_message),

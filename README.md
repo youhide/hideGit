@@ -11,14 +11,17 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 
 > **Pre-alpha, and now a daily driver for ordinary work.** You can clone a repository or open one,
 > scroll its history, read any commit's diff, stage by file, by hunk or by individual line, commit,
-> branch, stash, and fetch, pull and push — with progress you can watch and cancel. History
-> rewriting is what is missing: merge, rebase, cherry-pick and the conflict resolution UI arrive in
-> [M5](./docs/ROADMAP.md#m5--history-operations), and pull request alerts in
-> [M4](./docs/ROADMAP.md#m4--pull-request-alerts).
+> branch, stash, and fetch, pull and push — with progress you can watch and cancel. Sign in to
+> GitHub and open pull requests appear in the sidebar with their review and CI state, with desktop
+> notifications when one of them changes. History rewriting is what is missing: merge, rebase,
+> cherry-pick and the conflict resolution UI arrive in
+> [M5](./docs/ROADMAP.md#m5--history-operations).
 >
-> One caveat worth knowing before you rely on it: pushing over SSH with a passphrase, or over HTTPS
-> with a credential helper, has not been verified. It should work — hideGit hands those operations to
-> your own `git` — but every remote in the test suite is a local path, so nobody has confirmed it.
+> Two caveats worth knowing before you rely on it. Pushing over SSH with a passphrase, or over HTTPS
+> with a credential helper, has not been verified — it should work, since hideGit hands those
+> operations to your own `git`, but every remote in the test suite is a local path. And on macOS,
+> notifications are attributed to whatever binary sent them, so run the bundle from
+> `cargo run -p xtask -- bundle-macos` rather than `cargo run` if you want them to say hideGit.
 >
 > See [ROADMAP](./docs/ROADMAP.md) for what ships when, and
 > [ARCHITECTURE](./docs/ARCHITECTURE.md) for how it is built.
@@ -52,7 +55,7 @@ refused rather than being retried with `--force`.
 | ✅ | Commit graph, commit details, file tree, diff viewer | [M1](./docs/ROADMAP.md#m1--scaffold--read-only-viewer) |
 | ✅ | Stage / unstage by file, hunk and line, discard, commit, amend | [M2](./docs/ROADMAP.md#m2--working-directory) |
 | ✅ | Clone, branches, tags, stash, remotes, fetch / pull / push with progress | [M3](./docs/ROADMAP.md#m3--branches--remotes) |
-| ⬜ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
+| ✅ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
 | ⬜ | Merge, rebase, cherry-pick, revert, conflict resolution UI | [M5](./docs/ROADMAP.md#m5--history-operations) |
 | ⬜ | Themes, keyboard navigation, multi-repo tabs, installers | [M6](./docs/ROADMAP.md#m6--polish--release) |
 | ⬜ | GitLab & Bitbucket, submodules, worktrees, LFS, PT-BR translation | [Post-1.0](./docs/ROADMAP.md#post-10) |
@@ -75,7 +78,7 @@ The full reasoning, including how this changes as gitoxide matures, is in
 | | Minimum |
 |---|---|
 | Git | 2.30 or newer, on `PATH` |
-| Rust | 1.85 or newer (to build from source) |
+| Rust | 1.88 or newer (to build from source) |
 | Platforms | macOS 11+, Windows 10+, Linux with Vulkan / OpenGL 3.3 |
 
 ## Installing
@@ -136,7 +139,9 @@ enough for Explorer, the taskbar and Alt-Tab to show it. There is nothing else t
 | [iced](https://iced.rs) `0.14` | GUI toolkit — the Elm architecture, GPU-rendered |
 | [gitoxide (`gix`)](https://github.com/GitoxideLabs/gitoxide) `0.86` | Git read operations, in pure Rust |
 | system `git` | Push, merge, rebase — see [ADR-0002](./docs/adr/0002-git-backend-hybrid.md) |
-| [octocrab](https://github.com/XAMPPRocky/octocrab) `0.54` | GitHub API client, for PR alerts (from [M4](./docs/ROADMAP.md#m4--pull-request-alerts)) |
+| [octocrab](https://github.com/XAMPPRocky/octocrab) `0.54` | GitHub API client, and the device flow ([M4](./docs/ROADMAP.md#m4--pull-request-alerts)) |
+| [keyring](https://github.com/open-source-cooperative/keyring-rs) `4` | Tokens in the OS keychain — never in a file, never in a log |
+| [notify-rust](https://github.com/hoodie/notify-rust) `4` | Native desktop notifications |
 
 ## Documentation
 

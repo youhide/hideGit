@@ -1,6 +1,6 @@
 [package]
 name = "hidegit-forge"
-description = "Forge trait and pull request alerts for hideGit. GitHub implementation lands in M4."
+description = "Forge trait, GitHub integration and pull request alerts for hideGit."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,13 +8,39 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# M1 ships this crate as a compiling stub: the `Forge` trait and its
-# provider-neutral data model, with no implementation and no network.
-# `octocrab`, `keyring` and the polling subscription arrive in M4.
 [dependencies]
 hidegit-core.workspace = true
+# The UI holds a `dyn Forge`, and native `async fn` in a trait is not
+# dyn-compatible. See the trait's own note in `lib.rs`.
+async-trait = "0.1"
+# GitHub's API, and the device flow's polling loop. Default features: the
+# `tokio` one is what `poll_until_available` needs, and `rustls` keeps the TLS
+# stack out of the platform's hands.
+octocrab = "0.54"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The OS keychain. Default features select the native store on each platform:
+# Keychain Services, Credential Manager, Secret Service.
+keyring = "4"
 thiserror.workspace = true
-time.workspace = true
+# `parsing` for the ISO 8601 timestamps GitHub returns.
+time = { workspace = true, features = ["parsing"] }
+# `time` only: the device flow waits between polls.
+tokio = { version = "1", features = ["rt", "time"] }
+tracing.workspace = true
+http = "1.5.0"
+notify-rust = "4.17.0"
+
+[dev-dependencies]
+# HTTP is mocked. No test touches the network or needs a real token.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+toml = "1.1.4"
+wiremock = "0.6"
+
+[features]
+# An in-memory token store and a single-server endpoint, for tests in crates
+# that depend on this one. Never a fallback for a missing keychain.
+fake = []
 
 [lints]
 workspace = true

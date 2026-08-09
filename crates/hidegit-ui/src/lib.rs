@@ -5,7 +5,9 @@
 //! 0.14 is pre-1.0, so a breaking upgrade is expected, and keeping the blast
 //! radius to one crate is the mitigation.
 
+pub mod alerts;
 pub mod app;
+pub mod forge;
 pub mod format;
 pub mod message;
 pub mod state;
@@ -22,6 +24,7 @@ pub mod widget {
     pub mod diff;
     pub mod graph;
     pub mod overlay;
+    pub mod pr;
     pub mod sidebar;
     pub mod staging;
 }

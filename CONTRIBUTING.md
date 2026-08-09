@@ -21,7 +21,7 @@ a pull request.
 
 | Requirement | Notes |
 |---|---|
-| Rust 1.85+ | `rustup toolchain install stable` |
+| Rust 1.88+ | `rustup toolchain install stable` |
 | `git` 2.30+ on `PATH` | Not optional — hideGit shells out to it. See [ADR-0002](./docs/adr/0002-git-backend-hybrid.md) |
 | A GPU with Vulkan, Metal or OpenGL 3.3 | iced renders via `wgpu` |
 

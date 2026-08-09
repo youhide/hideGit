@@ -19,6 +19,9 @@ use hidegit_core::ops::{
     StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
+use hidegit_forge::{
+    DeviceCode, ForgeError, GitHub, Identity, PullRequest, PullRequestDetail, RateBudget,
+};
 
 use crate::state::{ActionSheet, Pane, Prompt, Selection, StagingRow};
 
@@ -47,6 +50,35 @@ impl From<GitError> for UiError {
                 argv.join(" "),
                 status.map_or_else(|| "killed by a signal".to_owned(), |s| s.to_string()),
             ),
+            other => format!("{other:?}"),
+        };
+
+        Self {
+            summary: error.to_string(),
+            details,
+        }
+    }
+}
+
+/// A forge failure, in the shape the UI shows it.
+///
+/// Kept separate from the `GitError` conversion because a forge failure is
+/// nearly always recoverable and has a next action attached — sign in, install
+/// the app, wait for the budget — where a `git` failure mostly wants Git's own
+/// words shown verbatim.
+impl From<ForgeError> for UiError {
+    fn from(error: ForgeError) -> Self {
+        let details = match &error {
+            // The one family where the `Debug` form says nothing a person can
+            // act on: `DeviceFlow(Disabled)` on a clipboard is not a bug
+            // report, it is a shrug.
+            ForgeError::DeviceFlow(flow) => flow.next_step().to_owned(),
+            // Not installed already carries the URL that fixes it, and the
+            // panel offers it as a row — the detail is for a bug report, so it
+            // names the repository rather than repeating the instruction.
+            ForgeError::NotInstalled { repo, install_url } => {
+                format!("{repo}\n{install_url}")
+            }
             other => format!("{other:?}"),
         };
 
@@ -119,6 +151,52 @@ pub enum Message {
     CloseRepository(usize),
     Repo(usize, RepoMessage),
     ToastDismissed(u64),
+    /// Puts a failure's details on the clipboard.
+    ///
+    /// `UI_SPEC` has asked for this since M1 and it was never built, so the one
+    /// thing a bug report needs — the argument vector, Git's own stderr, the
+    /// forge's own message — could be read on screen and not taken anywhere.
+    ToastCopied(u64),
+
+    // ---- the forge ----
+    /// The client exists, and a stored session was restored if there was one.
+    ///
+    /// `Ok(None)` is a first run, not a failure. The client arrives with it
+    /// rather than being built on the UI thread, because building it reads the
+    /// keychain.
+    ForgeClientBuilt(Arc<GitHub>, Box<Result<Option<Identity>, UiError>>),
+    /// The Connect row: offers the device flow or a personal access token.
+    ConnectRequested,
+    /// Start the device flow.
+    DeviceFlowRequested,
+    /// GitHub issued a code. Raised from inside the flow, which keeps polling
+    /// afterwards — so this arrives *while* `ForgeConnected` is still pending,
+    /// which is the whole reason it is a message of its own.
+    DeviceCodeIssued(Box<DeviceCode>),
+    /// `Esc`, or the dialog's own button.
+    ///
+    /// Does **not** cancel the flow: hideGit keeps polling and the token still
+    /// arrives, so the dialog says so rather than offering a Cancel that would
+    /// be a lie.
+    DeviceCodeDismissed,
+    /// The pasted token from the prompt.
+    TokenSubmitted(String),
+    ForgeConnected(Box<Result<Identity, UiError>>),
+    /// Asks to sign out, which confirms rather than acting: signing back in
+    /// costs a round trip through a browser.
+    DisconnectRequested,
+    /// The confirmation was accepted. Only ever sent by the dialog.
+    DisconnectConfirmed,
+    ForgeSignedOut(Box<Result<(), UiError>>),
+    /// Hand a URL to the platform's browser.
+    OpenUrl(String),
+    /// It did not open. Reported, because a control that looks like it worked
+    /// and did not is worse than one that says it could not.
+    OpenUrlFailed(Box<UiError>),
+    /// The window gained or lost focus, which is what decides how often
+    /// hideGit polls. A minimised window asking every minute is exactly what
+    /// the interval table exists to prevent.
+    WindowFocused(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +206,13 @@ pub enum RepoMessage {
     /// A wheel or trackpad scroll, in pixels. Positive scrolls toward older
     /// history.
     GraphScrolled(f32),
+    /// The scrollbar was dragged, as a fraction of the way through history.
+    ///
+    /// A fraction rather than a row, because that is what the thumb's position
+    /// actually means: the widget knows where the pointer is and the state
+    /// knows how many commits there are, and neither should have to learn the
+    /// other's units.
+    GraphScrolledTo(f32),
     /// Arrow keys: move the selection by rows, scrolling to keep it visible.
     SelectionMoved(i32),
     /// `Tab` / `Shift+Tab`: sidebar → graph → detail.
@@ -281,6 +366,35 @@ pub enum RepoMessage {
     RepositoryChanged,
     /// The reread that `RepositoryChanged` asked for, applied in place.
     Refreshed(Box<Result<Refreshed, UiError>>),
+
+    // ---- pull requests ----
+    /// Ask the forge for this repository's open pull requests.
+    PrsRefreshRequested,
+    PrsLoaded(Box<Result<PrsLoad, UiError>>),
+    /// A pull request of yours that is no longer open, loaded to find out
+    /// *how* it ended.
+    ///
+    /// A poll asks only for open ones, so an ending arrives as an absence and
+    /// an absence cannot say whether it was merged or closed. Those are
+    /// different events, so each disappearance costs one more request — a
+    /// handful a day, not one per poll.
+    PrEndingLoaded(Box<Result<PullRequestDetail, UiError>>),
+    /// A pull request row. Loads its detail into the detail pane.
+    PrDetailLoaded(Box<Result<PullRequestDetail, UiError>>),
+    /// Open one in the browser — the trait is narrow, and everything past
+    /// reading a pull request is the forge's own website's job.
+    PrOpenRequested(u64),
+    /// Open a pull request from the current branch into `base`.
+    PrCreateRequested {
+        head: String,
+        base: String,
+        title: String,
+        body: String,
+    },
+    /// It opened. The number is selected so the next poll has somewhere to put
+    /// its state, and the browser is *not* opened on the user's behalf — that
+    /// is an action, and it belongs to the row's own control.
+    PrCreated(Box<Result<PullRequest, UiError>>),
 }
 
 /// How a network operation ended.
@@ -318,6 +432,27 @@ pub struct Refreshed {
     pub remotes: Vec<Remote>,
     pub total: usize,
     pub first_page: Vec<Commit>,
+}
+
+/// What a poll produced.
+///
+/// `NotInstalled` is a variant rather than an error because it is not one: the
+/// token is good, the request succeeded, and the answer is that hideGit cannot
+/// see this repository. It persists until somebody installs the app, it is
+/// about this repository rather than about the session, and it carries the URL
+/// that fixes it — none of which a toast can express.
+#[derive(Debug, Clone)]
+pub enum PrsLoad {
+    Loaded {
+        items: Vec<PullRequest>,
+        /// What is left of the API budget, which is what the scheduler widens
+        /// its interval on. It rides on the result rather than being asked for
+        /// separately — see ADR-0006.
+        budget: RateBudget,
+    },
+    NotInstalled {
+        install_url: String,
+    },
 }
 
 /// The working directory, and both of its diffs.

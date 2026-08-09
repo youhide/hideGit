@@ -42,6 +42,8 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
             repo.state,
             palette,
         ),
+        // The one pane whose contents did not come from the repository.
+        DetailPane::PullRequest(detail) => crate::widget::pr::detail(detail, palette),
     };
 
     let surface = palette.surface;

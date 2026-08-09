@@ -35,6 +35,18 @@ const TEXT_GAP: f32 = 16.0;
 /// Width of the scrollbar gutter on the right.
 const SCROLLBAR_WIDTH: f32 = 8.0;
 
+/// How wide a strip along the right edge answers to a press.
+///
+/// Wider than the bar it draws, because an 8px target is a target people miss —
+/// and missing it selects a commit, which is the wrong thing to do by accident.
+const SCROLLBAR_HIT: f32 = 16.0;
+
+/// The shortest the thumb is allowed to get.
+///
+/// At a hundred thousand commits the proportional height is under a pixel, and
+/// a thumb nobody can grab is the same as no thumb.
+const MIN_THUMB: f32 = 24.0;
+
 const SUMMARY_SIZE: f32 = 13.0;
 const META_SIZE: f32 = 12.0;
 /// Rough advance width per character, for laying out badges without a text
@@ -53,7 +65,59 @@ pub struct GraphCanvas<'a> {
     pub cache: &'a canvas::Cache,
 }
 
+/// Where the scrollbar's thumb is, and how far it can travel.
+///
+/// `None` when everything fits, which is also when no scrollbar is drawn — the
+/// two have to agree or the bar would be draggable while invisible.
+#[derive(Debug, Clone, Copy)]
+struct Thumb {
+    top: f32,
+    height: f32,
+    /// The distance the top may move, so a position maps back to a fraction.
+    travel: f32,
+}
+
+/// What the canvas remembers between events.
+///
+/// A drag has to survive the cursor leaving the widget — releasing the button
+/// over the sidebar must not leave the thumb stuck to the pointer — so it is
+/// canvas state rather than something derived from the cursor each frame.
+#[derive(Debug, Default)]
+pub struct CanvasState {
+    /// Where inside the thumb the drag started, in pixels from its top.
+    grab: Option<f32>,
+}
+
 impl GraphCanvas<'_> {
+    /// The scrollbar's geometry, or `None` when there is nothing to scroll.
+    fn thumb(&self, height: f32) -> Option<Thumb> {
+        // Sized against the total reachable commits, not just the loaded ones,
+        // so the thumb does not jump as pages arrive.
+        let total = self.view.total.max(self.view.commits.len()).max(1) as f32;
+        let visible = self.viewport_rows.max(1) as f32;
+        if visible >= total {
+            return None;
+        }
+
+        let thumb_height = (visible / total * height).max(MIN_THUMB);
+        let travel = (height - thumb_height).max(0.0);
+        let progress = (self.view.scroll / (total - visible)).clamp(0.0, 1.0);
+
+        Some(Thumb {
+            top: progress * travel,
+            height: thumb_height,
+            travel,
+        })
+    }
+
+    /// The scroll fraction a thumb top of `y` corresponds to.
+    fn fraction_at(&self, y: f32, thumb: Thumb) -> f32 {
+        if thumb.travel <= 0.0 {
+            return 0.0;
+        }
+        (y / thumb.travel).clamp(0.0, 1.0)
+    }
+
     /// The row index under a point, or `None` past the end of history.
     ///
     /// Hit testing by arithmetic rather than by searching node geometry — the
@@ -77,11 +141,11 @@ impl GraphCanvas<'_> {
 }
 
 impl canvas::Program<RepoMessage> for GraphCanvas<'_> {
-    type State = ();
+    type State = CanvasState;
 
     fn update(
         &self,
-        _state: &mut Self::State,
+        state: &mut Self::State,
         event: &iced::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
@@ -91,6 +155,28 @@ impl canvas::Program<RepoMessage> for GraphCanvas<'_> {
         let rows = (bounds.height / ROW_HEIGHT).floor().max(0.0) as usize;
         if rows != self.view.viewport_rows {
             return Some(canvas::Action::publish(RepoMessage::ViewportChanged(rows)));
+        }
+
+        // A drag in progress is tracked against the window rather than against
+        // the widget: dragging past the bottom edge is how anyone scrolls to
+        // the end, and `position_in` gives up the moment the cursor leaves.
+        if let Some(grab) = state.grab {
+            match event {
+                iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    let y = cursor.position()?.y - bounds.y;
+                    let thumb = self.thumb(bounds.height)?;
+                    let fraction = self.fraction_at(y - grab, thumb);
+                    return Some(
+                        canvas::Action::publish(RepoMessage::GraphScrolledTo(fraction))
+                            .and_capture(),
+                    );
+                }
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    state.grab = None;
+                    return Some(canvas::Action::request_redraw().and_capture());
+                }
+                _ => return None,
+            }
         }
 
         let position = cursor.position_in(bounds)?;
@@ -104,6 +190,32 @@ impl canvas::Program<RepoMessage> for GraphCanvas<'_> {
                 Some(canvas::Action::publish(RepoMessage::GraphScrolled(pixels)).and_capture())
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                // The scrollbar takes the click before the rows do. Without
+                // this the only way to move through a hundred thousand commits
+                // is the wheel, and clicking the bar selects whatever commit
+                // happens to be behind it.
+                if let Some(thumb) = self.thumb(bounds.height)
+                    && position.x >= bounds.width - SCROLLBAR_HIT
+                {
+                    let on_thumb = (thumb.top..thumb.top + thumb.height).contains(&position.y);
+
+                    // Clicking the track jumps the thumb under the cursor and
+                    // then drags from its middle, so the page follows the
+                    // pointer instead of leaping once and stopping.
+                    let grab = if on_thumb {
+                        position.y - thumb.top
+                    } else {
+                        thumb.height / 2.0
+                    };
+                    state.grab = Some(grab);
+
+                    let fraction = self.fraction_at(position.y - grab, thumb);
+                    return Some(
+                        canvas::Action::publish(RepoMessage::GraphScrolledTo(fraction))
+                            .and_capture(),
+                    );
+                }
+
                 let row = self.row_at(position.y)?;
                 let commit = self.view.commits.get(row)?;
                 Some(
@@ -135,11 +247,22 @@ impl canvas::Program<RepoMessage> for GraphCanvas<'_> {
 
     fn mouse_interaction(
         &self,
-        _state: &Self::State,
+        state: &Self::State,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
+        if state.grab.is_some() {
+            return mouse::Interaction::Grabbing;
+        }
+
         match cursor.position_in(bounds) {
+            // The scrollbar is not a row, so it does not offer a row's cursor.
+            Some(position)
+                if self.thumb(bounds.height).is_some()
+                    && position.x >= bounds.width - SCROLLBAR_HIT =>
+            {
+                mouse::Interaction::Grab
+            }
             Some(_) if !self.view.is_empty() => mouse::Interaction::Pointer,
             _ => mouse::Interaction::default(),
         }
@@ -355,13 +478,9 @@ impl GraphCanvas<'_> {
     }
 
     fn draw_scrollbar(&self, frame: &mut Frame, size: Size) {
-        // Sized against the total reachable commits, not just the loaded ones,
-        // so the thumb does not jump as pages arrive.
-        let total = self.view.total.max(self.view.commits.len()).max(1) as f32;
-        let visible = self.viewport_rows.max(1) as f32;
-        if visible >= total {
+        let Some(thumb) = self.thumb(size.height) else {
             return;
-        }
+        };
 
         let x = size.width - SCROLLBAR_WIDTH;
         frame.fill_rectangle(
@@ -373,14 +492,10 @@ impl GraphCanvas<'_> {
             },
         );
 
-        let thumb_height = (visible / total * size.height).max(24.0);
-        let travel = size.height - thumb_height;
-        let progress = (self.view.scroll / (total - visible)).clamp(0.0, 1.0);
-
         frame.fill(
             &Path::rounded_rectangle(
-                Point::new(x + 1.5, progress * travel),
-                Size::new(SCROLLBAR_WIDTH - 3.0, thumb_height),
+                Point::new(x + 1.5, thumb.top),
+                Size::new(SCROLLBAR_WIDTH - 3.0, thumb.height),
                 3.0.into(),
             ),
             Color {

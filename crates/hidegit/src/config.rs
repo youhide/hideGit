@@ -40,6 +40,11 @@ impl Paths {
 pub struct Config {
     pub theme: ThemeConfig,
     pub window: WindowConfig,
+    /// Which pull request alerts to send, and when not to.
+    ///
+    /// Defined in `hidegit-forge` rather than here, so there is one definition
+    /// rather than a config copy and a UI copy that drift apart.
+    pub alerts: hidegit_forge::AlertPrefs,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +208,34 @@ mod tests {
 
         let config: Config = load(&path);
         assert_eq!(config.theme.name, "hidegit-dark");
+    }
+
+    #[test]
+    fn alert_preferences_default_to_the_table_in_the_spec() {
+        let config: Config = load(Path::new("/definitely/not/here/config.toml"));
+
+        assert!(config.alerts.enabled);
+        assert!(config.alerts.events.checks_failed);
+        assert!(
+            !config.alerts.events.checks_passed,
+            "the one event that fires when nothing needs doing"
+        );
+    }
+
+    #[test]
+    fn one_alert_setting_can_be_changed_without_restating_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[alerts.quiet_hours]\nenabled = true\nfrom = 21\n").unwrap();
+
+        let config: Config = load(&path);
+        assert!(config.alerts.quiet_hours.enabled);
+        assert_eq!(config.alerts.quiet_hours.from, 21);
+        assert_eq!(config.alerts.quiet_hours.to, 8, "the default end");
+        assert!(
+            config.alerts.events.checks_failed,
+            "and the rest are untouched"
+        );
     }
 
     #[test]

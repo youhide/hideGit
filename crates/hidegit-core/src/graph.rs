@@ -324,7 +324,7 @@ impl Checkpoints {
 
     /// Records the state that precedes `row`, if `row` falls on the interval.
     pub fn record(&mut self, row: usize, state: &LaneState) {
-        if row % self.interval == 0 && self.saved.last().map(|(r, _)| *r) != Some(row) {
+        if row.is_multiple_of(self.interval) && self.saved.last().map(|(r, _)| *r) != Some(row) {
             self.saved.push((row, state.clone()));
         }
     }
