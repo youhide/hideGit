@@ -742,6 +742,7 @@ impl Hidegit {
             },
             resolver: None,
             plan: None,
+            blame: None,
         });
         self.caches.insert(index, canvas::Cache::new());
         self.app.active = Some(index);
@@ -1510,6 +1511,65 @@ impl Hidegit {
                 }
                 let backend = Arc::clone(&repo.backend);
                 write_task(index, move || backend.stash(&StashOp::Drop(at)).map(|_| ()))
+            }
+
+            RepoMessage::BlameRequested { path, at } => {
+                let backend = Arc::clone(&repo.backend);
+                let wanted = path.clone();
+                blocking(move || {
+                    let blame = backend.blame(&wanted, at)?;
+
+                    // The commits the lines point at, so the gutter can show
+                    // who and when. Distinct ids only — a file blames to a
+                    // handful of commits however many lines it has — and read
+                    // through `log`, which hydrates metadata without computing
+                    // the tree diff that `commit` would.
+                    let mut seen = std::collections::HashSet::new();
+                    let mut commits = Vec::new();
+                    for line in &blame.lines {
+                        if !seen.insert(line.commit) {
+                            continue;
+                        }
+                        // One unreadable commit costs its gutter entry, not the
+                        // whole view.
+                        if let Ok(mut found) = backend
+                            .log(&RevSpec::Commit(line.commit), LogPage { skip: 0, limit: 1 })
+                            && let Some(commit) = found.pop()
+                        {
+                            commits.push(commit);
+                        }
+                    }
+                    Ok(crate::message::BlameLoad {
+                        path: wanted,
+                        at,
+                        lines: blame.lines,
+                        commits,
+                    })
+                })
+                .map(move |result| Message::Repo(index, RepoMessage::BlameLoaded(Box::new(result))))
+            }
+
+            RepoMessage::BlameLoaded(result) => {
+                match *result {
+                    Ok(loaded) => {
+                        repo.blame = Some(crate::state::BlameView {
+                            path: loaded.path,
+                            at: loaded.at,
+                            lines: loaded.lines,
+                            commits: loaded.commits.into_iter().map(|c| (c.id, c)).collect(),
+                        });
+                    }
+                    Err(error) => {
+                        repo.blame = None;
+                        self.app.toast(&error);
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::BlameDismissed => {
+                repo.blame = None;
+                Task::none()
             }
 
             // ---- history operations ----

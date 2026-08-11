@@ -344,7 +344,11 @@ Everything between "works" and "someone who does not write Rust can install it".
   hand-edited and often lives in a dotfiles repository. Quiet hours and muted repositories are still
   file-only
 - Search: commits by message, author, hash; file search within a commit
-- Blame view
+- Blame view. **Landed**, and it is the last `GitBackend` method that was returning
+  `NotImplementedYet` — the trait declared its whole surface from M1 and is now entirely
+  implemented. Rename detection had to be turned on explicitly: gitoxide leaves it off by default,
+  and without it every line of a renamed file is attributed to the commit that moved it rather than
+  the commit that wrote it, which answers the wrong question entirely
 - Accessibility: focus order, contrast, screen-reader labels where iced supports them
 - Crash reporting that is local and opt-in
 - **Packaging:** signed and notarised `.dmg` (macOS), `.msi` (Windows), AppImage and Flatpak
