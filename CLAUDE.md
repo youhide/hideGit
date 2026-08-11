@@ -111,6 +111,19 @@ cargo run -p xtask -- icons
 cargo run -p xtask -- bundle-macos
 ```
 
+**Launching a development build on macOS raises a keychain authorisation dialog** unless you turn
+the keychain off. macOS ties a keychain entry's access list to the requesting binary's code
+signature, and an unsigned bundle gets a fresh identity on every build — so each launch of a
+freshly built hideGit asks for a password again, even when the change under test has nothing to do
+with the forge. For a test run where being signed out does not matter:
+
+```sh
+HIDEGIT_NO_KEYCHAIN=1 target/release/bundle/hideGit.app/Contents/MacOS/hidegit /path/to/repo
+```
+
+hideGit then behaves exactly as it does on a machine with no keychain: forge features are disabled
+and say so. Leave it unset to test anything touching sign-in.
+
 Clippy warnings are errors. `cargo bench -p hidegit-core` times the graph layout against a
 100,000-commit repository; the numbers to beat are in
 [COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance).
