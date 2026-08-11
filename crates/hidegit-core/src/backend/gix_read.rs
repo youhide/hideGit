@@ -19,6 +19,7 @@ use crate::model::{
     ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState, RevSpec, Signature,
     StashEntry, Tag, WorktreeStatus,
 };
+use crate::ops::{Blame, BlameLine};
 
 /// Files past this size get a placeholder instead of a diff.
 ///
@@ -409,6 +410,67 @@ pub(crate) fn rebase_preview(repo: &gix::Repository, onto: &str) -> Result<Vec<C
 
     let refs = refs(repo)?;
     hydrate(repo, &entries, &refs)
+}
+
+/// Who last touched each line of `path` as of `at`.
+///
+/// gitoxide reports blame as *hunks* — a run of consecutive lines introduced by
+/// one commit — and this flattens them to one entry per line. The view needs
+/// per-line answers anyway, and flattening here means the widget never has to
+/// know that a hunk is a thing.
+///
+/// Line numbers are 1-based and count the file **as of `at`**, not as of the
+/// commit that introduced each line: they are what a reader compares against
+/// the file in front of them.
+pub(crate) fn blame(repo: &gix::Repository, path: &Path, at: ObjectId) -> Result<Blame, GitError> {
+    // Git stores paths with forward slashes whatever the platform, and a
+    // Windows path arriving with backslashes silently matches nothing — the
+    // blame comes back empty rather than failing, which is the worst shape of
+    // wrong.
+    let spec = path
+        .to_str()
+        .ok_or_else(|| GitError::RefNotFound(path.display().to_string()))?
+        .replace('\\', "/");
+
+    let outcome = repo
+        .blame_file(
+            spec.as_str().into(),
+            to_gix_id(at),
+            gix::repository::blame_file::Options {
+                // Rename detection is off by default, and without it a renamed
+                // file's whole history collapses to the rename: every line
+                // shows the commit that moved the file rather than the commit
+                // that wrote it, which is a blame that answers the wrong
+                // question entirely.
+                rewrites: Some(gix::diff::Rewrites::default()),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| GitError::gix("blaming a file", e))?;
+
+    let mut lines = Vec::new();
+    for (entry, texts) in outcome.entries_with_lines() {
+        for (offset, text) in texts.iter().enumerate() {
+            lines.push(BlameLine {
+                commit: to_id(&entry.commit_id),
+                lineno: entry.start_in_blamed_file + offset as u32 + 1,
+                // The terminator is dropped: a blame is read, never written
+                // back, so unlike `conflict` — which reconstructs files and has
+                // to preserve them exactly — carrying it would only mean every
+                // caller trimming it again.
+                text: text
+                    .to_str_lossy()
+                    .trim_end_matches(['\r', '\n'])
+                    .to_owned(),
+            });
+        }
+    }
+
+    // gitoxide yields hunks in the order it resolved them, which is not file
+    // order. A blame view reads top to bottom.
+    lines.sort_by_key(|line| line.lineno);
+
+    Ok(Blame { lines })
 }
 
 /// How many parents `id` has.

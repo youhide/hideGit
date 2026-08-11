@@ -43,10 +43,13 @@ use crate::ops::{
 
 /// Everything hideGit can ask of a repository.
 ///
-/// The read half runs on `gix`; the write half shells out to `git`. Methods
-/// whose milestone has not landed return [`GitError::NotImplementedYet`]
-/// rather than being absent, so the shape of the whole surface stays visible
-/// in one place.
+/// The read half runs on `gix`; the write half shells out to `git`.
+///
+/// The whole surface was declared from M1 and filled in milestone by milestone,
+/// with the unlanded methods returning [`GitError::NotImplementedYet`] so the
+/// shape stayed visible in one file. As of M6 **every method is implemented**,
+/// and that variant is no longer produced here — it stays in the error type for
+/// whatever a later backend cannot do.
 pub trait GitBackend: Send + Sync + std::fmt::Debug {
     /// Opens a repository, searching upward from `path` for one.
     fn open(path: &Path) -> Result<Self, GitError>
@@ -255,12 +258,4 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     /// recoverable, so it is part of the milestone rather than a later
     /// convenience.
     fn reflog(&self, ref_name: &str, limit: usize) -> Result<Vec<ReflogEntry>, GitError>;
-}
-
-/// Builds the error returned by a method whose milestone has not landed.
-pub(crate) fn not_implemented(operation: &'static str, milestone: &'static str) -> GitError {
-    GitError::NotImplementedYet {
-        operation,
-        milestone,
-    }
 }

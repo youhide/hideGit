@@ -16,7 +16,7 @@ use hidegit_core::model::{
     WorktreeStatus,
 };
 use hidegit_core::ops::{
-    CancelToken, ProgressUpdate, RebaseAction, RebasePlan, RebaseStep, StartPoint,
+    BlameLine, CancelToken, ProgressUpdate, RebaseAction, RebasePlan, RebaseStep, StartPoint,
 };
 use hidegit_core::{GitBackend, LogPage};
 use hidegit_forge::{
@@ -666,6 +666,25 @@ pub struct OpenRepo {
     pub resolver: Option<Resolver>,
     /// The interactive rebase being planned, if one is.
     pub plan: Option<RebaseEditor>,
+    /// The file open in the blame view, if one is.
+    pub blame: Option<BlameView>,
+}
+
+/// One file, with the commit that last touched each line.
+#[derive(Debug)]
+pub struct BlameView {
+    pub path: PathBuf,
+    /// The revision blamed. Not necessarily `HEAD`: blaming an older commit is
+    /// most of the point of having the view.
+    pub at: ObjectId,
+    pub lines: Vec<BlameLine>,
+    /// Metadata for the commits the lines point at, so the gutter can show who
+    /// and when rather than only a hash.
+    ///
+    /// Loaded alongside the blame in the same task. Absent for a commit that
+    /// could not be read, which the gutter renders as the hash alone rather
+    /// than as blank.
+    pub commits: HashMap<ObjectId, Commit>,
 }
 
 /// An interactive rebase being planned, before anything has been run.

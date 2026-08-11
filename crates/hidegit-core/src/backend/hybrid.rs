@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
-use super::{GitBackend, gix_read, not_implemented};
+use super::{GitBackend, gix_read};
 use crate::error::{GitError, classify_remote_failure};
 use crate::model::{
     Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, ReflogEntry,
@@ -311,8 +311,8 @@ impl GitBackend for HybridBackend {
         gix_read::divergence(&self.repo())
     }
 
-    fn blame(&self, _path: &Path, _at: ObjectId) -> Result<Blame, GitError> {
-        Err(not_implemented("blame", "M6"))
+    fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError> {
+        gix_read::blame(&self.repo(), path, at)
     }
 
     fn invalidate(&self) {

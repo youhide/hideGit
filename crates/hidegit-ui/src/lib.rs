@@ -20,6 +20,7 @@ pub mod screen {
 }
 
 pub mod widget {
+    pub mod blame;
     pub mod detail;
     pub mod diff;
     pub mod graph;

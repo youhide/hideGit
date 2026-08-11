@@ -784,30 +784,34 @@ fn a_file_without_a_trailing_newline_says_so_on_the_line_that_ends_it() {
 }
 
 #[test]
-fn operations_from_later_milestones_say_which_milestone_they_land_in() {
-    let repo = fixture().commit("A").build();
+fn every_backend_method_is_implemented() {
+    // This used to assert the opposite: that `blame`, `merge`, `rebase` and the
+    // rest reported which milestone they were waiting for. The whole surface
+    // was declared from M1 and filled in milestone by milestone, and as of M6
+    // the last of them — `blame` — landed. Nothing here returns
+    // `NotImplementedYet` any more, so the test that policed the scaffold now
+    // asserts its absence.
+    let repo = fixture()
+        .commit("A")
+        .edit("A.txt", "one\n", "write it")
+        .build();
     let backend = repo.backend();
+    let head = repo.id("write it");
 
-    // The whole write surface is declared from M1 so the read/write split stays
-    // auditable in one file, and a method whose milestone has not landed says so
-    // rather than being absent. These are the ones that have not.
-    let unimplemented: Vec<(Result<(), GitError>, &str, &str)> = vec![(
-        backend.blame(Path::new("A.txt"), repo.id("A")).map(|_| ()),
-        "blame",
-        "M6",
-    )];
+    let results: Vec<Result<(), GitError>> = vec![
+        backend.blame(Path::new("A.txt"), head).map(|_| ()),
+        backend
+            .rebase("main", &hidegit_core::ops::RebasePlan::default())
+            .map(|_| ()),
+        backend.rebase_preview("main").map(|_| ()),
+        backend.reflog("HEAD", 1).map(|_| ()),
+    ];
 
-    for (result, expected_operation, expected_milestone) in unimplemented {
-        match result {
-            Err(GitError::NotImplementedYet {
-                operation,
-                milestone,
-            }) => {
-                assert_eq!(operation, expected_operation);
-                assert_eq!(milestone, expected_milestone);
-            }
-            other => panic!("expected NotImplementedYet for {expected_operation}, got {other:?}"),
-        }
+    for result in results {
+        assert!(
+            !matches!(result, Err(GitError::NotImplementedYet { .. })),
+            "a method still reports itself unimplemented: {result:?}"
+        );
     }
 }
 

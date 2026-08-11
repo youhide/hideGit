@@ -5,8 +5,9 @@ How hideGit is put together, and why. Decisions summarised here are argued in fu
 
 **Status:** M1 through M5 have landed, so everything described here is code that exists — the reads,
 the working-directory writes, the remote operations, the forge integration, and history rewriting:
-merge, rebase, cherry-pick, revert, reset, the reflog and the conflict resolver. `blame` is the one
-method still declared and returning `NotImplementedYet`; it arrives in M6.
+merge, rebase, cherry-pick, revert, reset, the reflog and the conflict resolver. **Every `GitBackend` method is
+implemented** as of M6, when `blame` — the last one — landed. `NotImplementedYet` stays in the error
+type for whatever a later backend cannot do, but nothing produces it.
 
 ## Contents
 
@@ -125,7 +126,7 @@ pub trait GitBackend: Send + Sync + Debug {
     fn remotes(&self) -> Result<Vec<Remote>, GitError>;
     fn stashes(&self) -> Result<Vec<StashEntry>, GitError>;
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError>;
-    fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;  // M6
+    fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;
     fn invalidate(&self);
 
     // ---- write: git CLI -----------------------------------------------

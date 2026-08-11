@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::{GitBackend, not_implemented};
+use super::GitBackend;
 use crate::error::GitError;
 use crate::model::{
     Blob, Commit, CommitDetail, Diff, DiffStats, DiffTarget, Divergence, FileChange, Head, LogPage,
@@ -111,6 +111,8 @@ pub struct FakeBackend {
     progress: Vec<ProgressUpdate>,
     /// Reflog entries, newest first, as [`GitBackend::reflog`] returns them.
     reflog: Vec<ReflogEntry>,
+    /// What [`GitBackend::blame`] answers.
+    blame: Blame,
     /// What a merge should answer, so the conflict path can be driven without
     /// building two divergent histories on disk.
     merge_outcome: MergeOutcome,
@@ -145,6 +147,7 @@ impl Default for FakeBackend {
             write_failure: None,
             progress: Vec::new(),
             reflog: Vec::new(),
+            blame: Blame::default(),
             // A clean merge is the boring default; the interesting cases are
             // set up per test, because a fixture that conflicts by default
             // would make every unrelated test assert its way past a conflict.
@@ -224,6 +227,11 @@ impl FakeBackend {
     /// Cancel button can be driven without a remote.
     pub fn with_progress(mut self, progress: Vec<ProgressUpdate>) -> Self {
         self.progress = progress;
+        self
+    }
+
+    pub fn with_blame(mut self, blame: Blame) -> Self {
+        self.blame = blame;
         self
     }
 
@@ -419,7 +427,8 @@ impl GitBackend for FakeBackend {
     }
 
     fn blame(&self, _path: &Path, _at: ObjectId) -> Result<Blame, GitError> {
-        Err(not_implemented("blame", "M6"))
+        self.check()?;
+        Ok(self.blame.clone())
     }
 
     fn invalidate(&self) {

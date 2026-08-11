@@ -12,8 +12,8 @@ use hidegit_core::error::GitError;
 use hidegit_core::fixture::fixture;
 use hidegit_core::model::{ObjectId, RepoState};
 use hidegit_core::ops::{
-    FastForward, MergeOpts, MergeOutcome, RebaseAction, RebasePlan, RebaseStep, ResetMode,
-    SequenceControl, SequenceOutcome, StartPoint,
+    CommitOpts, FastForward, MergeOpts, MergeOutcome, RebaseAction, RebasePlan, RebaseStep,
+    ResetMode, SequenceControl, SequenceOutcome, StartPoint,
 };
 use hidegit_core::process::GitCommand;
 
@@ -1189,5 +1189,125 @@ fn the_preview_matches_what_the_plan_then_rebases() {
         subjects(repo.path()),
         vec!["base", "main moved", "first", "second"],
         "every previewed commit survives, in the order the plan gave"
+    );
+}
+
+// --- blame ---------------------------------------------------------------------
+
+#[test]
+fn blame_attributes_every_line_to_the_commit_that_wrote_it() {
+    let repo = fixture()
+        .commit("base")
+        .edit("poem.txt", "one\ntwo\n", "first two lines")
+        .edit("poem.txt", "one\ntwo\nthree\n", "add the third")
+        .build();
+    let backend = repo.backend();
+    let head = head_of(repo.path());
+
+    let blame = backend
+        .blame(std::path::Path::new("poem.txt"), head)
+        .expect("blame reads");
+
+    assert_eq!(
+        blame
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["one", "two", "three"],
+        "one entry per line, in file order"
+    );
+    assert_eq!(
+        blame.lines.iter().map(|l| l.lineno).collect::<Vec<_>>(),
+        vec![1, 2, 3],
+        "line numbers are 1-based and count the file as of the blamed revision"
+    );
+
+    // The first two lines predate the third, so they carry an older commit.
+    assert_eq!(blame.lines[0].commit, blame.lines[1].commit);
+    assert_ne!(
+        blame.lines[2].commit, blame.lines[0].commit,
+        "the line added last is attributed to the commit that added it"
+    );
+    assert_eq!(
+        blame.lines[2].commit, head,
+        "and that commit is the most recent one"
+    );
+}
+
+#[test]
+fn blame_reads_the_file_as_of_the_commit_asked_for() {
+    // Not as of HEAD: blaming an older revision is most of the point.
+    let repo = fixture()
+        .commit("base")
+        .edit("poem.txt", "one\n", "just one")
+        .edit("poem.txt", "one\ntwo\n", "and two")
+        .build();
+    let backend = repo.backend();
+
+    let earlier = GitCommand::new("rev-parse")
+        .arg("--verify")
+        .revisions(["HEAD~1"])
+        .cwd(repo.path())
+        .run()
+        .expect("rev-parse succeeds");
+    let earlier = ObjectId::from_hex(earlier.trimmed_stdout().trim()).expect("a valid id");
+
+    let blame = backend
+        .blame(std::path::Path::new("poem.txt"), earlier)
+        .expect("blame reads");
+
+    assert_eq!(
+        blame
+            .lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["one"],
+        "the second line does not exist yet at that revision"
+    );
+}
+
+#[test]
+fn blaming_a_path_that_is_not_there_is_an_error_not_an_empty_answer() {
+    // An empty blame and a missing file look identical in a view, and the
+    // difference matters: one is a file nobody has edited, the other is a typo.
+    let repo = fixture()
+        .commit("base")
+        .edit("poem.txt", "one\n", "one")
+        .build();
+    let backend = repo.backend();
+    let head = head_of(repo.path());
+
+    assert!(
+        backend
+            .blame(std::path::Path::new("no-such-file.txt"), head)
+            .is_err()
+    );
+}
+
+#[test]
+fn blame_follows_a_file_through_a_rename() {
+    let repo = fixture()
+        .commit("base")
+        .edit("before.txt", "written once\n", "write it")
+        .rename("before.txt", "after.txt")
+        .build();
+    let backend = repo.backend();
+
+    // The rename is staged by the fixture but not committed, so commit it.
+    backend
+        .create_commit("rename it", CommitOpts::default())
+        .expect("the commit succeeds");
+    let head = head_of(repo.path());
+
+    let blame = backend
+        .blame(std::path::Path::new("after.txt"), head)
+        .expect("blame reads");
+
+    assert_eq!(blame.lines.len(), 1);
+    assert_ne!(
+        blame.lines[0].commit, head,
+        "the line is attributed to the commit that wrote it, not to the rename"
     );
 }

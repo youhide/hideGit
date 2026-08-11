@@ -16,7 +16,7 @@ use hidegit_core::model::{
     WorktreeStatus,
 };
 use hidegit_core::ops::{
-    CheckoutTarget, FetchOutcome, ForceMode, MergeOutcome, ProgressUpdate, PullOutcome,
+    BlameLine, CheckoutTarget, FetchOutcome, ForceMode, MergeOutcome, ProgressUpdate, PullOutcome,
     PushOutcome, RebaseAction, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
@@ -168,6 +168,20 @@ impl AlertToggle {
         };
         *slot = !*slot;
     }
+}
+
+/// One file blamed, with everything the view needs to render it.
+///
+/// A named shape rather than a tuple: four fields in a message is where a
+/// reader starts counting positions to work out which is which.
+#[derive(Debug, Clone)]
+pub struct BlameLoad {
+    pub path: PathBuf,
+    /// The revision blamed, which is not necessarily `HEAD`.
+    pub at: ObjectId,
+    pub lines: Vec<BlameLine>,
+    /// Metadata for the distinct commits `lines` point at.
+    pub commits: Vec<Commit>,
 }
 
 /// A repository, opened and read far enough to render its first screen.
@@ -420,6 +434,15 @@ pub enum RepoMessage {
     StashDropRequested(usize),
     /// The confirmation was accepted. Only ever sent by the dialog.
     StashDropConfirmed(usize),
+
+    /// Open the blame view for a path, at the commit being shown.
+    BlameRequested {
+        path: PathBuf,
+        at: ObjectId,
+    },
+    /// The blame, and the commits its lines point at.
+    BlameLoaded(Box<Result<BlameLoad, UiError>>),
+    BlameDismissed,
 
     // ---- history operations ----
     /// The `⋯` on a commit. `update` builds the sheet, because a sheet is an

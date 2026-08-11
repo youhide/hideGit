@@ -13,8 +13,9 @@ PRs.
 commit graph, a read-only viewer, the working directory — status, staging by file, hunk and line,
 discard, commit, a filesystem watcher — everything that touches a remote, pull request alerts over
 GitHub, and history rewriting: merge, rebase, cherry-pick, revert, reset, the reflog and a three-pane
-conflict resolver. M6 is in progress: the interactive rebase plan editor, the keyboard shortcut bindings and
-drag-and-drop on the graph have landed, which closes both M5 deferrals. Check
+conflict resolver. M6 is in progress: the interactive rebase plan editor, the keyboard shortcut bindings,
+drag-and-drop on the graph, the light theme, a settings screen and blame have landed — so **every
+`GitBackend` method is now implemented**, and both M5 deferrals are closed. Check
 [ROADMAP.md](./docs/ROADMAP.md) before assuming a feature exists, and check the code before referring
 to a module.
 

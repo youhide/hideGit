@@ -23,7 +23,15 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
                 Some(Selection::Stash(at)) => repo.stashes.get(at),
                 _ => None,
             };
-            commit(detail, diff, *file, repo.diff_mode, stash, palette)
+            commit(
+                detail,
+                diff,
+                *file,
+                repo.diff_mode,
+                stash,
+                repo.blame.as_ref(),
+                palette,
+            )
         }
         DetailPane::WorkingDirectory {
             staged,
@@ -63,12 +71,14 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
 /// `stash` is set when this commit is a stash entry rather than part of history, in
 /// which case the heading says so — `git stash show` is exactly a commit against
 /// its first parent, so everything below the heading is shared.
+#[allow(clippy::too_many_arguments)]
 fn commit<'a>(
     detail: &'a CommitDetail,
     diff: &'a Diff,
     selected_file: usize,
     mode: DiffMode,
     stash: Option<&'a StashEntry>,
+    blame: Option<&'a crate::state::BlameView>,
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
     let c = &detail.commit;
@@ -214,43 +224,78 @@ fn commit<'a>(
             _ => change.path.display().to_string(),
         };
 
-        files = files.push(
-            button(
-                container(
-                    row![
-                        text(glyph).size(12.0).font(Font::MONOSPACE).color(colour),
-                        text(label)
-                            .size(12.0)
-                            .font(Font::MONOSPACE)
-                            .color(palette.text),
-                    ]
-                    .spacing(8)
-                    .align_y(Center),
-                )
-                .padding(Padding::from([3, 10])),
+        // A deleted file has no lines to blame at this revision, so the row does
+        // not offer it rather than offering an action that would fail.
+        let blamable = !matches!(change.status, hidegit_core::model::ChangeStatus::Deleted);
+        let blame_target = change.path.clone();
+        let blame_at = c.id;
+
+        let row_button = button(
+            container(
+                row![
+                    text(glyph).size(12.0).font(Font::MONOSPACE).color(colour),
+                    text(label)
+                        .size(12.0)
+                        .font(Font::MONOSPACE)
+                        .color(palette.text),
+                ]
+                .spacing(8)
+                .align_y(Center),
             )
-            .width(Fill)
-            .padding(0)
-            .style(move |_, status| {
-                let background = match (is_selected, status) {
-                    (true, _) => Some(palette_copy.selection.into()),
-                    (false, button::Status::Hovered) => Some(
-                        iced::Color {
-                            a: 0.07,
-                            ..palette_copy.text
-                        }
-                        .into(),
-                    ),
-                    _ => None,
-                };
-                button::Style {
-                    background,
-                    text_color: palette_copy.text,
-                    ..button::Style::default()
-                }
-            })
-            .on_press(RepoMessage::FileSelected(i)),
-        );
+            .padding(Padding::from([3, 10])),
+        )
+        .width(Fill)
+        .padding(0)
+        .style(move |_, status| {
+            let background = match (is_selected, status) {
+                (true, _) => Some(palette_copy.selection.into()),
+                (false, button::Status::Hovered) => Some(
+                    iced::Color {
+                        a: 0.07,
+                        ..palette_copy.text
+                    }
+                    .into(),
+                ),
+                _ => None,
+            };
+            button::Style {
+                background,
+                text_color: palette_copy.text,
+                ..button::Style::default()
+            }
+        })
+        .on_press(RepoMessage::FileSelected(i));
+
+        let mut entry = row![row_button].align_y(Center);
+        if blamable {
+            entry = entry.push(
+                button(text("blame").size(10.0))
+                    .padding([2, 6])
+                    .style(move |_, status| button::Style {
+                        background: Some(
+                            match status {
+                                button::Status::Hovered => palette_copy.border,
+                                _ => iced::Color::TRANSPARENT,
+                            }
+                            .into(),
+                        ),
+                        text_color: palette_copy.muted,
+                        border: iced::Border {
+                            radius: 3.0.into(),
+                            ..iced::Border::default()
+                        },
+                        ..button::Style::default()
+                    })
+                    .on_press(RepoMessage::BlameRequested {
+                        path: blame_target,
+                        // Blamed at the commit being looked at, not at HEAD:
+                        // the pane is showing that revision, and answering
+                        // about a different one would be a quiet lie.
+                        at: blame_at,
+                    }),
+            );
+        }
+        files = files.push(entry);
     }
 
     let border = palette.border;
@@ -279,14 +324,20 @@ fn commit<'a>(
                     background: Some(border.into()),
                     ..container::Style::default()
                 }),
-            container(crate::widget::diff::view(
-                diff,
-                selected_file,
-                mode,
-                palette,
-                // A commit's diff is history: there is nothing to stage in it.
-                None
-            ))
+            container(match blame {
+                // Blame replaces the diff rather than sitting beside it: both
+                // answer "what is in this file", and two answers at once in one
+                // pane is how a screen stops being readable.
+                Some(blame) => crate::widget::blame::view(blame, palette),
+                None => crate::widget::diff::view(
+                    diff,
+                    selected_file,
+                    mode,
+                    palette,
+                    // A commit's diff is history: there is nothing to stage in it.
+                    None
+                ),
+            })
             .width(Fill)
             .height(Fill),
         ]
