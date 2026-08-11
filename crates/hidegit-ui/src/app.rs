@@ -149,10 +149,24 @@ impl Hidegit {
         initial: Option<PathBuf>,
         recents: Vec<PathBuf>,
         alerts: hidegit_forge::AlertPrefs,
+        theme: &str,
     ) -> (Self, Task<Message>) {
         let mut this = Self::default();
         this.app.recents = recents;
         this.app.alerts = alerts;
+
+        // An unknown name falls back rather than refusing to start: a typo in a
+        // config file is not a reason to have no window. It is said out loud,
+        // because a theme silently not applying reads as the setting being
+        // ignored — which, until now, it was.
+        match crate::theme::Theme::by_name(theme) {
+            Some(theme) => this.app.theme = theme,
+            None => tracing::warn!(
+                requested = theme,
+                falling_back_to = crate::theme::Theme::DARK_NAME,
+                "unknown theme name"
+            ),
+        }
 
         // The forge client is built off the UI thread, because building it
         // reads the keychain and a keychain can prompt.
@@ -3656,6 +3670,21 @@ mod tests {
             vec!["one\n".to_owned(), "two".to_owned()]
         );
         assert!(split_kept("").is_empty());
+    }
+
+    #[test]
+    fn the_configured_theme_is_applied_and_a_typo_falls_back() {
+        // The config has carried a theme name since M1 and nothing read it, so
+        // setting one did nothing at all.
+        let (app, _) = Hidegit::new(None, Vec::new(), Default::default(), "hidegit-light");
+        assert_eq!(app.app.theme.palette, crate::theme::Palette::LIGHT);
+
+        let (app, _) = Hidegit::new(None, Vec::new(), Default::default(), "hidegit-nope");
+        assert_eq!(
+            app.app.theme.palette,
+            crate::theme::Palette::DARK,
+            "a typo falls back rather than leaving the window unthemed"
+        );
     }
 
     #[test]

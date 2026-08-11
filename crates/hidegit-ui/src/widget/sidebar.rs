@@ -812,13 +812,11 @@ pub(crate) fn item_style(
     status: button::Status,
 ) -> button::Style {
     let background = match (selected, status) {
-        (true, _) => Some(
-            iced::Color {
-                a: 0.22,
-                ..palette.accent
-            }
-            .into(),
-        ),
+        // From the theme, not the accent at an alpha: see `Palette::selection`.
+        (true, _) => Some(palette.selection.into()),
+        // Hover stays an alpha of the *text* colour, which inverts correctly on
+        // its own — it is a neutral darkening on light and a neutral lightening
+        // on dark, with no hue to go muddy.
         (false, button::Status::Hovered) => Some(
             iced::Color {
                 a: 0.08,

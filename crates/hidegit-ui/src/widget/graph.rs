@@ -391,16 +391,12 @@ impl GraphCanvas<'_> {
                 Some(Selection::Commit(id)) if *id == commit.id
             );
             if selected {
+                // The colour comes from the theme rather than from the accent
+                // at an alpha: see `Palette::selection`.
                 let tint = if self.focused {
-                    Color {
-                        a: 0.22,
-                        ..self.palette.accent
-                    }
+                    self.palette.selection
                 } else {
-                    Color {
-                        a: 0.10,
-                        ..self.palette.accent
-                    }
+                    self.palette.selection_idle
                 };
                 frame.fill_rectangle(
                     Point::new(0.0, top),

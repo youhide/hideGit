@@ -233,13 +233,7 @@ fn commit<'a>(
             .padding(0)
             .style(move |_, status| {
                 let background = match (is_selected, status) {
-                    (true, _) => Some(
-                        iced::Color {
-                            a: 0.20,
-                            ..palette_copy.accent
-                        }
-                        .into(),
-                    ),
+                    (true, _) => Some(palette_copy.selection.into()),
                     (false, button::Status::Hovered) => Some(
                         iced::Color {
                             a: 0.07,

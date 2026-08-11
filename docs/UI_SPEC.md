@@ -511,7 +511,22 @@ that nothing dispatches yet; they are listed rather than removed so the gap is v
 
 ## Theming
 
-Dark is the default and is designed first. Light is a designed theme, not an inverted dark one.
+Dark is the default and is designed first. Light is a designed theme, not an inverted dark one —
+`hidegit-light` ships alongside it, selected with `theme.name` in `config.toml`.
+
+What "not inverted" means concretely, since it is easy to say and easy to skip:
+
+- **The brand orange is darkened for light.** As drawn it reaches only 3.21:1 on light's near-white
+  panel, below the bar for the text it is used for. Dark uses it as drawn *because it clears the bar
+  there*; light applies the same rule and gets a different hex.
+- **A panel stays raised in both.** Light is a grey page with near-white panels, not a white page
+  with grey ones — inverting that relationship makes every panel read as sunken.
+- **Selection colours live in the palette, not as an alpha over the accent.** An alpha tuned on a
+  dark background does not transfer: the wash that reads as a glow over near-black reads as a stain
+  over near-white, and a warm accent over a cool grey page composites to a muddy pink. Each theme
+  names its own `selection` and `selection_idle`.
+- **Every contrast constraint below is asserted for both palettes.** They were asserted for dark
+  only until light arrived, which is exactly how an unchecked light theme ships.
 
 ```toml
 [theme]

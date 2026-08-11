@@ -191,7 +191,7 @@ fn boot(
     config: Config,
     geometry: Geometry,
 ) -> (Shell, Task<ShellMessage>) {
-    let (ui, task) = Hidegit::new(initial, recents, config.alerts.clone());
+    let (ui, task) = Hidegit::new(initial, recents, config.alerts.clone(), &config.theme.name);
 
     (
         Shell {
