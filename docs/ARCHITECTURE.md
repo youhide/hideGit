@@ -612,6 +612,13 @@ Some of these deserve emphasis:
 
 ## Configuration and state
 
+`config.toml` is edited **in place** when the settings screen changes something: the document is
+parsed with `toml_edit`, the handful of keys that screen owns are set, and everything else — comments,
+key order, tables hideGit knows nothing about — is written back untouched. Round-tripping through
+`serde` would strip every comment the first time somebody toggled a checkbox, and the file is meant
+to be hand-edited and carried between machines. A file that will not parse is left alone rather than
+replaced, because somebody is probably mid-edit.
+
 Paths come from `directories`, so each platform gets its conventional location.
 
 | What | Location | Format |

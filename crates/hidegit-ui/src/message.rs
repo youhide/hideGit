@@ -92,6 +92,84 @@ impl From<ForgeError> for UiError {
     }
 }
 
+/// Which alert switch a [`Message::AlertToggled`] flipped.
+///
+/// An enum rather than a closure or a field path, because messages have to be
+/// `Clone` and the shell inspects them to know when to write settings back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertToggle {
+    /// The master switch.
+    Enabled,
+    ReviewRequested,
+    ReviewSubmitted,
+    PrCommented,
+    ChecksFailed,
+    ChecksPassed,
+    PrConflicting,
+    PrMerged,
+    PrClosed,
+}
+
+impl AlertToggle {
+    /// Every switch, in the order the screen lists them.
+    pub const ALL: [Self; 9] = [
+        Self::Enabled,
+        Self::ReviewRequested,
+        Self::ReviewSubmitted,
+        Self::PrCommented,
+        Self::ChecksFailed,
+        Self::ChecksPassed,
+        Self::PrConflicting,
+        Self::PrMerged,
+        Self::PrClosed,
+    ];
+
+    /// The label the screen shows, in the second person: these are things that
+    /// happen to *you*, which is why they are worth a notification at all.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Enabled => "Show desktop notifications",
+            Self::ReviewRequested => "A review is requested from you",
+            Self::ReviewSubmitted => "Someone reviews your pull request",
+            Self::PrCommented => "Someone comments on your pull request",
+            Self::ChecksFailed => "CI fails on your pull request",
+            Self::ChecksPassed => "CI passes on your pull request",
+            Self::PrConflicting => "Your pull request starts conflicting",
+            Self::PrMerged => "Your pull request is merged",
+            Self::PrClosed => "Your pull request is closed",
+        }
+    }
+
+    pub fn get(self, prefs: &hidegit_forge::AlertPrefs) -> bool {
+        match self {
+            Self::Enabled => prefs.enabled,
+            Self::ReviewRequested => prefs.events.review_requested,
+            Self::ReviewSubmitted => prefs.events.review_submitted,
+            Self::PrCommented => prefs.events.pr_commented,
+            Self::ChecksFailed => prefs.events.checks_failed,
+            Self::ChecksPassed => prefs.events.checks_passed,
+            Self::PrConflicting => prefs.events.pr_conflicting,
+            Self::PrMerged => prefs.events.pr_merged,
+            Self::PrClosed => prefs.events.pr_closed,
+        }
+    }
+
+    pub fn toggle(self, prefs: &mut hidegit_forge::AlertPrefs) {
+        let slot = match self {
+            Self::Enabled => &mut prefs.enabled,
+            Self::ReviewRequested => &mut prefs.events.review_requested,
+            Self::ReviewSubmitted => &mut prefs.events.review_submitted,
+            Self::PrCommented => &mut prefs.events.pr_commented,
+            Self::ChecksFailed => &mut prefs.events.checks_failed,
+            Self::ChecksPassed => &mut prefs.events.checks_passed,
+            Self::PrConflicting => &mut prefs.events.pr_conflicting,
+            Self::PrMerged => &mut prefs.events.pr_merged,
+            Self::PrClosed => &mut prefs.events.pr_closed,
+        };
+        *slot = !*slot;
+    }
+}
+
 /// A repository, opened and read far enough to render its first screen.
 #[derive(Debug, Clone)]
 pub struct OpenedRepository {
@@ -160,6 +238,15 @@ pub enum Message {
     /// thing a bug report needs — the argument vector, Git's own stderr, the
     /// forge's own message — could be read on screen and not taken anywhere.
     ToastCopied(u64),
+
+    /// `Cmd+,`, or the toolbar.
+    SettingsRequested,
+    SettingsDismissed,
+    /// A theme was picked. Applied immediately — a theme you have to restart to
+    /// see is a theme you cannot choose between.
+    ThemeChosen(String),
+    /// One alert switch was flipped.
+    AlertToggled(AlertToggle),
 
     // ---- the forge ----
     /// The client exists, and a stored session was restored if there was one.

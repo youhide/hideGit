@@ -292,3 +292,154 @@ mod tests {
         assert_eq!(geometry.y, None);
     }
 }
+
+/// Writes the settings a user can change from the interface, **keeping the rest
+/// of the file exactly as they wrote it**.
+///
+/// `config.toml` is theirs: hand-edited, checked into a dotfiles repository,
+/// carrying comments explaining why a quiet hour starts when it does. Round-
+/// tripping it through `serde` would silently strip every comment and reorder
+/// every table the first time somebody toggled a checkbox, so the document is
+/// edited in place instead — only the keys the screen owns are touched, and
+/// anything else in the file is left alone, including keys hideGit does not
+/// know about.
+///
+/// Never fatal. A settings file that cannot be written is worth a warning, not
+/// a refusal to run.
+pub fn save_settings(path: &Path, settings: &Settings) {
+    use toml_edit::{Item, value};
+
+    let mut doc = match std::fs::read_to_string(path) {
+        Ok(text) => match text.parse::<toml_edit::DocumentMut>() {
+            Ok(doc) => doc,
+            // Unparseable: writing a fresh document would delete whatever they
+            // were in the middle of typing. Refusing keeps their file.
+            Err(error) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "the settings file is not valid TOML; not overwriting it"
+                );
+                return;
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "could not read the settings file");
+            return;
+        }
+    };
+
+    // `or_insert` on a missing table creates it; an existing one keeps its
+    // comments and the order its keys were written in.
+    let theme = doc["theme"].or_insert(Item::Table(toml_edit::Table::new()));
+    theme["name"] = value(settings.theme.clone());
+
+    let alerts = doc["alerts"].or_insert(Item::Table(toml_edit::Table::new()));
+    alerts["enabled"] = value(settings.alerts.enabled);
+
+    let events = alerts["events"].or_insert(Item::Table(toml_edit::Table::new()));
+    let e = &settings.alerts.events;
+    events["review_requested"] = value(e.review_requested);
+    events["checks_failed"] = value(e.checks_failed);
+    events["checks_passed"] = value(e.checks_passed);
+    events["pr_conflicting"] = value(e.pr_conflicting);
+    events["pr_merged"] = value(e.pr_merged);
+    events["pr_closed"] = value(e.pr_closed);
+    events["review_submitted"] = value(e.review_submitted);
+    events["pr_commented"] = value(e.pr_commented);
+
+    if let Some(parent) = path.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(path = %parent.display(), %error, "could not create the config directory");
+        return;
+    }
+
+    if let Err(error) = std::fs::write(path, doc.to_string()) {
+        tracing::warn!(path = %path.display(), %error, "could not write the settings file");
+    }
+}
+
+/// The settings the interface can change.
+///
+/// A shape of its own rather than the whole [`Config`], because the screen owns
+/// exactly these and writing the rest back would claim ownership of keys nobody
+/// edited.
+#[derive(Debug, Clone)]
+pub struct Settings {
+    pub theme: String,
+    pub alerts: hidegit_forge::AlertPrefs,
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    fn settings(theme: &str) -> Settings {
+        Settings {
+            theme: theme.to_owned(),
+            alerts: hidegit_forge::AlertPrefs::default(),
+        }
+    }
+
+    #[test]
+    fn saving_keeps_the_comments_and_keys_the_user_wrote() {
+        // The whole reason this does not round-trip through serde. A settings
+        // file is hand-edited and often lives in a dotfiles repository; losing
+        // its comments the first time somebody toggles a checkbox is a real
+        // cost paid for a trivial convenience.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# my settings, do not laugh\n\
+             [theme]\n\
+             # picked to match my terminal\n\
+             name = \"hidegit-dark\"\n\
+             \n\
+             [window]\n\
+             remember_geometry = false\n",
+        )
+        .unwrap();
+
+        save_settings(&path, &settings("hidegit-light"));
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("# my settings, do not laugh"), "{after}");
+        assert!(after.contains("# picked to match my terminal"), "{after}");
+        // A key this screen does not own is left exactly as it was.
+        assert!(after.contains("remember_geometry = false"), "{after}");
+        assert!(after.contains(r#"name = "hidegit-light""#), "{after}");
+
+        // And it still parses back into the config it came from.
+        let reloaded: Config = load(&path);
+        assert_eq!(reloaded.theme.name, "hidegit-light");
+        assert!(!reloaded.window.remember_geometry);
+    }
+
+    #[test]
+    fn saving_over_a_broken_file_refuses_rather_than_replacing_it() {
+        // Somebody is mid-edit with an unclosed string. Writing a fresh
+        // document here would throw away whatever they were typing.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let broken = "[theme]\nname = \"unclosed\n";
+        std::fs::write(&path, broken).unwrap();
+
+        save_settings(&path, &settings("hidegit-light"));
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+    }
+
+    #[test]
+    fn saving_with_no_file_yet_creates_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("config.toml");
+
+        save_settings(&path, &settings("hidegit-light"));
+
+        let reloaded: Config = load(&path);
+        assert_eq!(reloaded.theme.name, "hidegit-light");
+    }
+}
