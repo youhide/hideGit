@@ -18,7 +18,7 @@ use hidegit_core::model::{ChangeStatus, Conflict, Diff, FileChange, RepoState, W
 
 use crate::Element;
 use crate::message::RepoMessage;
-use crate::state::{DiffMode, Draft, Resolver, Section, StagingRow};
+use crate::state::{COMPOSER_FIELD_IDS, DiffMode, Draft, Resolver, Section, StagingRow};
 use crate::theme::Palette;
 use crate::widget::diff;
 use crate::widget::sidebar::{heading, item_style};
@@ -430,6 +430,9 @@ fn composer<'a>(
     // field in a `mouse_area` to catch the click that grants focus does not
     // work — the `mouse_area` swallows it and the field never focuses at all.
     let subject = text_input("Summary", &draft.subject)
+        // The id is what lets the `Space` binding find out this field has focus.
+        // See `COMPOSER_FIELD_IDS`.
+        .id(COMPOSER_FIELD_IDS[0])
         .on_input(RepoMessage::SubjectChanged)
         // `Enter` in the subject commits, the way it does in every other
         // one-line message field.
@@ -438,6 +441,7 @@ fn composer<'a>(
         .padding(Padding::from([6, 8]));
 
     let body = text_input("Description (optional)", &draft.body)
+        .id(COMPOSER_FIELD_IDS[1])
         .on_input(RepoMessage::BodyChanged)
         .size(13.0)
         .padding(Padding::from([6, 8]));

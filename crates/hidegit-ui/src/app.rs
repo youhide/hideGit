@@ -31,7 +31,7 @@ use crate::message::{
 use crate::state::{
     ActionSheet, App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo,
     Operation, PAGE_SIZE, PROMPT_FIELD_IDS, Pane, PrPanel, PrState, Prompt, PromptField,
-    PromptKind, ROW_HEIGHT, Resolver, Screen, Section, Selection,
+    PromptKind, ROW_HEIGHT, RebaseEditor, Resolver, Screen, Section, Selection,
 };
 use crate::{alerts, forge, screen, watcher, widget};
 
@@ -697,6 +697,7 @@ impl Hidegit {
                 ..PrPanel::default()
             },
             resolver: None,
+            plan: None,
         });
         self.caches.insert(index, canvas::Cache::new());
         self.app.active = Some(index);
@@ -1144,6 +1145,39 @@ impl Hidegit {
                 ))
             }
 
+            RepoMessage::StageToggleRequested => {
+                // `find_focused` reports the focused *focusable* widget, and the
+                // only focusables here are text inputs. `collect` is what makes
+                // the answer arrive at all: the operation yields nothing when
+                // nothing is focused, and a bare `Task` would then never fire.
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::find_focused(),
+                )
+                .collect()
+                .map(move |focused: Vec<iced::advanced::widget::Id>| {
+                    Message::Repo(index, RepoMessage::StageToggleResolved(focused.is_empty()))
+                })
+            }
+
+            RepoMessage::StageToggleResolved(free) => {
+                if !free {
+                    // Something is being typed into. The key belongs to it.
+                    return Task::none();
+                }
+                let Some((section, path)) = selected_path(repo) else {
+                    return Task::none();
+                };
+                // Which verb it means is read from the row's section, exactly as
+                // the row's own button does — one rule, two ways to reach it.
+                Task::done(Message::Repo(
+                    index,
+                    match section {
+                        Section::Staged => RepoMessage::UnstageRequested(vec![path]),
+                        _ => RepoMessage::StageRequested(vec![path]),
+                    },
+                ))
+            }
+
             RepoMessage::StageRequested(paths) => {
                 let backend = Arc::clone(&repo.backend);
                 write_task(index, move || backend.stage(&borrowed(&paths)))
@@ -1482,6 +1516,75 @@ impl Hidegit {
                 // An empty plan is an ordinary rebase. The plan editor is what
                 // fills one in, and it is not built yet.
                 blocking(move || backend.rebase(&onto, &RebasePlan::default()))
+                    .map(move |r| Message::Repo(index, RepoMessage::SequenceFinished(Box::new(r))))
+            }
+
+            RepoMessage::RebasePlanRequested(onto) => {
+                let backend = Arc::clone(&repo.backend);
+                let named = onto.clone();
+                blocking(move || backend.rebase_preview(&onto).map(|c| (named, c))).map(
+                    move |result| {
+                        Message::Repo(index, RepoMessage::RebasePlanLoaded(Box::new(result)))
+                    },
+                )
+            }
+
+            RepoMessage::RebasePlanLoaded(result) => {
+                match *result {
+                    Ok((onto, commits)) => repo.plan = Some(RebaseEditor::new(onto, commits)),
+                    Err(error) => {
+                        repo.plan = None;
+                        self.app.toast(&error);
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanRowSelected(at) => {
+                if let Some(plan) = &mut repo.plan {
+                    plan.select(at);
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanActionChosen(at, action) => {
+                if let Some(plan) = &mut repo.plan {
+                    plan.set_action(at, action);
+                    // Choosing an action also moves the selection there, so the
+                    // move buttons act on the row just touched rather than on
+                    // whatever was selected before.
+                    plan.select(at);
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanRowMoved(delta) => {
+                if let Some(plan) = &mut repo.plan {
+                    plan.move_selected(delta);
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanDismissed => {
+                // Nothing has run, so closing costs nothing and needs no
+                // confirmation. That is the point of planning before acting.
+                repo.plan = None;
+                Task::none()
+            }
+
+            RepoMessage::PlanStarted => {
+                let Some(editor) = &repo.plan else {
+                    return Task::none();
+                };
+                if editor.blocked().is_some() {
+                    return Task::none();
+                }
+
+                let onto = editor.onto.clone();
+                let plan = editor.plan();
+                repo.plan = None;
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || backend.rebase(&onto, &plan))
                     .map(move |r| Message::Repo(index, RepoMessage::SequenceFinished(Box::new(r))))
             }
 
@@ -1935,15 +2038,39 @@ impl Hidegit {
                 })
             }
 
+            RepoMessage::CommitAndPushRequested => {
+                // Two operations, not one: a commit that succeeds is kept even
+                // when the push fails, which is the common case since the push
+                // is the half that needs a network and a credential.
+                repo.draft.push_after_commit = true;
+                Task::done(Message::Repo(index, RepoMessage::CommitRequested))
+            }
+
             RepoMessage::Committed(result) => match *result {
                 Ok(_) => {
+                    let then_push = repo.draft.push_after_commit;
                     // The draft is only cleared once the commit actually
                     // landed. A failed hook must not cost the user the message
                     // they wrote.
                     repo.draft = Draft::default();
-                    Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                    let mut tasks = vec![Task::done(Message::Repo(
+                        index,
+                        RepoMessage::RepositoryChanged,
+                    ))];
+                    if then_push {
+                        tasks.push(Task::done(Message::Repo(
+                            index,
+                            RepoMessage::PushRequested {
+                                force: ForceMode::None,
+                            },
+                        )));
+                    }
+                    Task::batch(tasks)
                 }
                 Err(error) => {
+                    // The push is abandoned with it: pushing a commit that was
+                    // never made is not what was asked for.
+                    repo.draft.push_after_commit = false;
                     self.app.toast(&error);
                     Task::none()
                 }
@@ -2029,6 +2156,23 @@ impl Hidegit {
                 {
                     repo.graph.selected = row;
                 }
+
+                // A rewrite can delete the commit the detail pane is showing —
+                // a dropped step in a rebase, a squashed one, anything before a
+                // hard reset. Left alone the pane goes on rendering it from the
+                // copy it already holds, which reads as "still there".
+                //
+                // Only when the whole history is loaded: a commit missing from a
+                // partly-paged graph has probably just not been walked to yet,
+                // and clearing the selection then would fight the user on every
+                // refresh of a large repository.
+                let gone = matches!(repo.selection, Some(Selection::Commit(id))
+                    if !repo.graph.loading_more
+                        && !repo.graph.commits.iter().any(|c| c.id == id));
+                if gone {
+                    repo.selection = repo.graph.commits.first().map(|c| Selection::Commit(c.id));
+                    repo.detail = DetailPane::Empty;
+                }
                 cache.clear();
 
                 let mut tasks = vec![
@@ -2038,6 +2182,14 @@ impl Hidegit {
                     // count never delays the branch list and the graph.
                     self.divergence_task(index),
                 ];
+                // The commit it fell back to has to be loaded, or the pane stays
+                // empty with a selection pointing at it.
+                if gone && let Some(selection) = self.app.repos[index].selection.clone() {
+                    tasks.push(Task::done(Message::Repo(
+                        index,
+                        RepoMessage::Selected(selection),
+                    )));
+                }
                 // The staging view holds diffs, which the write just changed.
                 // Reselecting reloads them through the one path that knows how.
                 if matches!(
@@ -2258,7 +2410,18 @@ impl Hidegit {
                     .get(&index)
                     .expect("every open repository has a canvas cache");
 
-                screen::repository::view(&self.app, repo, index, palette, cache)
+                let base = screen::repository::view(&self.app, repo, index, palette, cache);
+
+                // The plan editor sits over the repository rather than beside
+                // it: it owns the screen until it is run or closed, and nothing
+                // behind it can be acted on meaningfully while a rebase is
+                // being composed.
+                match &repo.plan {
+                    Some(plan) => {
+                        iced::widget::stack![base, widget::plan::view(plan, index, palette)].into()
+                    }
+                    None => base,
+                }
             }
             _ => screen::welcome::view(&self.app.recents, palette),
         }
@@ -2271,22 +2434,28 @@ impl Hidegit {
             self.app
                 .active_repo()
                 .is_some_and(|repo| repo.draft.editing),
+            // Cycling panes needs to know which one has focus now, and only the
+            // repository knows. Carried in the subscription's identity so the
+            // binding is resolved where the answer is, rather than round-tripping
+            // through a message that would arrive a frame late.
+            self.app.active_repo().map(|repo| repo.focus),
         );
 
-        let keys = keyboard::listen()
-            .with(context)
-            .map(|((active, modal, editing), event)| {
-                let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-                    return Message::ToastDismissed(u64::MAX);
-                };
-                // A modal owns the keyboard while it is up. Letting `Space` stage
-                // something behind a "discard?" dialog would be the worst
-                // possible moment to act on a stray key.
-                if let Some(modal) = modal {
-                    return modal_shortcut(&key, modal);
-                }
-                shortcut(&key, modifiers, active, editing)
-            });
+        let keys =
+            keyboard::listen()
+                .with(context)
+                .map(|((active, modal, editing, pane), event)| {
+                    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                        return Message::ToastDismissed(u64::MAX);
+                    };
+                    // A modal owns the keyboard while it is up. Letting `Space` stage
+                    // something behind a "discard?" dialog would be the worst
+                    // possible moment to act on a stray key.
+                    if let Some(modal) = modal {
+                        return modal_shortcut(&key, modal);
+                    }
+                    shortcut(&key, modifiers, active, editing, pane)
+                });
 
         // One watch per open repository, so a change made in an editor or by a
         // `git` command in a terminal refreshes the view on its own.
@@ -2365,6 +2534,7 @@ fn shortcut(
     modifiers: keyboard::Modifiers,
     active: Option<usize>,
     editing: bool,
+    pane: Option<Pane>,
 ) -> Message {
     use keyboard::key::{Key, Named};
 
@@ -2386,6 +2556,9 @@ fn shortcut(
     let shift = modifiers.shift();
 
     match key {
+        // Checked before the plain `Cmd+Enter`: match arms are tried in order,
+        // and the unshifted one matches a shifted press too.
+        Key::Named(Named::Enter) if command && shift => repo(RepoMessage::CommitAndPushRequested),
         Key::Named(Named::Enter) if command => repo(RepoMessage::CommitRequested),
         Key::Named(Named::Backspace) if command => repo(RepoMessage::DiscardSelectedRequested),
         // Checked before the unshifted `o`, or `Cmd+Shift+O` would open a picker.
@@ -2421,19 +2594,37 @@ fn shortcut(
                 force: ForceMode::None,
             })
         }
+        // `Space` does not act here. It asks whether anything has keyboard
+        // focus first, because iced keeps text-input focus inside the widget
+        // and the `editing` flag only turns true once a key has already
+        // arrived — so a click into the message field followed by `Space`
+        // would otherwise stage a file. See `StageToggleRequested`.
+        Key::Named(Named::Space) if !command => repo(RepoMessage::StageToggleRequested),
         Key::Character(c) if c.as_str() == "j" && !command => repo(RepoMessage::HunkStepped(1)),
         Key::Character(c) if c.as_str() == "k" && !command => repo(RepoMessage::HunkStepped(-1)),
         Key::Named(Named::ArrowDown) => repo(RepoMessage::SelectionMoved(1)),
         Key::Named(Named::ArrowUp) => repo(RepoMessage::SelectionMoved(-1)),
         Key::Named(Named::PageDown) => repo(RepoMessage::SelectionMoved(20)),
         Key::Named(Named::PageUp) => repo(RepoMessage::SelectionMoved(-20)),
-        Key::Named(Named::Tab) => {
-            // Focus cycling needs to know the current pane, which only the
-            // repository has; the message carries the direction and `update`
-            // resolves it.
-            let _ = modifiers.shift();
-            nothing
-        }
+        // Conflict navigation. Bracket keys carry the command modifier so they
+        // still work while the result pane is being typed into, which is
+        // exactly when moving to the next conflict is wanted.
+        Key::Character(c) if command && c.as_str() == "]" => repo(RepoMessage::ConflictStepped(1)),
+        Key::Character(c) if command && c.as_str() == "[" => repo(RepoMessage::ConflictStepped(-1)),
+        // Continue whatever is in progress. `update` reads `RepoState` to decide
+        // which `git` verb that is, so one key covers all four operations.
+        Key::Character(c) if command && shift && matches!(c.as_str(), "." | ">") => repo(
+            RepoMessage::SequenceControlRequested(SequenceControl::Continue),
+        ),
+
+        Key::Named(Named::Tab) => match pane {
+            Some(current) => repo(RepoMessage::FocusCycled(if shift {
+                current.previous()
+            } else {
+                current.next()
+            })),
+            None => nothing,
+        },
         _ => nothing,
     }
 }
@@ -2711,6 +2902,7 @@ mod tests {
         ChangeStatus, Commit, Diff, FileChange, Head, RefKind, RefName, Refs, RepoState, Signature,
         WorktreeStatus,
     };
+    use hidegit_core::ops::RebaseAction;
     use time::OffsetDateTime;
 
     fn commits(count: usize) -> Vec<Commit> {
@@ -2886,6 +3078,221 @@ mod tests {
         );
         // And only the destroying one is marked destructive.
         assert_eq!(sheet.items.iter().filter(|i| i.destructive).count(), 1);
+    }
+
+    #[test]
+    fn a_rewrite_that_deletes_the_open_commit_moves_the_selection() {
+        // Dropping a commit in a rebase, squashing one, resetting past one —
+        // all leave the detail pane rendering a commit that no longer exists
+        // from the copy it already holds, which reads as "still there".
+        let mut app = app_with(5);
+        let doomed = app.app.active_repo().unwrap().graph.commits[2].id;
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.selection = Some(Selection::Commit(doomed));
+        }
+
+        // A refresh whose history no longer contains it.
+        let survivors: Vec<_> = commits(5).into_iter().filter(|c| c.id != doomed).collect();
+        let refreshed = Refreshed {
+            head: opened(5).head,
+            refs: Refs::default(),
+            state: RepoState::Clean,
+            status: WorktreeStatus::default(),
+            stashes: Vec::new(),
+            remotes: Vec::new(),
+            total: survivors.len(),
+            first_page: survivors,
+        };
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(refreshed))),
+        ));
+
+        let repo = app.app.active_repo().unwrap();
+        assert_ne!(
+            repo.selection,
+            Some(Selection::Commit(doomed)),
+            "the pane must not go on showing a commit that was rewritten away"
+        );
+        assert!(matches!(repo.selection, Some(Selection::Commit(_))));
+    }
+
+    #[test]
+    fn a_commit_merely_not_paged_in_yet_keeps_its_selection() {
+        // The counterpart: on a large repository the graph is paged, and a
+        // commit missing from the loaded window has usually just not been
+        // walked to. Clearing then would fight the user on every refresh.
+        let mut app = app_with(5);
+        let chosen = app.app.active_repo().unwrap().graph.commits[2].id;
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.selection = Some(Selection::Commit(chosen));
+        }
+
+        let refreshed = Refreshed {
+            head: opened(5).head,
+            refs: Refs::default(),
+            state: RepoState::Clean,
+            status: WorktreeStatus::default(),
+            stashes: Vec::new(),
+            remotes: Vec::new(),
+            // More history exists than arrived, so the graph is still loading.
+            total: 5_000,
+            first_page: commits(2),
+        };
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(refreshed))),
+        ));
+
+        assert_eq!(
+            app.app.active_repo().unwrap().selection,
+            Some(Selection::Commit(chosen)),
+        );
+    }
+
+    /// An app with a three-commit plan open, onto `main`.
+    fn app_planning() -> Hidegit {
+        let mut app = app_with(3);
+        let commits = app.app.active_repo().unwrap().graph.commits.clone();
+        // Oldest first, as `rebase_preview` returns them.
+        let oldest_first: Vec<_> = commits.into_iter().rev().collect();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::RebasePlanLoaded(Box::new(Ok(("main".to_owned(), oldest_first)))),
+        ));
+        app
+    }
+
+    fn plan_of(app: &Hidegit) -> &crate::state::RebaseEditor {
+        app.app.active_repo().unwrap().plan.as_ref().unwrap()
+    }
+
+    #[test]
+    fn a_loaded_plan_starts_as_all_picks() {
+        let app = app_planning();
+        let plan = plan_of(&app);
+
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.kept(), 3);
+        assert!(
+            plan.steps
+                .iter()
+                .all(|s| matches!(s.action, RebaseAction::Pick))
+        );
+        // All picks is exactly an ordinary rebase, so it is runnable as it
+        // stands — opening the editor must not require editing anything.
+        assert!(plan.blocked().is_none());
+    }
+
+    #[test]
+    fn moving_a_step_carries_the_selection_with_it() {
+        let mut app = app_planning();
+        let first = plan_of(&app).steps[0].commit.id;
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowSelected(0)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowMoved(1)));
+
+        let plan = plan_of(&app);
+        assert_eq!(plan.steps[1].commit.id, first, "the step moved down one");
+        assert_eq!(
+            plan.selected, 1,
+            "the selection follows it, or the next move acts on a different commit"
+        );
+    }
+
+    #[test]
+    fn moving_is_clamped_at_both_ends() {
+        // A step that jumped from the top to the bottom would be a reorder
+        // nobody asked for.
+        let mut app = app_planning();
+        let before: Vec<_> = plan_of(&app).steps.iter().map(|s| s.commit.id).collect();
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowSelected(0)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowMoved(-1)));
+
+        let after: Vec<_> = plan_of(&app).steps.iter().map(|s| s.commit.id).collect();
+        assert_eq!(before, after);
+        assert_eq!(plan_of(&app).selected, 0);
+    }
+
+    #[test]
+    fn a_plan_that_squashes_first_says_why_it_cannot_run() {
+        // `squash` folds into the commit above, and the first step has none.
+        // Git refuses it outright, so the editor does too — with the sentence,
+        // because a greyed button that explains nothing is a dead end.
+        let mut app = app_planning();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PlanActionChosen(0, RebaseAction::Squash),
+        ));
+
+        let why = plan_of(&app).blocked().expect("it cannot run");
+        assert!(why.contains("nothing above it"), "got {why:?}");
+    }
+
+    #[test]
+    fn dropping_everything_is_refused() {
+        let mut app = app_planning();
+        for at in 0..3 {
+            let _ = app.update(Message::Repo(
+                0,
+                RepoMessage::PlanActionChosen(at, RebaseAction::Drop),
+            ));
+        }
+
+        let plan = plan_of(&app);
+        assert_eq!(plan.kept(), 0);
+        assert!(
+            plan.blocked().is_some_and(|w| w.contains("nothing")),
+            "a branch with every commit dropped is not what anyone means"
+        );
+    }
+
+    #[test]
+    fn starting_a_blocked_plan_does_nothing_and_keeps_the_editor_open() {
+        let mut app = app_planning();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::PlanActionChosen(0, RebaseAction::Squash),
+        ));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanStarted));
+
+        assert!(
+            app.app.active_repo().unwrap().plan.is_some(),
+            "a refused start must not close the screen and lose the plan"
+        );
+    }
+
+    #[test]
+    fn cancelling_needs_no_confirmation_because_nothing_has_run() {
+        let mut app = app_planning();
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanDismissed));
+
+        assert!(app.app.active_repo().unwrap().plan.is_none());
+        assert!(
+            app.app.confirming.is_none(),
+            "nothing touched the repository, so there is nothing to warn about"
+        );
+    }
+
+    #[test]
+    fn the_plan_keeps_the_order_on_screen() {
+        // The editor shows oldest first, which is todo order. If `plan()` did
+        // not preserve it, every reorder would be silently inverted.
+        let mut app = app_planning();
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowSelected(2)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowMoved(-1)));
+
+        let editor = plan_of(&app);
+        let on_screen: Vec<_> = editor.steps.iter().map(|s| s.commit.id).collect();
+        let handed_over: Vec<_> = editor.plan().steps.iter().map(|s| s.commit).collect();
+
+        assert_eq!(on_screen, handed_over);
     }
 
     /// A repository stopped mid-merge with one conflicted path.
@@ -3296,6 +3703,119 @@ mod tests {
     }
 
     #[test]
+    fn tab_cycles_panes_and_shift_tab_goes_back() {
+        // It was bound to a stub that did nothing, which is worse than being
+        // unbound: the shortcut table promised it.
+        let tab = keyboard::Key::Named(keyboard::key::Named::Tab);
+        let none = keyboard::Modifiers::default();
+        let shift = keyboard::Modifiers::SHIFT;
+
+        assert!(matches!(
+            shortcut(&tab, none, Some(0), false, Some(Pane::Sidebar)),
+            Message::Repo(0, RepoMessage::FocusCycled(Pane::Graph))
+        ));
+        assert!(matches!(
+            shortcut(&tab, shift, Some(0), false, Some(Pane::Sidebar)),
+            Message::Repo(0, RepoMessage::FocusCycled(Pane::Detail))
+        ));
+    }
+
+    #[test]
+    fn space_asks_about_focus_rather_than_staging_outright() {
+        // iced keeps text-input focus inside the widget and `editing` only turns
+        // true once a key has arrived, so a click into the message field
+        // followed by `Space` would otherwise stage a file.
+        let space = keyboard::Key::Named(keyboard::key::Named::Space);
+        assert!(matches!(
+            shortcut(
+                &space,
+                keyboard::Modifiers::default(),
+                Some(0),
+                false,
+                Some(Pane::Detail)
+            ),
+            Message::Repo(0, RepoMessage::StageToggleRequested)
+        ));
+    }
+
+    #[test]
+    fn space_stages_only_when_nothing_holds_focus() {
+        // The safety-critical half: `false` means a field has focus, and the key
+        // belongs to it. Staging then would put a file in the index in the
+        // middle of a sentence.
+        let fake = Arc::new(FakeBackend::new().with_commits(commits(3)));
+        let mut app = Hidegit::default();
+        let mut opened = opened(3);
+        opened.backend = Arc::clone(&fake) as Arc<dyn GitBackend>;
+        opened.status = dirty();
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StagingRowSelected(crate::state::StagingRow {
+                section: Section::Unstaged,
+                index: 0,
+            }),
+        ));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::StageToggleResolved(false)));
+        assert!(
+            fake.writes().is_empty(),
+            "a focused field owns the key, so nothing is staged"
+        );
+    }
+
+    #[test]
+    fn the_commit_and_push_shortcut_is_checked_before_the_plain_one() {
+        // Both are `Cmd`+`Enter`; without the shifted arm first the plain one
+        // would swallow it and the push would never happen.
+        let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
+        let command_shift = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
+
+        assert!(matches!(
+            shortcut(&enter, command_shift, Some(0), false, None),
+            Message::Repo(0, RepoMessage::CommitAndPushRequested)
+        ));
+        assert!(matches!(
+            shortcut(&enter, keyboard::Modifiers::COMMAND, Some(0), false, None),
+            Message::Repo(0, RepoMessage::CommitRequested)
+        ));
+    }
+
+    #[test]
+    fn a_failed_commit_abandons_the_push_that_was_asked_for() {
+        // Pushing a commit that was never made is not what was asked for.
+        let mut app = app_with(3);
+        let _ = app.update(Message::Repo(0, RepoMessage::CommitAndPushRequested));
+        assert!(app.app.active_repo().unwrap().draft.push_after_commit);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Committed(Box::new(Err(UiError {
+                summary: "a hook refused it".to_owned(),
+                details: String::new(),
+            }))),
+        ));
+
+        assert!(!app.app.active_repo().unwrap().draft.push_after_commit);
+    }
+
+    #[test]
+    fn the_bracket_keys_step_between_conflicts() {
+        let command = keyboard::Modifiers::COMMAND;
+        let close = keyboard::Key::Character("]".into());
+        let open = keyboard::Key::Character("[".into());
+
+        assert!(matches!(
+            shortcut(&close, command, Some(0), false, None),
+            Message::Repo(0, RepoMessage::ConflictStepped(1))
+        ));
+        assert!(matches!(
+            shortcut(&open, command, Some(0), false, None),
+            Message::Repo(0, RepoMessage::ConflictStepped(-1))
+        ));
+    }
+
+    #[test]
     fn a_focused_text_field_swallows_the_bare_letter_shortcuts() {
         // `keyboard::listen()` is global and `j`/`k` are bound unmodified, so
         // without this, typing a commit message steps through hunks.
@@ -3304,19 +3824,25 @@ mod tests {
         let mods = keyboard::Modifiers::default();
 
         assert!(matches!(
-            shortcut(&j, mods, Some(0), false),
+            shortcut(&j, mods, Some(0), false, None),
             Message::Repo(0, RepoMessage::HunkStepped(1))
         ));
         assert!(matches!(
-            shortcut(&j, mods, Some(0), true),
+            shortcut(&j, mods, Some(0), true, None),
             Message::ToastDismissed(_)
         ));
 
-        // `Space` is not a global shortcut at all. It is the one bare key whose
-        // leak would be destructive, and iced 0.14 offers no way to know a text
-        // field holds focus until its first keystroke has already arrived.
+        // `Space` is bound now, but it *asks* rather than acting: the `editing`
+        // guard above is not enough for it, because a click into a field
+        // followed by `Space` arrives before any keystroke has set the flag.
+        // The answer comes back as `StageToggleResolved`.
         assert!(matches!(
-            shortcut(&space, mods, Some(0), false),
+            shortcut(&space, mods, Some(0), false, None),
+            Message::Repo(0, RepoMessage::StageToggleRequested)
+        ));
+        // And while the flag *is* set, it never even asks.
+        assert!(matches!(
+            shortcut(&space, mods, Some(0), true, None),
             Message::ToastDismissed(_)
         ));
     }
@@ -3329,7 +3855,7 @@ mod tests {
         let command = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&enter, command, Some(0), true),
+            shortcut(&enter, command, Some(0), true, None),
             Message::Repo(0, RepoMessage::CommitRequested)
         ));
     }
@@ -4454,7 +4980,7 @@ mod tests {
 
         for (character, expected) in [("f", "Fetch"), ("p", "Pull"), ("u", "Push")] {
             let key = keyboard::Key::Character(character.into());
-            let message = shortcut(&key, mods, Some(0), true);
+            let message = shortcut(&key, mods, Some(0), true, None);
             let described = format!("{message:?}");
             assert!(
                 described.contains(expected),
@@ -4469,7 +4995,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
         let key = keyboard::Key::Character("U".into());
 
-        let described = format!("{:?}", shortcut(&key, mods, Some(0), false));
+        let described = format!("{:?}", shortcut(&key, mods, Some(0), false, None));
         assert!(described.contains("Push"), "got {described}");
     }
 
@@ -4898,7 +5424,13 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
         let described = format!(
             "{:?}",
-            shortcut(&keyboard::Key::Character("o".into()), mods, None, false)
+            shortcut(
+                &keyboard::Key::Character("o".into()),
+                mods,
+                None,
+                false,
+                None
+            )
         );
         assert!(described.contains("Clone"), "got {described}");
 
@@ -4908,7 +5440,8 @@ mod tests {
                 &keyboard::Key::Character("o".into()),
                 keyboard::Modifiers::COMMAND,
                 None,
-                false
+                false,
+                None
             )
         );
         assert!(plain.contains("OpenDialogRequested"), "got {plain}");
@@ -5046,7 +5579,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&key, mods, None, false),
+            shortcut(&key, mods, None, false, None),
             Message::OpenDialogRequested
         ));
     }
@@ -5056,7 +5589,7 @@ mod tests {
         let key = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
 
         assert!(matches!(
-            shortcut(&key, keyboard::Modifiers::default(), None, false),
+            shortcut(&key, keyboard::Modifiers::default(), None, false, None),
             Message::ToastDismissed(_)
         ));
     }

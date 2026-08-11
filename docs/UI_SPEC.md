@@ -463,17 +463,17 @@ and a new review thread both do notify.
 | `Cmd+O` | Open repository |
 | `Esc` | Close the device-code dialog — the sign-in continues in the background |
 | `Cmd+Shift+O` | Clone repository — checked before the unshifted `O`, or it would open a picker |
-| `Cmd+1` … `Cmd+9` | Switch repository tab |
-| `Cmd+,` | Settings |
+| `Cmd+1` … `Cmd+9` | Switch repository tab — **not built**, waiting on multi-repository tabs |
+| `Cmd+,` | Settings — **not built**, waiting on the settings screen |
 | **Navigation** | |
 | `↑` / `↓` | Move selection in the focused list |
 | `Tab` / `Shift+Tab` | Cycle panes: sidebar → graph → detail |
-| `Cmd+F` | Search commits |
-| `Cmd+P` | Command palette |
-| `G` then `W` | Go to working directory |
-| `G` then `B` | Branch switcher |
+| `Cmd+F` | Search commits — **not built** |
+| `Cmd+P` | Command palette — **not built** |
+| `G` then `W` | Go to working directory — **not built**; chords need a pending-key state nothing else wants yet |
+| `G` then `B` | Branch switcher — **not built**, same reason |
 | **Working directory** | |
-| `Space` | Stage / unstage selected file or hunk |
+| `Space` | Stage / unstage the selected file |
 | `Cmd+Enter` | Commit |
 | `Cmd+Shift+Enter` | Commit and push |
 | `Cmd+Backspace` | Discard (always confirms) |
@@ -494,8 +494,20 @@ binding depend on the keyboard.
 | `Cmd+]` / `Cmd+[` | Next / previous conflict |
 | `Cmd+Shift+.` | Continue operation |
 
+`Space` is the one binding that cannot be decided from the key alone. iced keeps text-input focus
+inside the widget, and the `editing` flag that guards every other bare key is only set once a
+keystroke has *arrived* — so clicking into the commit message and pressing `Space` would stage a
+file. It therefore asks first, with a `find_focused` widget operation, and acts only when nothing
+holds focus. That operation **ignores widgets with no id**, which is why the composer's two fields
+carry `COMPOSER_FIELD_IDS`: without them the query would answer "nothing focused" while a message
+was being typed, and the guard would be worse than useless — it would look like it worked.
+
+M2 deferred `Space` on the grounds that focus was not observable at all. That was true of the
+`on_input` signal it was reaching for, and not of the widget operation, which is the fix.
+
 Shortcuts are user-remappable at M6. The scheme deliberately avoids fighting muscle memory built
-in terminal Git tools.
+in terminal Git tools. Rows marked **not built** are bindings this table has promised since M1 and
+that nothing dispatches yet; they are listed rather than removed so the gap is visible.
 
 ## Theming
 

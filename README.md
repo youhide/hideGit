@@ -17,9 +17,10 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 > revert and reset, with a three-pane conflict resolver — a rebase that conflicts on three separate
 > commits can be finished without opening a terminal.
 >
-> Three caveats worth knowing before you rely on it. **Interactive rebase — reorder, squash, fixup,
-> drop — is not reachable from the interface yet**; the machinery is there and the plan editor that
-> drives it is [M6](./docs/ROADMAP.md#m6--polish--release). Pushing over SSH with a passphrase, or
+> Interactive rebase works too: reorder, squash, fixup, edit and drop from a plan editor where
+> nothing runs until you start it.
+>
+> Two caveats worth knowing before you rely on it. Pushing over SSH with a passphrase, or
 > over HTTPS with a credential helper, has not been verified — it should work, since hideGit hands
 > those operations to your own `git`, but every remote in the test suite is a local path. And on
 > macOS, notifications are attributed to whatever binary sent them, so run the bundle from
@@ -59,7 +60,7 @@ refused rather than being retried with `--force`.
 | ✅ | Clone, branches, tags, stash, remotes, fetch / pull / push with progress | [M3](./docs/ROADMAP.md#m3--branches--remotes) |
 | ✅ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
 | ✅ | Merge, rebase, cherry-pick, revert, reset, conflict resolution UI | [M5](./docs/ROADMAP.md#m5--history-operations) |
-| ⬜ | Interactive rebase editor, drag-and-drop, themes, keyboard navigation, installers | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| 🟡 | Interactive rebase editor ✅, drag-and-drop, themes, keyboard navigation, installers | [M6](./docs/ROADMAP.md#m6--polish--release) |
 | ⬜ | GitLab & Bitbucket, submodules, worktrees, LFS, PT-BR translation | [Post-1.0](./docs/ROADMAP.md#post-10) |
 
 Legend: ⬜ planned · 🟡 in progress · ✅ shipped

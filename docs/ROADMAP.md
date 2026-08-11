@@ -311,13 +311,9 @@ rather than quietly dropped:
   row's action sheet, naming both branches so the direction cannot be guessed wrong — so this is
   discoverability rather than capability. It also wants the graph to become a drop target, which is
   M6's interaction work.
-- **The interactive rebase plan editor.** The backend takes a full plan — reorder, squash, fixup, edit,
-  drop, covered by tests and by [ADR-0007](./adr/0007-rebase-plan-through-the-environment.md) — and the
-  UI only ever sends an empty one, which is an ordinary rebase. The editor is a screen of its own and
-  belongs with M6's keyboard and layout work rather than bolted on here.
-
-  Saying it plainly: **interactive rebase is not usable from the interface yet.** Nothing else in M5
-  is missing.
+- **The interactive rebase plan editor.** Deferred from here and **landed early in M6** — the entry
+  stays because the reasoning still holds: it is a screen of its own rather than something bolted
+  onto the resolver.
 
 ---
 
@@ -331,9 +327,13 @@ Everything between "works" and "someone who does not write Rust can install it".
 - Complete keyboard navigation; a discoverable shortcut reference
 - **Drag-and-drop on the graph** for merge and rebase, with a confirmation step — deferred from
   [M5](#m5--history-operations), where both operations landed as action-sheet entries instead
-- **The interactive rebase plan editor** — reorder, squash, fixup, edit, drop. The backend takes a
-  full plan already; this is the screen that builds one, and until it exists interactive rebase is
-  not reachable from the interface
+- **The interactive rebase plan editor** — reorder, squash, fixup, edit, drop. **Landed.** The
+  commits a rebase would replay are listed oldest first, which is todo order rather than the graph's;
+  showing them newest-first would silently invert every reorder. All six verbs are on every row
+  rather than behind a dropdown, since they are the whole vocabulary of an interactive rebase and a
+  menu would make discovering `fixup` an act of exploration. Nothing runs until Start, so Cancel
+  needs no confirmation. A plan Git would refuse — squashing the first step, dropping everything —
+  disables Start and says which, because a greyed button explaining neither is a dead end
 - Multi-repository tabs, with per-repository state preserved
 - Settings UI covering everything currently in TOML
 - Search: commits by message, author, hash; file search within a commit
@@ -366,7 +366,7 @@ Breadth, once the core is solid. Not ordered.
 | **Submodules** | Status, update, init. Common enough to matter, awkward enough to deserve its own milestone. |
 | **Worktrees** | Growing in use; fits naturally alongside multi-repo tabs. |
 | **Git LFS** | Largely inherited from shelling out to `git`, but needs UI for pointer files and fetch state. |
-| **Interactive rebase editor** | A richer plan editor than M5's. |
+| **Interactive rebase editor** | A richer one than M6's: a plan the graph itself can be dragged into, and `--autosquash`. |
 | **Internationalisation** | Scaffolding lands before 1.0 so this is not a retrofit; **PT-BR** is the first translation. |
 | **Migrate operations back to `gix`** | As gitoxide lands `push` and a complete rebase workflow, methods move off the CLI one at a time, guarded by the `GitBackend` test suite. Conditions in [ADR-0002](./adr/0002-git-backend-hybrid.md). |
 | **Plugin or scripting surface** | Only if a real need appears. A plugin API is a permanent compatibility commitment. |

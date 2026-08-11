@@ -3,10 +3,10 @@
 How hideGit is put together, and why. Decisions summarised here are argued in full in the
 [ADRs](./adr/README.md).
 
-**Status:** M1 through M4 have landed, so the reads, the working-directory writes, everything that
-touches a remote, and the forge integration described here are code that exists. History
-rewriting — merge, rebase, cherry-pick — is still design: those methods are declared and return
-`NotImplementedYet` with the milestone they arrive in.
+**Status:** M1 through M5 have landed, so everything described here is code that exists — the reads,
+the working-directory writes, the remote operations, the forge integration, and history rewriting:
+merge, rebase, cherry-pick, revert, reset, the reflog and the conflict resolver. `blame` is the one
+method still declared and returning `NotImplementedYet`; it arrives in M6.
 
 ## Contents
 
@@ -467,6 +467,13 @@ a repository that does not exist. Any credential embedded in the URL is dropped 
 a `RepoRef`, which is logged and displayed.
 
 ### Authentication and tokens
+
+Development builds can skip the keychain entirely with `HIDEGIT_NO_KEYCHAIN=1`, which makes every
+store call answer `NoKeychain` — the same state as a machine that has none, rendered honestly as
+"hideGit cannot store a token on this machine". It exists because macOS ties a keychain entry's
+access list to the requesting binary's code signature: an unsigned bundle gets a fresh identity on
+every build, so each launch raises the authorisation dialog again. The check is inside the store's
+methods rather than at construction, so it governs any route to the keychain added later.
 
 OAuth 2.0 Device Authorization Flow ([RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628)),
 with a personal access token as a first-class fallback for GitHub Enterprise and restricted

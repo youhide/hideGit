@@ -1088,3 +1088,106 @@ fn aborting_a_rebase_part_way_restores_exactly_the_prior_state() {
         "abort leaves nothing behind, got {status:?}"
     );
 }
+
+// --- the rebase plan's own preview ---------------------------------------------
+
+#[test]
+fn the_preview_lists_what_a_rebase_would_replay_oldest_first() {
+    let repo = fixture()
+        .commit("base")
+        .branch("side")
+        .checkout("side")
+        .edit("a.txt", "a\n", "first")
+        .edit("b.txt", "b\n", "second")
+        .edit("c.txt", "c\n", "third")
+        .checkout("main")
+        .edit("m.txt", "m\n", "main moved")
+        .checkout("side")
+        .build();
+    let backend = repo.backend();
+
+    let preview = backend.rebase_preview("main").expect("the preview reads");
+
+    // Oldest first, because that is todo order — the commit applied first sits
+    // at the top of `git rebase --interactive`. Newest-first, like the graph,
+    // would invert every reorder the user made.
+    assert_eq!(
+        preview
+            .iter()
+            .map(|c| c.summary.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "second", "third"],
+        "main's own commit is not replayed, and the order is the todo's"
+    );
+}
+
+#[test]
+fn a_branch_with_nothing_to_replay_previews_empty() {
+    let repo = fixture()
+        .commit("base")
+        .branch("side")
+        .checkout("side")
+        .build();
+    let backend = repo.backend();
+
+    // Not an error: a branch level with its upstream has nothing to rebase, and
+    // the editor shows that rather than refusing to open.
+    assert!(
+        backend
+            .rebase_preview("main")
+            .expect("an empty preview is not an error")
+            .is_empty()
+    );
+}
+
+#[test]
+fn previewing_an_unknown_ref_says_which_ref() {
+    let repo = fixture().commit("base").build();
+
+    let error = repo
+        .backend()
+        .rebase_preview("no-such-branch")
+        .expect_err("an unknown ref is an error");
+
+    match error {
+        GitError::RefNotFound(name) => assert_eq!(name, "no-such-branch"),
+        other => panic!("expected RefNotFound, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_preview_matches_what_the_plan_then_rebases() {
+    // The editor builds its plan from the preview, so a preview that disagreed
+    // with what `git rebase` replays would produce a plan that drops commits.
+    let repo = fixture()
+        .commit("base")
+        .branch("side")
+        .checkout("side")
+        .edit("a.txt", "a\n", "first")
+        .edit("b.txt", "b\n", "second")
+        .checkout("main")
+        .edit("m.txt", "m\n", "main moved")
+        .checkout("side")
+        .build();
+    let backend = repo.backend();
+
+    let preview = backend.rebase_preview("main").expect("the preview reads");
+    let plan = RebasePlan {
+        steps: preview
+            .iter()
+            .map(|c| RebaseStep {
+                action: RebaseAction::Pick,
+                commit: c.id,
+            })
+            .collect(),
+    };
+
+    let outcome = backend.rebase("main", &plan).expect("the rebase succeeds");
+
+    assert_eq!(outcome, SequenceOutcome::Completed);
+    assert_eq!(
+        subjects(repo.path()),
+        vec!["base", "main moved", "first", "second"],
+        "every previewed commit survives, in the order the plan gave"
+    );
+}

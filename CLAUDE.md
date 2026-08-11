@@ -13,9 +13,8 @@ PRs.
 commit graph, a read-only viewer, the working directory — status, staging by file, hunk and line,
 discard, commit, a filesystem watcher — everything that touches a remote, pull request alerts over
 GitHub, and history rewriting: merge, rebase, cherry-pick, revert, reset, the reflog and a three-pane
-conflict resolver. Two M5 scope items were deferred to M6 and are named in the roadmap: **drag-and-drop
-on the graph**, and **the interactive rebase plan editor** — the backend takes a full plan but the UI
-only ever sends an empty one, so interactive rebase is not reachable from the interface. Check
+conflict resolver. M6 is in progress: the interactive rebase plan editor has landed, and
+**drag-and-drop on the graph** is the one M5 scope item still deferred. Check
 [ROADMAP.md](./docs/ROADMAP.md) before assuming a feature exists, and check the code before referring
 to a module.
 
@@ -111,6 +110,19 @@ It regenerates the icons and assembles the macOS bundle — see [assets/README.m
 cargo run -p xtask -- icons
 cargo run -p xtask -- bundle-macos
 ```
+
+**Launching a development build on macOS raises a keychain authorisation dialog** unless you turn
+the keychain off. macOS ties a keychain entry's access list to the requesting binary's code
+signature, and an unsigned bundle gets a fresh identity on every build — so each launch of a
+freshly built hideGit asks for a password again, even when the change under test has nothing to do
+with the forge. For a test run where being signed out does not matter:
+
+```sh
+HIDEGIT_NO_KEYCHAIN=1 target/release/bundle/hideGit.app/Contents/MacOS/hidegit /path/to/repo
+```
+
+hideGit then behaves exactly as it does on a machine with no keychain: forge features are disabled
+and say so. Leave it unset to test anything touching sign-in.
 
 Clippy warnings are errors. `cargo bench -p hidegit-core` times the graph layout against a
 100,000-commit repository; the numbers to beat are in

@@ -27,7 +27,7 @@ pub use notify::{Desktop, Notifier};
 pub use poll::{Activity, Alert, AlertEvent, Next, Observed, Schedule, Watcher};
 pub use prefs::{AlertPrefs, EventPrefs, QuietHours};
 pub use secret::SecretString;
-pub use token::{Keychain, StoredToken, TokenStore};
+pub use token::{DISABLE_VAR as KEYCHAIN_DISABLE_VAR, Keychain, StoredToken, TokenStore};
 
 #[cfg(any(test, feature = "fake"))]
 pub use notify::Recorder;

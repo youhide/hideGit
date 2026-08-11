@@ -931,6 +931,10 @@ impl GitBackend for HybridBackend {
         self.sequence_state()
     }
 
+    fn rebase_preview(&self, onto: &str) -> Result<Vec<Commit>, GitError> {
+        gix_read::rebase_preview(&self.repo(), onto)
+    }
+
     fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError> {
         self.sequence("cherry-pick", ids)
     }

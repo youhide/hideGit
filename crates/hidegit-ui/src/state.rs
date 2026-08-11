@@ -15,7 +15,9 @@ use hidegit_core::model::{
     Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
     WorktreeStatus,
 };
-use hidegit_core::ops::{CancelToken, ProgressUpdate, StartPoint};
+use hidegit_core::ops::{
+    CancelToken, ProgressUpdate, RebaseAction, RebasePlan, RebaseStep, StartPoint,
+};
 use hidegit_core::{GitBackend, LogPage};
 use hidegit_forge::{
     Activity, Alert, AlertPrefs, DeviceCode, GitHub, Identity, Notifier, PrRole, PullRequest,
@@ -57,7 +59,10 @@ pub enum Screen {
 }
 
 /// Which pane has keyboard focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` because it rides in a subscription's identity: the `Tab` binding has
+/// to know which pane is focused to know which is next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pane {
     Sidebar,
     Graph,
@@ -385,6 +390,14 @@ impl PromptField {
 /// carrying a generated id through application state.
 pub const PROMPT_FIELD_IDS: [&str; 2] = ["hidegit-prompt-field-0", "hidegit-prompt-field-1"];
 
+/// The commit composer's two fields.
+///
+/// They carry ids because `find_focused` — which is how the `Space` binding
+/// asks whether a field is being typed into — **ignores widgets that have
+/// none**. Without these it would report nothing focused while a commit message
+/// was being written, and `Space` would stage a file mid-sentence.
+pub const COMPOSER_FIELD_IDS: [&str; 2] = ["hidegit-composer-subject", "hidegit-composer-body"];
+
 /// What a [`Prompt`] is collecting text for.
 ///
 /// The prompt is always about the active repository — it is modal, so nothing can
@@ -651,6 +664,121 @@ pub struct OpenRepo {
     pub prs: PrPanel,
     /// The conflicted file open in the resolver, if one is.
     pub resolver: Option<Resolver>,
+    /// The interactive rebase being planned, if one is.
+    pub plan: Option<RebaseEditor>,
+}
+
+/// An interactive rebase being planned, before anything has been run.
+///
+/// Nothing here has touched the repository yet: the plan is built, reordered
+/// and only then handed to `git rebase --interactive` in one go. That is what
+/// makes the whole screen abandonable — closing it costs nothing, because
+/// nothing has happened.
+#[derive(Debug)]
+pub struct RebaseEditor {
+    /// The branch or commit being rebased onto.
+    pub onto: String,
+    /// The plan, in the order it will be applied — **oldest first**, which is
+    /// the order `git rebase --interactive` writes its todo list in.
+    pub steps: Vec<PlannedStep>,
+    /// Which row the keyboard and the move buttons act on.
+    pub selected: usize,
+}
+
+/// One commit in the plan, with what to do to it.
+#[derive(Debug, Clone)]
+pub struct PlannedStep {
+    pub commit: Commit,
+    pub action: RebaseAction,
+}
+
+impl RebaseEditor {
+    pub fn new(onto: String, commits: Vec<Commit>) -> Self {
+        Self {
+            onto,
+            steps: commits
+                .into_iter()
+                .map(|commit| PlannedStep {
+                    commit,
+                    action: RebaseAction::Pick,
+                })
+                .collect(),
+            selected: 0,
+        }
+    }
+
+    /// Moves the selected step by `delta`, carrying the selection with it.
+    ///
+    /// Clamped rather than wrapping: a step that jumped from the top to the
+    /// bottom would be a reorder nobody asked for, and reordering is the one
+    /// thing here that is hard to undo by eye.
+    pub fn move_selected(&mut self, delta: i32) {
+        if self.steps.is_empty() {
+            return;
+        }
+        let target = (self.selected as i32 + delta).clamp(0, self.steps.len() as i32 - 1) as usize;
+        if target != self.selected {
+            self.steps.swap(self.selected, target);
+            self.selected = target;
+        }
+    }
+
+    pub fn select(&mut self, at: usize) {
+        if at < self.steps.len() {
+            self.selected = at;
+        }
+    }
+
+    pub fn set_action(&mut self, at: usize, action: RebaseAction) {
+        if let Some(step) = self.steps.get_mut(at) {
+            step.action = action;
+        }
+    }
+
+    /// The plan as the backend takes it.
+    pub fn plan(&self) -> RebasePlan {
+        RebasePlan {
+            steps: self
+                .steps
+                .iter()
+                .map(|s| RebaseStep {
+                    action: s.action,
+                    commit: s.commit.id,
+                })
+                .collect(),
+        }
+    }
+
+    /// How many commits survive the plan.
+    pub fn kept(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|s| !matches!(s.action, RebaseAction::Drop))
+            .count()
+    }
+
+    /// Why the plan cannot be run, if it cannot.
+    ///
+    /// Returned as the sentence to show rather than a bool, because "Start" is
+    /// disabled for two quite different reasons and a user staring at a greyed
+    /// button deserves to know which.
+    pub fn blocked(&self) -> Option<&'static str> {
+        if self.steps.is_empty() {
+            return Some("There is nothing to rebase onto that branch.");
+        }
+        // `squash` and `fixup` fold into the commit above them, so a plan that
+        // opens with one has nothing to fold into and Git refuses it outright.
+        if matches!(
+            self.steps.first().map(|s| s.action),
+            Some(RebaseAction::Squash) | Some(RebaseAction::Fixup)
+        ) {
+            return Some("The first step cannot squash or fixup — there is nothing above it.");
+        }
+        if self.kept() == 0 {
+            return Some("Every commit is dropped, which would leave the branch with nothing.");
+        }
+        None
+    }
 }
 
 /// One conflicted file, and the decisions made about it so far.
@@ -744,6 +872,12 @@ pub struct Draft {
     pub body: String,
     pub amend: bool,
     pub sign_off: bool,
+    /// `Cmd+Shift+Enter` asked for a push once the commit lands.
+    ///
+    /// Held here rather than passed through the commit task because the push
+    /// must only happen if the commit actually succeeded, and only the result
+    /// knows that.
+    pub push_after_commit: bool,
     /// A text field has keyboard focus, so bare-letter shortcuts must not fire.
     ///
     /// Without this, typing "jk" into a commit message steps through hunks:

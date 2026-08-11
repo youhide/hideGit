@@ -162,6 +162,25 @@ where
     }
 }
 
+/// The environment variable that turns the keychain off.
+///
+/// Set to anything non-empty and hideGit behaves exactly as it does on a
+/// machine with no keychain at all: forge features are disabled and say so,
+/// and nothing is read or written.
+///
+/// This exists for **development builds**. macOS ties a keychain entry's access
+/// list to the requesting binary's code signature, and an unsigned bundle gets
+/// a fresh identity on every `cargo build` — so every launch of a freshly built
+/// hideGit raises the authorisation dialog again, and someone testing an
+/// unrelated change has to type a password to get a window. Skipping the
+/// keychain is honest about what it costs: you are signed out.
+pub const DISABLE_VAR: &str = "HIDEGIT_NO_KEYCHAIN";
+
+/// True when [`DISABLE_VAR`] asks for the keychain to be left alone.
+pub fn disabled_by_environment() -> bool {
+    std::env::var_os(DISABLE_VAR).is_some_and(|value| !value.is_empty())
+}
+
 /// The OS keychain: Keychain Services, Credential Manager, or Secret Service.
 #[derive(Debug, Default)]
 pub struct Keychain;
@@ -174,6 +193,12 @@ impl Keychain {
 
 impl TokenStore for Keychain {
     fn load(&self, account: &str) -> Result<Option<StoredToken>, ForgeError> {
+        // Checked here rather than at construction so the variable governs every
+        // route to the keychain, including one added later by someone who never
+        // read this comment.
+        if disabled_by_environment() {
+            return Err(ForgeError::NoKeychain);
+        }
         match Self::entry(account)?.get_password() {
             Ok(json) => match serde_json::from_str(&json) {
                 Ok(token) => Ok(Some(token)),
@@ -192,6 +217,9 @@ impl TokenStore for Keychain {
     }
 
     fn save(&self, account: &str, token: &StoredToken) -> Result<(), ForgeError> {
+        if disabled_by_environment() {
+            return Err(ForgeError::NoKeychain);
+        }
         let json = serde_json::to_string(token).map_err(|error| ForgeError::Malformed {
             host: account.to_owned(),
             detail: error.to_string(),
@@ -200,6 +228,9 @@ impl TokenStore for Keychain {
     }
 
     fn clear(&self, account: &str) -> Result<(), ForgeError> {
+        if disabled_by_environment() {
+            return Err(ForgeError::NoKeychain);
+        }
         match Self::entry(account)?.delete_credential() {
             // Signing out of an account that was never signed in is what the
             // caller asked for, not a failure.
@@ -239,6 +270,9 @@ impl TokenStore for MemoryStore {
     }
 
     fn save(&self, account: &str, token: &StoredToken) -> Result<(), ForgeError> {
+        if disabled_by_environment() {
+            return Err(ForgeError::NoKeychain);
+        }
         self.0
             .lock()
             .expect("not poisoned")
@@ -247,6 +281,9 @@ impl TokenStore for MemoryStore {
     }
 
     fn clear(&self, account: &str) -> Result<(), ForgeError> {
+        if disabled_by_environment() {
+            return Err(ForgeError::NoKeychain);
+        }
         self.0.lock().expect("not poisoned").remove(account);
         Ok(())
     }
@@ -254,6 +291,17 @@ impl TokenStore for MemoryStore {
 
 #[cfg(test)]
 mod tests {
+    /// The opt-out is read from the environment on every call, so this asserts
+    /// the predicate rather than mutating the process environment — which is
+    /// global, and would race every other test in the binary.
+    #[test]
+    fn the_keychain_opt_out_is_named_once_and_needs_a_value() {
+        assert_eq!(super::DISABLE_VAR, "HIDEGIT_NO_KEYCHAIN");
+        // Unset in a normal test run, so the keychain is live by default and a
+        // developer never loses their session by accident.
+        assert!(!super::disabled_by_environment());
+    }
+
     use super::*;
 
     fn expiring(in_seconds: i64) -> StoredToken {

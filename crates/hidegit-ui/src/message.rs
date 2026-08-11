@@ -17,7 +17,7 @@ use hidegit_core::model::{
 };
 use hidegit_core::ops::{
     CheckoutTarget, FetchOutcome, ForceMode, MergeOutcome, ProgressUpdate, PullOutcome,
-    PushOutcome, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
+    PushOutcome, RebaseAction, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
 use hidegit_forge::{
@@ -227,8 +227,17 @@ pub enum RepoMessage {
     FileSelected(usize),
     /// A row in the staging view: which list it came from, and where in it.
     StagingRowSelected(StagingRow),
-    /// `Space`, or the button on a row: stage what is not staged, unstage what
-    /// is. Which one it means is decided from the row's section.
+    /// `Space`: stage what is not staged, unstage what is.
+    ///
+    /// Does not act directly. iced keeps text-input focus inside the widget, so
+    /// whether a field is being typed into has to be *asked* — the answer comes
+    /// back as [`RepoMessage::StageToggleResolved`].
+    StageToggleRequested,
+    /// The focus query answered: `true` when no text input holds focus, so the
+    /// key belongs to the file list rather than to something being typed.
+    StageToggleResolved(bool),
+    /// The button on a row: stage what is not staged, unstage what is. Which one
+    /// it means is decided from the row's section.
     StageRequested(Vec<PathBuf>),
     UnstageRequested(Vec<PathBuf>),
     /// `Cmd+Backspace`: discard whatever row is selected. Confirms, like every
@@ -251,6 +260,12 @@ pub enum RepoMessage {
     /// A text field gained or lost focus. Bare-letter shortcuts are suppressed
     /// while it holds it.
     EditingChanged(bool),
+    /// `Cmd+Shift+Enter`: commit, then push what was just committed.
+    ///
+    /// Two operations rather than one, so a commit that succeeds is kept even
+    /// when the push that follows fails — which is the common case, since the
+    /// push is the half that needs a network and a credential.
+    CommitAndPushRequested,
     /// `Cmd+Enter`, or the Commit button.
     CommitRequested,
     /// The commit landed; its id is read back rather than assumed, because a
@@ -334,6 +349,21 @@ pub enum RepoMessage {
     RebaseRequested(String),
     /// The confirmation was accepted. Only ever sent by the dialog.
     RebaseConfirmed(String),
+    /// Opens the interactive plan editor for a rebase onto this ref. Nothing
+    /// runs until the plan is started.
+    RebasePlanRequested(String),
+    /// The commits the rebase would replay, oldest first.
+    RebasePlanLoaded(Box<Result<(String, Vec<Commit>), UiError>>),
+    /// A row in the plan was picked.
+    PlanRowSelected(usize),
+    /// What to do with one commit, by row.
+    PlanActionChosen(usize, RebaseAction),
+    /// Move the selected row up (-1) or down (1).
+    PlanRowMoved(i32),
+    /// Run the plan as it stands.
+    PlanStarted,
+    /// Close the editor without running anything.
+    PlanDismissed,
     CherryPickRequested(ObjectId),
     RevertRequested(ObjectId),
     /// Asks to reset. A hard reset confirms first; the other two do not, because
