@@ -1145,6 +1145,39 @@ impl Hidegit {
                 ))
             }
 
+            RepoMessage::StageToggleRequested => {
+                // `find_focused` reports the focused *focusable* widget, and the
+                // only focusables here are text inputs. `collect` is what makes
+                // the answer arrive at all: the operation yields nothing when
+                // nothing is focused, and a bare `Task` would then never fire.
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::find_focused(),
+                )
+                .collect()
+                .map(move |focused: Vec<iced::advanced::widget::Id>| {
+                    Message::Repo(index, RepoMessage::StageToggleResolved(focused.is_empty()))
+                })
+            }
+
+            RepoMessage::StageToggleResolved(free) => {
+                if !free {
+                    // Something is being typed into. The key belongs to it.
+                    return Task::none();
+                }
+                let Some((section, path)) = selected_path(repo) else {
+                    return Task::none();
+                };
+                // Which verb it means is read from the row's section, exactly as
+                // the row's own button does — one rule, two ways to reach it.
+                Task::done(Message::Repo(
+                    index,
+                    match section {
+                        Section::Staged => RepoMessage::UnstageRequested(vec![path]),
+                        _ => RepoMessage::StageRequested(vec![path]),
+                    },
+                ))
+            }
+
             RepoMessage::StageRequested(paths) => {
                 let backend = Arc::clone(&repo.backend);
                 write_task(index, move || backend.stage(&borrowed(&paths)))
@@ -2005,15 +2038,39 @@ impl Hidegit {
                 })
             }
 
+            RepoMessage::CommitAndPushRequested => {
+                // Two operations, not one: a commit that succeeds is kept even
+                // when the push fails, which is the common case since the push
+                // is the half that needs a network and a credential.
+                repo.draft.push_after_commit = true;
+                Task::done(Message::Repo(index, RepoMessage::CommitRequested))
+            }
+
             RepoMessage::Committed(result) => match *result {
                 Ok(_) => {
+                    let then_push = repo.draft.push_after_commit;
                     // The draft is only cleared once the commit actually
                     // landed. A failed hook must not cost the user the message
                     // they wrote.
                     repo.draft = Draft::default();
-                    Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                    let mut tasks = vec![Task::done(Message::Repo(
+                        index,
+                        RepoMessage::RepositoryChanged,
+                    ))];
+                    if then_push {
+                        tasks.push(Task::done(Message::Repo(
+                            index,
+                            RepoMessage::PushRequested {
+                                force: ForceMode::None,
+                            },
+                        )));
+                    }
+                    Task::batch(tasks)
                 }
                 Err(error) => {
+                    // The push is abandoned with it: pushing a commit that was
+                    // never made is not what was asked for.
+                    repo.draft.push_after_commit = false;
                     self.app.toast(&error);
                     Task::none()
                 }
@@ -2377,22 +2434,28 @@ impl Hidegit {
             self.app
                 .active_repo()
                 .is_some_and(|repo| repo.draft.editing),
+            // Cycling panes needs to know which one has focus now, and only the
+            // repository knows. Carried in the subscription's identity so the
+            // binding is resolved where the answer is, rather than round-tripping
+            // through a message that would arrive a frame late.
+            self.app.active_repo().map(|repo| repo.focus),
         );
 
-        let keys = keyboard::listen()
-            .with(context)
-            .map(|((active, modal, editing), event)| {
-                let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-                    return Message::ToastDismissed(u64::MAX);
-                };
-                // A modal owns the keyboard while it is up. Letting `Space` stage
-                // something behind a "discard?" dialog would be the worst
-                // possible moment to act on a stray key.
-                if let Some(modal) = modal {
-                    return modal_shortcut(&key, modal);
-                }
-                shortcut(&key, modifiers, active, editing)
-            });
+        let keys =
+            keyboard::listen()
+                .with(context)
+                .map(|((active, modal, editing, pane), event)| {
+                    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                        return Message::ToastDismissed(u64::MAX);
+                    };
+                    // A modal owns the keyboard while it is up. Letting `Space` stage
+                    // something behind a "discard?" dialog would be the worst
+                    // possible moment to act on a stray key.
+                    if let Some(modal) = modal {
+                        return modal_shortcut(&key, modal);
+                    }
+                    shortcut(&key, modifiers, active, editing, pane)
+                });
 
         // One watch per open repository, so a change made in an editor or by a
         // `git` command in a terminal refreshes the view on its own.
@@ -2471,6 +2534,7 @@ fn shortcut(
     modifiers: keyboard::Modifiers,
     active: Option<usize>,
     editing: bool,
+    pane: Option<Pane>,
 ) -> Message {
     use keyboard::key::{Key, Named};
 
@@ -2492,6 +2556,9 @@ fn shortcut(
     let shift = modifiers.shift();
 
     match key {
+        // Checked before the plain `Cmd+Enter`: match arms are tried in order,
+        // and the unshifted one matches a shifted press too.
+        Key::Named(Named::Enter) if command && shift => repo(RepoMessage::CommitAndPushRequested),
         Key::Named(Named::Enter) if command => repo(RepoMessage::CommitRequested),
         Key::Named(Named::Backspace) if command => repo(RepoMessage::DiscardSelectedRequested),
         // Checked before the unshifted `o`, or `Cmd+Shift+O` would open a picker.
@@ -2527,19 +2594,37 @@ fn shortcut(
                 force: ForceMode::None,
             })
         }
+        // `Space` does not act here. It asks whether anything has keyboard
+        // focus first, because iced keeps text-input focus inside the widget
+        // and the `editing` flag only turns true once a key has already
+        // arrived — so a click into the message field followed by `Space`
+        // would otherwise stage a file. See `StageToggleRequested`.
+        Key::Named(Named::Space) if !command => repo(RepoMessage::StageToggleRequested),
         Key::Character(c) if c.as_str() == "j" && !command => repo(RepoMessage::HunkStepped(1)),
         Key::Character(c) if c.as_str() == "k" && !command => repo(RepoMessage::HunkStepped(-1)),
         Key::Named(Named::ArrowDown) => repo(RepoMessage::SelectionMoved(1)),
         Key::Named(Named::ArrowUp) => repo(RepoMessage::SelectionMoved(-1)),
         Key::Named(Named::PageDown) => repo(RepoMessage::SelectionMoved(20)),
         Key::Named(Named::PageUp) => repo(RepoMessage::SelectionMoved(-20)),
-        Key::Named(Named::Tab) => {
-            // Focus cycling needs to know the current pane, which only the
-            // repository has; the message carries the direction and `update`
-            // resolves it.
-            let _ = modifiers.shift();
-            nothing
-        }
+        // Conflict navigation. Bracket keys carry the command modifier so they
+        // still work while the result pane is being typed into, which is
+        // exactly when moving to the next conflict is wanted.
+        Key::Character(c) if command && c.as_str() == "]" => repo(RepoMessage::ConflictStepped(1)),
+        Key::Character(c) if command && c.as_str() == "[" => repo(RepoMessage::ConflictStepped(-1)),
+        // Continue whatever is in progress. `update` reads `RepoState` to decide
+        // which `git` verb that is, so one key covers all four operations.
+        Key::Character(c) if command && shift && matches!(c.as_str(), "." | ">") => repo(
+            RepoMessage::SequenceControlRequested(SequenceControl::Continue),
+        ),
+
+        Key::Named(Named::Tab) => match pane {
+            Some(current) => repo(RepoMessage::FocusCycled(if shift {
+                current.previous()
+            } else {
+                current.next()
+            })),
+            None => nothing,
+        },
         _ => nothing,
     }
 }
@@ -3618,6 +3703,119 @@ mod tests {
     }
 
     #[test]
+    fn tab_cycles_panes_and_shift_tab_goes_back() {
+        // It was bound to a stub that did nothing, which is worse than being
+        // unbound: the shortcut table promised it.
+        let tab = keyboard::Key::Named(keyboard::key::Named::Tab);
+        let none = keyboard::Modifiers::default();
+        let shift = keyboard::Modifiers::SHIFT;
+
+        assert!(matches!(
+            shortcut(&tab, none, Some(0), false, Some(Pane::Sidebar)),
+            Message::Repo(0, RepoMessage::FocusCycled(Pane::Graph))
+        ));
+        assert!(matches!(
+            shortcut(&tab, shift, Some(0), false, Some(Pane::Sidebar)),
+            Message::Repo(0, RepoMessage::FocusCycled(Pane::Detail))
+        ));
+    }
+
+    #[test]
+    fn space_asks_about_focus_rather_than_staging_outright() {
+        // iced keeps text-input focus inside the widget and `editing` only turns
+        // true once a key has arrived, so a click into the message field
+        // followed by `Space` would otherwise stage a file.
+        let space = keyboard::Key::Named(keyboard::key::Named::Space);
+        assert!(matches!(
+            shortcut(
+                &space,
+                keyboard::Modifiers::default(),
+                Some(0),
+                false,
+                Some(Pane::Detail)
+            ),
+            Message::Repo(0, RepoMessage::StageToggleRequested)
+        ));
+    }
+
+    #[test]
+    fn space_stages_only_when_nothing_holds_focus() {
+        // The safety-critical half: `false` means a field has focus, and the key
+        // belongs to it. Staging then would put a file in the index in the
+        // middle of a sentence.
+        let fake = Arc::new(FakeBackend::new().with_commits(commits(3)));
+        let mut app = Hidegit::default();
+        let mut opened = opened(3);
+        opened.backend = Arc::clone(&fake) as Arc<dyn GitBackend>;
+        opened.status = dirty();
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::StagingRowSelected(crate::state::StagingRow {
+                section: Section::Unstaged,
+                index: 0,
+            }),
+        ));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::StageToggleResolved(false)));
+        assert!(
+            fake.writes().is_empty(),
+            "a focused field owns the key, so nothing is staged"
+        );
+    }
+
+    #[test]
+    fn the_commit_and_push_shortcut_is_checked_before_the_plain_one() {
+        // Both are `Cmd`+`Enter`; without the shifted arm first the plain one
+        // would swallow it and the push would never happen.
+        let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
+        let command_shift = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
+
+        assert!(matches!(
+            shortcut(&enter, command_shift, Some(0), false, None),
+            Message::Repo(0, RepoMessage::CommitAndPushRequested)
+        ));
+        assert!(matches!(
+            shortcut(&enter, keyboard::Modifiers::COMMAND, Some(0), false, None),
+            Message::Repo(0, RepoMessage::CommitRequested)
+        ));
+    }
+
+    #[test]
+    fn a_failed_commit_abandons_the_push_that_was_asked_for() {
+        // Pushing a commit that was never made is not what was asked for.
+        let mut app = app_with(3);
+        let _ = app.update(Message::Repo(0, RepoMessage::CommitAndPushRequested));
+        assert!(app.app.active_repo().unwrap().draft.push_after_commit);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Committed(Box::new(Err(UiError {
+                summary: "a hook refused it".to_owned(),
+                details: String::new(),
+            }))),
+        ));
+
+        assert!(!app.app.active_repo().unwrap().draft.push_after_commit);
+    }
+
+    #[test]
+    fn the_bracket_keys_step_between_conflicts() {
+        let command = keyboard::Modifiers::COMMAND;
+        let close = keyboard::Key::Character("]".into());
+        let open = keyboard::Key::Character("[".into());
+
+        assert!(matches!(
+            shortcut(&close, command, Some(0), false, None),
+            Message::Repo(0, RepoMessage::ConflictStepped(1))
+        ));
+        assert!(matches!(
+            shortcut(&open, command, Some(0), false, None),
+            Message::Repo(0, RepoMessage::ConflictStepped(-1))
+        ));
+    }
+
+    #[test]
     fn a_focused_text_field_swallows_the_bare_letter_shortcuts() {
         // `keyboard::listen()` is global and `j`/`k` are bound unmodified, so
         // without this, typing a commit message steps through hunks.
@@ -3626,19 +3824,25 @@ mod tests {
         let mods = keyboard::Modifiers::default();
 
         assert!(matches!(
-            shortcut(&j, mods, Some(0), false),
+            shortcut(&j, mods, Some(0), false, None),
             Message::Repo(0, RepoMessage::HunkStepped(1))
         ));
         assert!(matches!(
-            shortcut(&j, mods, Some(0), true),
+            shortcut(&j, mods, Some(0), true, None),
             Message::ToastDismissed(_)
         ));
 
-        // `Space` is not a global shortcut at all. It is the one bare key whose
-        // leak would be destructive, and iced 0.14 offers no way to know a text
-        // field holds focus until its first keystroke has already arrived.
+        // `Space` is bound now, but it *asks* rather than acting: the `editing`
+        // guard above is not enough for it, because a click into a field
+        // followed by `Space` arrives before any keystroke has set the flag.
+        // The answer comes back as `StageToggleResolved`.
         assert!(matches!(
-            shortcut(&space, mods, Some(0), false),
+            shortcut(&space, mods, Some(0), false, None),
+            Message::Repo(0, RepoMessage::StageToggleRequested)
+        ));
+        // And while the flag *is* set, it never even asks.
+        assert!(matches!(
+            shortcut(&space, mods, Some(0), true, None),
             Message::ToastDismissed(_)
         ));
     }
@@ -3651,7 +3855,7 @@ mod tests {
         let command = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&enter, command, Some(0), true),
+            shortcut(&enter, command, Some(0), true, None),
             Message::Repo(0, RepoMessage::CommitRequested)
         ));
     }
@@ -4776,7 +4980,7 @@ mod tests {
 
         for (character, expected) in [("f", "Fetch"), ("p", "Pull"), ("u", "Push")] {
             let key = keyboard::Key::Character(character.into());
-            let message = shortcut(&key, mods, Some(0), true);
+            let message = shortcut(&key, mods, Some(0), true, None);
             let described = format!("{message:?}");
             assert!(
                 described.contains(expected),
@@ -4791,7 +4995,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
         let key = keyboard::Key::Character("U".into());
 
-        let described = format!("{:?}", shortcut(&key, mods, Some(0), false));
+        let described = format!("{:?}", shortcut(&key, mods, Some(0), false, None));
         assert!(described.contains("Push"), "got {described}");
     }
 
@@ -5220,7 +5424,13 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
         let described = format!(
             "{:?}",
-            shortcut(&keyboard::Key::Character("o".into()), mods, None, false)
+            shortcut(
+                &keyboard::Key::Character("o".into()),
+                mods,
+                None,
+                false,
+                None
+            )
         );
         assert!(described.contains("Clone"), "got {described}");
 
@@ -5230,7 +5440,8 @@ mod tests {
                 &keyboard::Key::Character("o".into()),
                 keyboard::Modifiers::COMMAND,
                 None,
-                false
+                false,
+                None
             )
         );
         assert!(plain.contains("OpenDialogRequested"), "got {plain}");
@@ -5368,7 +5579,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&key, mods, None, false),
+            shortcut(&key, mods, None, false, None),
             Message::OpenDialogRequested
         ));
     }
@@ -5378,7 +5589,7 @@ mod tests {
         let key = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
 
         assert!(matches!(
-            shortcut(&key, keyboard::Modifiers::default(), None, false),
+            shortcut(&key, keyboard::Modifiers::default(), None, false, None),
             Message::ToastDismissed(_)
         ));
     }

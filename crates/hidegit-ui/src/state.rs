@@ -59,7 +59,10 @@ pub enum Screen {
 }
 
 /// Which pane has keyboard focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` because it rides in a subscription's identity: the `Tab` binding has
+/// to know which pane is focused to know which is next.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pane {
     Sidebar,
     Graph,
@@ -386,6 +389,14 @@ impl PromptField {
 /// Static because a prompt never has more than two: naming them is simpler than
 /// carrying a generated id through application state.
 pub const PROMPT_FIELD_IDS: [&str; 2] = ["hidegit-prompt-field-0", "hidegit-prompt-field-1"];
+
+/// The commit composer's two fields.
+///
+/// They carry ids because `find_focused` — which is how the `Space` binding
+/// asks whether a field is being typed into — **ignores widgets that have
+/// none**. Without these it would report nothing focused while a commit message
+/// was being written, and `Space` would stage a file mid-sentence.
+pub const COMPOSER_FIELD_IDS: [&str; 2] = ["hidegit-composer-subject", "hidegit-composer-body"];
 
 /// What a [`Prompt`] is collecting text for.
 ///
@@ -861,6 +872,12 @@ pub struct Draft {
     pub body: String,
     pub amend: bool,
     pub sign_off: bool,
+    /// `Cmd+Shift+Enter` asked for a push once the commit lands.
+    ///
+    /// Held here rather than passed through the commit task because the push
+    /// must only happen if the commit actually succeeded, and only the result
+    /// knows that.
+    pub push_after_commit: bool,
     /// A text field has keyboard focus, so bare-letter shortcuts must not fire.
     ///
     /// Without this, typing "jk" into a commit message steps through hunks:
