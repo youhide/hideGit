@@ -670,9 +670,12 @@ Stated plainly, because a reader should meet these here rather than discover the
    a missing credential fail fast rather than hang, and the failure is classified into `AuthError` —
    but that classification is only ever exercised against synthetic stderr. Real credentials stay a
    manual check on a developer's machine.
-5. **GitHub only until post-1.0.** The `Forge` trait exists so GitLab and Bitbucket are additions
-   rather than rewrites, but a trait designed against one implementation usually needs adjusting
-   when the second arrives. Expect to revise it. **GitHub Enterprise is not wired up either** — a
+5. **GitHub is the only forge, and no second one is planned.** The `Forge` trait still earns its
+   place — it is the seam that keeps `hidegit-core` free of any network dependency, and it is what
+   makes the UI's data model provider-neutral — but it is no longer a bet on a second provider
+   arriving. A trait designed against one implementation usually needs adjusting when a second
+   turns up, so anyone adding one should expect to revise it rather than to slot in underneath.
+   **GitHub Enterprise is not wired up either** — a
    self-hosted instance puts REST on `/api/v3` and GraphQL on `/api/graphql`, and there is no
    configuration surface to name a host from. `Endpoint` carries the three bases apart so adding it
    is a change in one place.

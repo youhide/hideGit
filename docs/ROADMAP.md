@@ -324,7 +324,12 @@ Everything between "works" and "someone who does not write Rust can install it".
 - Themes: dark and light, both designed rather than inverted; custom theme files. **Both shipped
   themes have landed** and `theme.name` in `config.toml` now selects between them — it had been read
   from disk and ignored since M1. Custom themes as TOML files are still to come
-- Complete keyboard navigation; a discoverable shortcut reference
+- Complete keyboard navigation; a discoverable shortcut reference. **Partly landed**: `Tab`, `Space`,
+  `Cmd+Shift+Enter`, `Cmd+]` / `Cmd+[` and `Cmd+Shift+.` are bound, which closes the `Space` debt M2
+  wrote down — focus turned out to be observable through a `find_focused` widget operation, which is
+  not the signal M2 was reaching for. What is still missing is named in
+  [UI_SPEC](./UI_SPEC.md#keyboard-shortcuts) rather than left looking implemented: the command
+  palette, the `G` chords, repository tabs, and a shortcut reference someone can actually read
 - **Drag-and-drop on the graph** for merge and rebase, with a confirmation step — deferred from
   [M5](#m5--history-operations). **Landed.** A press becomes a drag only past a threshold, so
   clicking a badge still selects; the drop opens the action sheet rather than running anything;
@@ -377,7 +382,6 @@ Breadth, once the core is solid. Not ordered.
 
 | Area | Notes |
 |---|---|
-| **GitLab & Bitbucket forges** | The first real test of whether the `Forge` trait generalises. Expect to revise it — merge requests are not pull requests. |
 | **Submodules** | Status, update, init. Common enough to matter, awkward enough to deserve its own milestone. |
 | **Worktrees** | Growing in use; fits naturally alongside multi-repo tabs. |
 | **Git LFS** | Largely inherited from shelling out to `git`, but needs UI for pointer files and fetch state. |
