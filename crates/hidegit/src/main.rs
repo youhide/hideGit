@@ -206,7 +206,29 @@ fn boot(
 
 fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
     match message {
-        ShellMessage::Ui(message) => shell.ui.update(message).map(ShellMessage::Ui),
+        ShellMessage::Ui(message) => {
+            // Settings apply as they are made, so they are written as they are
+            // made too. Checked before the message moves into `update`, and the
+            // values are read back out afterwards — the interface owns them
+            // while it runs, the file owns them between runs.
+            let touched_settings =
+                matches!(message, Message::ThemeChosen(_) | Message::AlertToggled(_));
+            let task = shell.ui.update(message).map(ShellMessage::Ui);
+            if touched_settings {
+                shell.config.theme.name = shell.ui.app.theme.name.clone();
+                shell.config.alerts = shell.ui.app.alerts.clone();
+                if let Some(paths) = &shell.paths {
+                    config::save_settings(
+                        &paths.config,
+                        &config::Settings {
+                            theme: shell.config.theme.name.clone(),
+                            alerts: shell.config.alerts.clone(),
+                        },
+                    );
+                }
+            }
+            task
+        }
 
         ShellMessage::Resized(size) => {
             shell.geometry.width = size.width;

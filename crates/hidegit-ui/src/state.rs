@@ -1061,6 +1061,12 @@ pub struct App {
     /// The confirmation currently on screen, if any.
     pub confirming: Option<Confirmation>,
     /// The action sheet currently on screen, if any.
+    /// The settings panel is open.
+    ///
+    /// A flag rather than a draft: every change applies as it is made, so there
+    /// is nothing to hold and nothing to discard on close. Settings that only
+    /// take effect on OK are settings people are afraid to explore.
+    pub settings_open: bool,
     pub sheet: Option<ActionSheet>,
     /// The prompt currently on screen, if any.
     pub prompt: Option<Prompt>,
@@ -1085,6 +1091,7 @@ impl Default for App {
             active: None,
             recents: Vec::new(),
             theme: Theme::default(),
+            settings_open: false,
             toasts: Vec::new(),
             confirming: None,
             sheet: None,

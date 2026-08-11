@@ -191,6 +191,36 @@ impl Hidegit {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::SettingsRequested => {
+                self.app.settings_open = true;
+                Task::none()
+            }
+
+            Message::SettingsDismissed => {
+                self.app.settings_open = false;
+                Task::none()
+            }
+
+            Message::ThemeChosen(name) => {
+                // Applied immediately: a theme you have to restart to see is a
+                // theme you cannot choose between.
+                match crate::theme::Theme::by_name(&name) {
+                    Some(theme) => {
+                        self.app.theme = theme;
+                        for cache in self.caches.values() {
+                            cache.clear();
+                        }
+                    }
+                    None => tracing::warn!(requested = name, "unknown theme name"),
+                }
+                Task::none()
+            }
+
+            Message::AlertToggled(which) => {
+                which.toggle(&mut self.app.alerts);
+                Task::none()
+            }
+
             Message::OpenDialogRequested => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()
@@ -2458,6 +2488,16 @@ impl Hidegit {
             None => self.screen(),
         };
 
+        let base = if self.app.settings_open {
+            iced::widget::stack![
+                base,
+                widget::settings::view(&self.app, &self.app.theme.palette)
+            ]
+            .into()
+        } else {
+            base
+        };
+
         widget::overlay::wrap(
             base,
             widget::overlay::Layers {
@@ -2512,23 +2552,23 @@ impl Hidegit {
             // binding is resolved where the answer is, rather than round-tripping
             // through a message that would arrive a frame late.
             self.app.active_repo().map(|repo| repo.focus),
+            self.app.settings_open,
         );
 
-        let keys =
-            keyboard::listen()
-                .with(context)
-                .map(|((active, modal, editing, pane), event)| {
-                    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
-                        return Message::ToastDismissed(u64::MAX);
-                    };
-                    // A modal owns the keyboard while it is up. Letting `Space` stage
-                    // something behind a "discard?" dialog would be the worst
-                    // possible moment to act on a stray key.
-                    if let Some(modal) = modal {
-                        return modal_shortcut(&key, modal);
-                    }
-                    shortcut(&key, modifiers, active, editing, pane)
-                });
+        let keys = keyboard::listen().with(context).map(
+            |((active, modal, editing, pane, settings), event)| {
+                let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                    return Message::ToastDismissed(u64::MAX);
+                };
+                // A modal owns the keyboard while it is up. Letting `Space` stage
+                // something behind a "discard?" dialog would be the worst
+                // possible moment to act on a stray key.
+                if let Some(modal) = modal {
+                    return modal_shortcut(&key, modal);
+                }
+                shortcut(&key, modifiers, active, editing, pane, settings)
+            },
+        );
 
         // One watch per open repository, so a change made in an editor or by a
         // `git` command in a terminal refreshes the view on its own.
@@ -2608,11 +2648,22 @@ fn shortcut(
     active: Option<usize>,
     editing: bool,
     pane: Option<Pane>,
+    settings: bool,
 ) -> Message {
     use keyboard::key::{Key, Named};
 
     let nothing = Message::ToastDismissed(u64::MAX);
     let command = modifiers.command();
+
+    // The settings panel owns the keyboard while it is up, the way every other
+    // layer over the screen does. Without this, `j` steps through hunks behind
+    // it and `Space` stages a file nobody can see.
+    if settings {
+        return match key {
+            Key::Named(Named::Escape) => Message::SettingsDismissed,
+            _ => nothing,
+        };
+    }
 
     // While a text field has focus, every unmodified key belongs to it.
     // `keyboard::listen()` is global and `j`, `k` and `Space` are all bound, so
@@ -2646,6 +2697,7 @@ fn shortcut(
                 )],
             }))
         }
+        Key::Character(c) if command && c.as_str() == "," => Message::SettingsRequested,
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
         Key::Character(c) if command && c.as_str() == "d" => repo(RepoMessage::DiffModeToggled),
 
@@ -3673,6 +3725,80 @@ mod tests {
     }
 
     #[test]
+    fn the_settings_panel_opens_on_its_shortcut_and_closes_on_escape() {
+        // `Cmd+,` has been in the shortcut table since M1 with nothing behind
+        // it, and the light theme was unreachable without editing a file the
+        // application never creates.
+        let mut app = app_with(3);
+        let comma = keyboard::Key::Character(",".into());
+        assert!(matches!(
+            shortcut(
+                &comma,
+                keyboard::Modifiers::COMMAND,
+                Some(0),
+                false,
+                None,
+                false
+            ),
+            Message::SettingsRequested
+        ));
+
+        let _ = app.update(Message::SettingsRequested);
+        assert!(app.app.settings_open);
+
+        let _ = app.update(Message::SettingsDismissed);
+        assert!(!app.app.settings_open);
+    }
+
+    #[test]
+    fn the_open_panel_owns_the_keyboard() {
+        // Otherwise `j` steps through hunks behind it, the way it would behind
+        // any other layer over the screen.
+        let j = keyboard::Key::Character("j".into());
+        let none = keyboard::Modifiers::default();
+
+        assert!(matches!(
+            shortcut(&j, none, Some(0), false, None, true),
+            Message::ToastDismissed(_)
+        ));
+        let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+        assert!(matches!(
+            shortcut(&escape, none, Some(0), false, None, true),
+            Message::SettingsDismissed
+        ));
+    }
+
+    #[test]
+    fn choosing_a_theme_applies_it_immediately() {
+        // A theme you have to restart to see is a theme you cannot choose
+        // between.
+        let mut app = app_with(3);
+        assert_eq!(app.app.theme.palette, crate::theme::Palette::DARK);
+
+        let _ = app.update(Message::ThemeChosen(
+            crate::theme::Theme::LIGHT_NAME.to_owned(),
+        ));
+
+        assert_eq!(app.app.theme.palette, crate::theme::Palette::LIGHT);
+    }
+
+    #[test]
+    fn turning_alerts_off_keeps_the_per_event_choices() {
+        // So turning them back on restores the set you chose rather than a
+        // default. The screen makes the rows unavailable; it must not clear
+        // them.
+        let mut app = app_with(3);
+        let _ = app.update(Message::AlertToggled(
+            crate::message::AlertToggle::ChecksPassed,
+        ));
+        let chosen = app.app.alerts.events.checks_passed;
+
+        let _ = app.update(Message::AlertToggled(crate::message::AlertToggle::Enabled));
+        assert!(!app.app.alerts.enabled);
+        assert_eq!(app.app.alerts.events.checks_passed, chosen);
+    }
+
+    #[test]
     fn the_configured_theme_is_applied_and_a_typo_falls_back() {
         // The config has carried a theme name since M1 and nothing read it, so
         // setting one did nothing at all.
@@ -3910,11 +4036,11 @@ mod tests {
         let shift = keyboard::Modifiers::SHIFT;
 
         assert!(matches!(
-            shortcut(&tab, none, Some(0), false, Some(Pane::Sidebar)),
+            shortcut(&tab, none, Some(0), false, Some(Pane::Sidebar), false),
             Message::Repo(0, RepoMessage::FocusCycled(Pane::Graph))
         ));
         assert!(matches!(
-            shortcut(&tab, shift, Some(0), false, Some(Pane::Sidebar)),
+            shortcut(&tab, shift, Some(0), false, Some(Pane::Sidebar), false),
             Message::Repo(0, RepoMessage::FocusCycled(Pane::Detail))
         ));
     }
@@ -3931,7 +4057,8 @@ mod tests {
                 keyboard::Modifiers::default(),
                 Some(0),
                 false,
-                Some(Pane::Detail)
+                Some(Pane::Detail),
+                false
             ),
             Message::Repo(0, RepoMessage::StageToggleRequested)
         ));
@@ -3971,11 +4098,18 @@ mod tests {
         let command_shift = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
 
         assert!(matches!(
-            shortcut(&enter, command_shift, Some(0), false, None),
+            shortcut(&enter, command_shift, Some(0), false, None, false),
             Message::Repo(0, RepoMessage::CommitAndPushRequested)
         ));
         assert!(matches!(
-            shortcut(&enter, keyboard::Modifiers::COMMAND, Some(0), false, None),
+            shortcut(
+                &enter,
+                keyboard::Modifiers::COMMAND,
+                Some(0),
+                false,
+                None,
+                false
+            ),
             Message::Repo(0, RepoMessage::CommitRequested)
         ));
     }
@@ -4005,11 +4139,11 @@ mod tests {
         let open = keyboard::Key::Character("[".into());
 
         assert!(matches!(
-            shortcut(&close, command, Some(0), false, None),
+            shortcut(&close, command, Some(0), false, None, false),
             Message::Repo(0, RepoMessage::ConflictStepped(1))
         ));
         assert!(matches!(
-            shortcut(&open, command, Some(0), false, None),
+            shortcut(&open, command, Some(0), false, None, false),
             Message::Repo(0, RepoMessage::ConflictStepped(-1))
         ));
     }
@@ -4023,11 +4157,11 @@ mod tests {
         let mods = keyboard::Modifiers::default();
 
         assert!(matches!(
-            shortcut(&j, mods, Some(0), false, None),
+            shortcut(&j, mods, Some(0), false, None, false),
             Message::Repo(0, RepoMessage::HunkStepped(1))
         ));
         assert!(matches!(
-            shortcut(&j, mods, Some(0), true, None),
+            shortcut(&j, mods, Some(0), true, None, false),
             Message::ToastDismissed(_)
         ));
 
@@ -4036,12 +4170,12 @@ mod tests {
         // followed by `Space` arrives before any keystroke has set the flag.
         // The answer comes back as `StageToggleResolved`.
         assert!(matches!(
-            shortcut(&space, mods, Some(0), false, None),
+            shortcut(&space, mods, Some(0), false, None, false),
             Message::Repo(0, RepoMessage::StageToggleRequested)
         ));
         // And while the flag *is* set, it never even asks.
         assert!(matches!(
-            shortcut(&space, mods, Some(0), true, None),
+            shortcut(&space, mods, Some(0), true, None, false),
             Message::ToastDismissed(_)
         ));
     }
@@ -4054,7 +4188,7 @@ mod tests {
         let command = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&enter, command, Some(0), true, None),
+            shortcut(&enter, command, Some(0), true, None, false),
             Message::Repo(0, RepoMessage::CommitRequested)
         ));
     }
@@ -5179,7 +5313,7 @@ mod tests {
 
         for (character, expected) in [("f", "Fetch"), ("p", "Pull"), ("u", "Push")] {
             let key = keyboard::Key::Character(character.into());
-            let message = shortcut(&key, mods, Some(0), true, None);
+            let message = shortcut(&key, mods, Some(0), true, None, false);
             let described = format!("{message:?}");
             assert!(
                 described.contains(expected),
@@ -5194,7 +5328,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
         let key = keyboard::Key::Character("U".into());
 
-        let described = format!("{:?}", shortcut(&key, mods, Some(0), false, None));
+        let described = format!("{:?}", shortcut(&key, mods, Some(0), false, None, false));
         assert!(described.contains("Push"), "got {described}");
     }
 
@@ -5628,7 +5762,8 @@ mod tests {
                 mods,
                 None,
                 false,
-                None
+                None,
+                false
             )
         );
         assert!(described.contains("Clone"), "got {described}");
@@ -5640,7 +5775,8 @@ mod tests {
                 keyboard::Modifiers::COMMAND,
                 None,
                 false,
-                None
+                None,
+                false
             )
         );
         assert!(plain.contains("OpenDialogRequested"), "got {plain}");
@@ -5778,7 +5914,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&key, mods, None, false, None),
+            shortcut(&key, mods, None, false, None, false),
             Message::OpenDialogRequested
         ));
     }
@@ -5788,7 +5924,14 @@ mod tests {
         let key = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
 
         assert!(matches!(
-            shortcut(&key, keyboard::Modifiers::default(), None, false, None),
+            shortcut(
+                &key,
+                keyboard::Modifiers::default(),
+                None,
+                false,
+                None,
+                false
+            ),
             Message::ToastDismissed(_)
         ));
     }

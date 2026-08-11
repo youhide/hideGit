@@ -338,7 +338,11 @@ Everything between "works" and "someone who does not write Rust can install it".
   needs no confirmation. A plan Git would refuse — squashing the first step, dropping everything —
   disables Start and says which, because a greyed button explaining neither is a dead end
 - Multi-repository tabs, with per-repository state preserved
-- Settings UI covering everything currently in TOML
+- Settings UI covering everything currently in TOML. **Partly landed**: theme and every alert switch
+  are on a `Cmd+,` panel, applied as they are changed and written back to `config.toml` **in place** —
+  the file keeps its comments, its key order and any key hideGit does not own, because it is
+  hand-edited and often lives in a dotfiles repository. Quiet hours and muted repositories are still
+  file-only
 - Search: commits by message, author, hash; file search within a commit
 - Blame view
 - Accessibility: focus order, contrast, screen-reader labels where iced supports them
