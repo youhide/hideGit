@@ -338,6 +338,17 @@ pub enum RepoMessage {
     /// The `⋯` on a commit. `update` builds the sheet, because a sheet is an
     /// application-level `Message` and the detail pane speaks `RepoMessage`.
     CommitActionsRequested(ObjectId),
+    /// One branch badge on the graph was dragged onto another.
+    ///
+    /// Carries short names, which is what every operation here takes and what
+    /// the confirmation shows. `update` decides which operations are legal —
+    /// both depend on which branch is checked out — and always asks first: the
+    /// discoverability of the gesture is the point, but not at the cost of an
+    /// unintended rebase.
+    BranchDropped {
+        source: String,
+        target: String,
+    },
     /// Merge a branch into the current one.
     ///
     /// Not confirmed: a merge adds a commit and can be undone by resetting, and

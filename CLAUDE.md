@@ -13,8 +13,8 @@ PRs.
 commit graph, a read-only viewer, the working directory — status, staging by file, hunk and line,
 discard, commit, a filesystem watcher — everything that touches a remote, pull request alerts over
 GitHub, and history rewriting: merge, rebase, cherry-pick, revert, reset, the reflog and a three-pane
-conflict resolver. M6 is in progress: the interactive rebase plan editor has landed, and
-**drag-and-drop on the graph** is the one M5 scope item still deferred. Check
+conflict resolver. M6 is in progress: the interactive rebase plan editor, the keyboard shortcut bindings and
+drag-and-drop on the graph have landed, which closes both M5 deferrals. Check
 [ROADMAP.md](./docs/ROADMAP.md) before assuming a feature exists, and check the code before referring
 to a module.
 
