@@ -20,8 +20,8 @@ use crate::model::{
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
     MergeOutcome, Patch, ProgressSink, ProgressUpdate, PullOpts, PullOutcome, PushOutcome,
-    PushSpec, RebasePlan, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
-    StashOutcome, TagSpec,
+    PushSpec, RebasePlan, ResetMode, SearchField, SearchHit, SearchQuery, SearchResults,
+    SequenceControl, SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
 };
 
 /// An error the fake should return instead of data.
@@ -586,6 +586,25 @@ impl GitBackend for FakeBackend {
             plan: plan.clone(),
         })?;
         Ok(self.sequence_outcome.clone())
+    }
+
+    fn search(&self, query: &SearchQuery) -> Result<SearchResults, GitError> {
+        self.check()?;
+        // The scripted history, filtered the same way the real one is, so a UI
+        // test exercises the same shapes without a repository on disk.
+        let needle = query.text.trim().to_lowercase();
+        let hits = self
+            .commits
+            .iter()
+            .filter(|c| c.summary.to_lowercase().contains(&needle))
+            .take(query.limit)
+            .map(|commit| SearchHit {
+                commit: commit.clone(),
+                field: SearchField::Summary,
+            })
+            .collect::<Vec<_>>();
+        let truncated = hits.len() == query.limit;
+        Ok(SearchResults { hits, truncated })
     }
 
     fn rebase_preview(&self, _onto: &str) -> Result<Vec<Commit>, GitError> {

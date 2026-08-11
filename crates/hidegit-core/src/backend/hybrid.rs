@@ -20,8 +20,8 @@ use crate::model::{
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FastForward, FetchOpts, FetchOutcome,
     ForceMode, MergeOpts, MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome,
-    PushSpec, RebaseAction, RebasePlan, ResetMode, SequenceControl, SequenceOutcome, StartPoint,
-    StashOp, StashOutcome, TagSpec,
+    PushSpec, RebaseAction, RebasePlan, ResetMode, SearchQuery, SearchResults, SequenceControl,
+    SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
 };
 use crate::process::GitCommand;
 
@@ -929,6 +929,10 @@ impl GitBackend for HybridBackend {
         // A rebase that stops on an `edit` step exits zero, so finished and
         // stopped look identical from here and the repository is asked instead.
         self.sequence_state()
+    }
+
+    fn search(&self, query: &SearchQuery) -> Result<SearchResults, GitError> {
+        gix_read::search(&self.repo(), query)
     }
 
     fn rebase_preview(&self, onto: &str) -> Result<Vec<Commit>, GitError> {

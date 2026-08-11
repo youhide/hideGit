@@ -14,8 +14,8 @@ use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RepoState, RevSpec};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, MergeOpts, Patch, ProgressSink,
-    ProgressUpdate, PullOpts, PullOutcome, PushSpec, RebasePlan, ResetMode, SequenceControl,
-    SequenceOutcome, StartPoint, StashOp, TagSpec,
+    ProgressUpdate, PullOpts, PullOutcome, PushSpec, RebasePlan, ResetMode, SearchQuery,
+    SequenceControl, SequenceOutcome, StartPoint, StashOp, TagSpec,
 };
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
@@ -34,6 +34,13 @@ use crate::state::{
     PromptKind, ROW_HEIGHT, RebaseEditor, Resolver, Screen, Section, Selection,
 };
 use crate::{alerts, forge, screen, watcher, widget};
+
+/// How many search hits to stop at.
+///
+/// The list is scrolled, not paged, and a search matching ten thousand commits
+/// needs narrowing rather than a longer list. The result says when it stopped
+/// here, so the count is never mistaken for the whole answer.
+const SEARCH_LIMIT: usize = 200;
 
 /// The application, plus the bits of view state that are not domain state.
 #[derive(Debug, Default)]
@@ -743,6 +750,7 @@ impl Hidegit {
             resolver: None,
             plan: None,
             blame: None,
+            search: None,
         });
         self.caches.insert(index, canvas::Cache::new());
         self.app.active = Some(index);
@@ -1511,6 +1519,114 @@ impl Hidegit {
                 }
                 let backend = Arc::clone(&repo.backend);
                 write_task(index, move || backend.stash(&StashOp::Drop(at)).map(|_| ()))
+            }
+
+            RepoMessage::SearchRequested => {
+                repo.search.get_or_insert_with(Default::default);
+                // Focused on open: a search you have to click into before
+                // typing costs a click every single time.
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::focus(
+                        crate::state::SEARCH_FIELD_ID.into(),
+                    ),
+                )
+            }
+
+            RepoMessage::SearchDismissed => {
+                repo.search = None;
+                Task::none()
+            }
+
+            RepoMessage::SearchChanged(query) => {
+                let Some(search) = &mut repo.search else {
+                    return Task::none();
+                };
+                search.query = query.clone();
+                search.selected = 0;
+
+                if query.trim().is_empty() {
+                    // Clearing the box clears the list rather than leaving the
+                    // last search's hits under an empty query.
+                    search.results = Default::default();
+                    search.running = false;
+                    return Task::none();
+                }
+
+                search.running = true;
+                let backend = Arc::clone(&repo.backend);
+                let answered = query.clone();
+                blocking(move || {
+                    backend.search(&SearchQuery {
+                        text: query,
+                        limit: SEARCH_LIMIT,
+                    })
+                })
+                .map(move |results| {
+                    Message::Repo(
+                        index,
+                        RepoMessage::SearchFinished {
+                            query: answered.clone(),
+                            results: Box::new(results),
+                        },
+                    )
+                })
+            }
+
+            RepoMessage::SearchFinished { query, results } => {
+                let Some(search) = &mut repo.search else {
+                    return Task::none();
+                };
+                // A slow search for a query the user has already moved on from
+                // must not overwrite the results of a newer one. Typing is
+                // faster than a walk of a large history, so this happens.
+                if search.query != query {
+                    return Task::none();
+                }
+                search.running = false;
+                match *results {
+                    Ok(found) => {
+                        search.results = found;
+                        search.selected = 0;
+                    }
+                    Err(error) => {
+                        search.results = Default::default();
+                        self.app.toast(&error);
+                    }
+                }
+                Task::none()
+            }
+
+            RepoMessage::SearchStepped(delta) => {
+                let Some(search) = &mut repo.search else {
+                    return Task::none();
+                };
+                // Zero is `Enter`: the key binding cannot know which commit is
+                // under the selection, so it asks the state that does.
+                if delta == 0 {
+                    return match search.selected_commit() {
+                        Some(id) => {
+                            Task::done(Message::Repo(index, RepoMessage::SearchAccepted(id)))
+                        }
+                        None => Task::none(),
+                    };
+                }
+                search.step(delta);
+                Task::none()
+            }
+
+            RepoMessage::SearchAccepted(id) => {
+                repo.search = None;
+                // Selecting scrolls the graph to it, which is the whole point:
+                // a search that found a commit and left you looking somewhere
+                // else has not finished the job.
+                // `restore_anchor` puts the row at the top of the viewport,
+                // which is what a jump wants — the selection alone would leave
+                // the commit off screen if it is far from where you were.
+                repo.graph.restore_anchor(id);
+                Task::done(Message::Repo(
+                    index,
+                    RepoMessage::Selected(Selection::Commit(id)),
+                ))
             }
 
             RepoMessage::BlameRequested { path, at } => {
@@ -2585,14 +2701,23 @@ impl Hidegit {
 
                 let base = screen::repository::view(&self.app, repo, index, palette, cache);
 
-                // The plan editor sits over the repository rather than beside
-                // it: it owns the screen until it is run or closed, and nothing
-                // behind it can be acted on meaningfully while a rebase is
-                // being composed.
-                match &repo.plan {
+                // The plan editor and the search each sit *over* the repository
+                // rather than beside it: both own the screen until they are
+                // closed, and nothing behind them can be acted on meaningfully
+                // in the meantime.
+                let base: IcedElement<'_, Message> = match &repo.plan {
                     Some(plan) => {
                         iced::widget::stack![base, widget::plan::view(plan, index, palette)].into()
                     }
+                    None => base,
+                };
+
+                match &repo.search {
+                    Some(search) => iced::widget::stack![
+                        base,
+                        widget::search::view(search, palette).map(move |m| Message::Repo(index, m))
+                    ]
+                    .into(),
                     None => base,
                 }
             }
@@ -2613,10 +2738,14 @@ impl Hidegit {
             // through a message that would arrive a frame late.
             self.app.active_repo().map(|repo| repo.focus),
             self.app.settings_open,
+            // Which repository's search is open, so the binding can address it.
+            self.app
+                .active
+                .filter(|_| self.app.active_repo().is_some_and(|r| r.search.is_some())),
         );
 
         let keys = keyboard::listen().with(context).map(
-            |((active, modal, editing, pane, settings), event)| {
+            |((active, modal, editing, pane, settings, searching), event)| {
                 let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
                     return Message::ToastDismissed(u64::MAX);
                 };
@@ -2626,7 +2755,7 @@ impl Hidegit {
                 if let Some(modal) = modal {
                     return modal_shortcut(&key, modal);
                 }
-                shortcut(&key, modifiers, active, editing, pane, settings)
+                shortcut(&key, modifiers, active, editing, pane, settings, searching)
             },
         );
 
@@ -2709,11 +2838,27 @@ fn shortcut(
     editing: bool,
     pane: Option<Pane>,
     settings: bool,
+    searching: Option<usize>,
 ) -> Message {
     use keyboard::key::{Key, Named};
 
     let nothing = Message::ToastDismissed(u64::MAX);
     let command = modifiers.command();
+
+    // The search owns the keyboard while it is up. Everything unmodified goes
+    // to the box being typed into; the arrows and Enter drive the list, which
+    // is the whole point of it being a keyboard-first panel.
+    if let Some(index) = searching {
+        return match key {
+            Key::Named(Named::Escape) => Message::Repo(index, RepoMessage::SearchDismissed),
+            Key::Named(Named::ArrowDown) => Message::Repo(index, RepoMessage::SearchStepped(1)),
+            Key::Named(Named::ArrowUp) => Message::Repo(index, RepoMessage::SearchStepped(-1)),
+            // Enter is handled where the selection lives: the binding cannot
+            // know which commit is under it.
+            Key::Named(Named::Enter) => Message::Repo(index, RepoMessage::SearchStepped(0)),
+            _ => nothing,
+        };
+    }
 
     // The settings panel owns the keyboard while it is up, the way every other
     // layer over the screen does. Without this, `j` steps through hunks behind
@@ -2756,6 +2901,9 @@ fn shortcut(
                     "https://github.com/owner/repo.git",
                 )],
             }))
+        }
+        Key::Character(c) if command && c.as_str() == "f" && !shift => {
+            repo(RepoMessage::SearchRequested)
         }
         Key::Character(c) if command && c.as_str() == "," => Message::SettingsRequested,
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
@@ -3784,6 +3932,177 @@ mod tests {
         assert!(split_kept("").is_empty());
     }
 
+    fn app_searching() -> Hidegit {
+        let mut app = app_with(5);
+        let _ = app.update(Message::Repo(0, RepoMessage::SearchRequested));
+        app
+    }
+
+    fn search_of(app: &Hidegit) -> &crate::state::Search {
+        app.app.active_repo().unwrap().search.as_ref().unwrap()
+    }
+
+    #[test]
+    fn a_stale_search_result_never_overwrites_a_newer_one() {
+        // Typing is faster than a walk of a large history, so a search for
+        // "par" can land after the user has already typed "parser". Without the
+        // query travelling with the result, the older answer wins.
+        let mut app = app_searching();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SearchChanged("parser".into()),
+        ));
+
+        let stale = hidegit_core::ops::SearchResults {
+            hits: vec![hidegit_core::ops::SearchHit {
+                commit: commits(1).remove(0),
+                field: hidegit_core::ops::SearchField::Summary,
+            }],
+            truncated: false,
+        };
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SearchFinished {
+                query: "par".into(),
+                results: Box::new(Ok(stale)),
+            },
+        ));
+
+        assert!(
+            search_of(&app).results.hits.is_empty(),
+            "a result for a query nobody is asking any more is dropped"
+        );
+        assert!(
+            search_of(&app).running,
+            "the newer search is still in flight"
+        );
+    }
+
+    #[test]
+    fn clearing_the_box_clears_the_results() {
+        // Otherwise the last search's hits sit under an empty query, which
+        // reads as "these match nothing".
+        let mut app = app_searching();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SearchFinished {
+                query: String::new(),
+                results: Box::new(Ok(hidegit_core::ops::SearchResults {
+                    hits: vec![hidegit_core::ops::SearchHit {
+                        commit: commits(1).remove(0),
+                        field: hidegit_core::ops::SearchField::Summary,
+                    }],
+                    truncated: false,
+                })),
+            },
+        ));
+        assert_eq!(search_of(&app).results.hits.len(), 1);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::SearchChanged("   ".into())));
+
+        assert!(search_of(&app).results.hits.is_empty());
+        assert!(!search_of(&app).running, "and nothing is left running");
+    }
+
+    #[test]
+    fn cmd_f_opens_the_search_and_cmd_shift_f_still_fetches() {
+        let f = keyboard::Key::Character("f".into());
+        let command = keyboard::Modifiers::COMMAND;
+        let command_shift = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
+
+        assert!(matches!(
+            shortcut(&f, command, Some(0), false, None, false, None),
+            Message::Repo(0, RepoMessage::SearchRequested)
+        ));
+        // The shifted form has fetched every remote since M3 and must keep it.
+        assert!(matches!(
+            shortcut(&f, command_shift, Some(0), false, None, false, None),
+            Message::Repo(0, RepoMessage::FetchRequested)
+        ));
+        // With Shift held, most layouts report the shifted character.
+        let upper = keyboard::Key::Character("F".into());
+        assert!(matches!(
+            shortcut(&upper, command_shift, Some(0), false, None, false, None),
+            Message::Repo(0, RepoMessage::FetchRequested)
+        ));
+    }
+
+    #[test]
+    fn the_search_owns_the_keyboard_and_the_arrows_drive_the_list() {
+        let down = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
+        let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+        let j = keyboard::Key::Character("j".into());
+        let none = keyboard::Modifiers::default();
+
+        assert!(matches!(
+            shortcut(&down, none, Some(0), false, None, false, Some(0)),
+            Message::Repo(0, RepoMessage::SearchStepped(1))
+        ));
+        assert!(matches!(
+            shortcut(&escape, none, Some(0), false, None, false, Some(0)),
+            Message::Repo(0, RepoMessage::SearchDismissed)
+        ));
+        // A bare letter belongs to the box being typed into, not to the hunks
+        // behind the panel.
+        assert!(matches!(
+            shortcut(&j, none, Some(0), false, None, false, Some(0)),
+            Message::ToastDismissed(_)
+        ));
+    }
+
+    #[test]
+    fn accepting_a_hit_closes_the_search_and_scrolls_to_the_commit() {
+        // A search that found a commit and left you looking somewhere else has
+        // not finished the job. The selection itself travels as a follow-up
+        // message, which this harness does not run — what is asserted here is
+        // what `update` does synchronously.
+        // A history long enough that scrolling means something: with everything
+        // on screen at once, clamping correctly pins the scroll at zero and the
+        // assertion would be vacuous.
+        let mut app = app_with(500);
+        let _ = app.update(Message::Repo(0, RepoMessage::ViewportChanged(20)));
+        let _ = app.update(Message::Repo(0, RepoMessage::SearchRequested));
+        let wanted = app.app.active_repo().unwrap().graph.commits[200].id;
+
+        let _ = app.update(Message::Repo(0, RepoMessage::SearchAccepted(wanted)));
+
+        let repo = app.app.active_repo().unwrap();
+        assert!(repo.search.is_none(), "the panel closes");
+        assert_eq!(
+            repo.graph.scroll, 200.0,
+            "and the graph moves to the commit rather than leaving it off screen"
+        );
+    }
+
+    #[test]
+    fn stepping_is_clamped_to_the_hits_that_exist() {
+        let mut app = app_searching();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SearchFinished {
+                query: String::new(),
+                results: Box::new(Ok(hidegit_core::ops::SearchResults {
+                    hits: commits(2)
+                        .into_iter()
+                        .map(|commit| hidegit_core::ops::SearchHit {
+                            commit,
+                            field: hidegit_core::ops::SearchField::Summary,
+                        })
+                        .collect(),
+                    truncated: false,
+                })),
+            },
+        ));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::SearchStepped(-1)));
+        assert_eq!(search_of(&app).selected, 0);
+
+        for _ in 0..5 {
+            let _ = app.update(Message::Repo(0, RepoMessage::SearchStepped(1)));
+        }
+        assert_eq!(search_of(&app).selected, 1, "clamped to the last hit");
+    }
+
     #[test]
     fn the_settings_panel_opens_on_its_shortcut_and_closes_on_escape() {
         // `Cmd+,` has been in the shortcut table since M1 with nothing behind
@@ -3798,7 +4117,8 @@ mod tests {
                 Some(0),
                 false,
                 None,
-                false
+                false,
+                None
             ),
             Message::SettingsRequested
         ));
@@ -3818,12 +4138,12 @@ mod tests {
         let none = keyboard::Modifiers::default();
 
         assert!(matches!(
-            shortcut(&j, none, Some(0), false, None, true),
+            shortcut(&j, none, Some(0), false, None, true, None),
             Message::ToastDismissed(_)
         ));
         let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
         assert!(matches!(
-            shortcut(&escape, none, Some(0), false, None, true),
+            shortcut(&escape, none, Some(0), false, None, true, None),
             Message::SettingsDismissed
         ));
     }
@@ -4096,11 +4416,19 @@ mod tests {
         let shift = keyboard::Modifiers::SHIFT;
 
         assert!(matches!(
-            shortcut(&tab, none, Some(0), false, Some(Pane::Sidebar), false),
+            shortcut(&tab, none, Some(0), false, Some(Pane::Sidebar), false, None),
             Message::Repo(0, RepoMessage::FocusCycled(Pane::Graph))
         ));
         assert!(matches!(
-            shortcut(&tab, shift, Some(0), false, Some(Pane::Sidebar), false),
+            shortcut(
+                &tab,
+                shift,
+                Some(0),
+                false,
+                Some(Pane::Sidebar),
+                false,
+                None
+            ),
             Message::Repo(0, RepoMessage::FocusCycled(Pane::Detail))
         ));
     }
@@ -4118,7 +4446,8 @@ mod tests {
                 Some(0),
                 false,
                 Some(Pane::Detail),
-                false
+                false,
+                None
             ),
             Message::Repo(0, RepoMessage::StageToggleRequested)
         ));
@@ -4158,7 +4487,7 @@ mod tests {
         let command_shift = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
 
         assert!(matches!(
-            shortcut(&enter, command_shift, Some(0), false, None, false),
+            shortcut(&enter, command_shift, Some(0), false, None, false, None),
             Message::Repo(0, RepoMessage::CommitAndPushRequested)
         ));
         assert!(matches!(
@@ -4168,7 +4497,8 @@ mod tests {
                 Some(0),
                 false,
                 None,
-                false
+                false,
+                None
             ),
             Message::Repo(0, RepoMessage::CommitRequested)
         ));
@@ -4199,11 +4529,11 @@ mod tests {
         let open = keyboard::Key::Character("[".into());
 
         assert!(matches!(
-            shortcut(&close, command, Some(0), false, None, false),
+            shortcut(&close, command, Some(0), false, None, false, None),
             Message::Repo(0, RepoMessage::ConflictStepped(1))
         ));
         assert!(matches!(
-            shortcut(&open, command, Some(0), false, None, false),
+            shortcut(&open, command, Some(0), false, None, false, None),
             Message::Repo(0, RepoMessage::ConflictStepped(-1))
         ));
     }
@@ -4217,11 +4547,11 @@ mod tests {
         let mods = keyboard::Modifiers::default();
 
         assert!(matches!(
-            shortcut(&j, mods, Some(0), false, None, false),
+            shortcut(&j, mods, Some(0), false, None, false, None),
             Message::Repo(0, RepoMessage::HunkStepped(1))
         ));
         assert!(matches!(
-            shortcut(&j, mods, Some(0), true, None, false),
+            shortcut(&j, mods, Some(0), true, None, false, None),
             Message::ToastDismissed(_)
         ));
 
@@ -4230,12 +4560,12 @@ mod tests {
         // followed by `Space` arrives before any keystroke has set the flag.
         // The answer comes back as `StageToggleResolved`.
         assert!(matches!(
-            shortcut(&space, mods, Some(0), false, None, false),
+            shortcut(&space, mods, Some(0), false, None, false, None),
             Message::Repo(0, RepoMessage::StageToggleRequested)
         ));
         // And while the flag *is* set, it never even asks.
         assert!(matches!(
-            shortcut(&space, mods, Some(0), true, None, false),
+            shortcut(&space, mods, Some(0), true, None, false, None),
             Message::ToastDismissed(_)
         ));
     }
@@ -4248,7 +4578,7 @@ mod tests {
         let command = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&enter, command, Some(0), true, None, false),
+            shortcut(&enter, command, Some(0), true, None, false, None),
             Message::Repo(0, RepoMessage::CommitRequested)
         ));
     }
@@ -5373,7 +5703,7 @@ mod tests {
 
         for (character, expected) in [("f", "Fetch"), ("p", "Pull"), ("u", "Push")] {
             let key = keyboard::Key::Character(character.into());
-            let message = shortcut(&key, mods, Some(0), true, None, false);
+            let message = shortcut(&key, mods, Some(0), true, None, false, None);
             let described = format!("{message:?}");
             assert!(
                 described.contains(expected),
@@ -5388,7 +5718,10 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
         let key = keyboard::Key::Character("U".into());
 
-        let described = format!("{:?}", shortcut(&key, mods, Some(0), false, None, false));
+        let described = format!(
+            "{:?}",
+            shortcut(&key, mods, Some(0), false, None, false, None)
+        );
         assert!(described.contains("Push"), "got {described}");
     }
 
@@ -5823,7 +6156,8 @@ mod tests {
                 None,
                 false,
                 None,
-                false
+                false,
+                None
             )
         );
         assert!(described.contains("Clone"), "got {described}");
@@ -5836,7 +6170,8 @@ mod tests {
                 None,
                 false,
                 None,
-                false
+                false,
+                None
             )
         );
         assert!(plain.contains("OpenDialogRequested"), "got {plain}");
@@ -5974,7 +6309,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&key, mods, None, false, None, false),
+            shortcut(&key, mods, None, false, None, false, None),
             Message::OpenDialogRequested
         ));
     }
@@ -5990,7 +6325,8 @@ mod tests {
                 None,
                 false,
                 None,
-                false
+                false,
+                None
             ),
             Message::ToastDismissed(_)
         ));

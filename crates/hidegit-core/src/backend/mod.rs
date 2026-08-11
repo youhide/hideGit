@@ -38,7 +38,8 @@ use crate::model::{
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
     MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome, PushSpec, RebasePlan,
-    ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
+    ResetMode, SearchQuery, SearchResults, SequenceControl, SequenceOutcome, StartPoint, StashOp,
+    StashOutcome, TagSpec,
 };
 
 /// Everything hideGit can ask of a repository.
@@ -220,6 +221,15 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     /// `git rebase --interactive`. See
     /// `docs/adr/0007-rebase-plan-through-the-environment.md`.
     fn rebase(&self, onto: &str, plan: &RebasePlan) -> Result<SequenceOutcome, GitError>;
+
+    /// Walks history looking for `query`, newest first.
+    ///
+    /// Searches the summary, the body, the author's name and email, and the id
+    /// as a prefix. The result says which field matched and whether the walk
+    /// stopped at the limit rather than at the end of history — a list that
+    /// cannot distinguish "these are the matches" from "these are the first
+    /// matches" lies by omission.
+    fn search(&self, query: &SearchQuery) -> Result<SearchResults, GitError>;
 
     /// The commits a rebase onto `onto` would replay, **oldest first**.
     ///

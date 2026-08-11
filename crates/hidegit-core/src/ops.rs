@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::model::{Conflict, ObjectId};
+use crate::model::{Commit, Conflict, ObjectId};
 
 /// How a commit differs from a plain one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -404,6 +404,69 @@ impl CancelToken {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
+}
+
+/// What to look for in history.
+///
+/// One field rather than a field per kind: people type a fragment and expect it
+/// to be found, not to first classify it as a hash or an author. Every field is
+/// searched and the caller is told which one matched, so the result list can
+/// say *why* a commit is in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchQuery {
+    /// Matched case-insensitively against the summary, the body, the author's
+    /// name and email, and — as a prefix — the commit id.
+    pub text: String,
+    /// How many matches to stop at.
+    ///
+    /// A search with no matches walks the whole history whatever this is; the
+    /// cap bounds the *result*, not the work, and the caller says so rather
+    /// than implying it found everything.
+    pub limit: usize,
+}
+
+/// Why a commit is in the results.
+///
+/// Shown next to each hit: a list that cannot say whether it matched the
+/// message or the author leaves the reader to guess, and guessing wrong sends
+/// them back to the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchField {
+    Summary,
+    Body,
+    Author,
+    Hash,
+}
+
+impl SearchField {
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchField::Summary => "summary",
+            SearchField::Body => "message body",
+            SearchField::Author => "author",
+            SearchField::Hash => "hash",
+        }
+    }
+}
+
+/// One commit that matched, and what matched in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub commit: Commit,
+    pub field: SearchField,
+}
+
+/// What a search found, and whether it found everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SearchResults {
+    pub hits: Vec<SearchHit>,
+    /// True when the walk stopped at the limit rather than at the end of
+    /// history.
+    ///
+    /// The difference is the difference between "these are the matches" and
+    /// "these are the first matches", and a list that does not distinguish them
+    /// is a list that lies by omission.
+    pub truncated: bool,
 }
 
 /// Blame output. Lands in M6.

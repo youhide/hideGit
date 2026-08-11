@@ -343,7 +343,11 @@ Everything between "works" and "someone who does not write Rust can install it".
   the file keeps its comments, its key order and any key hideGit does not own, because it is
   hand-edited and often lives in a dotfiles repository. Quiet hours and muted repositories are still
   file-only
-- Search: commits by message, author, hash; file search within a commit
+- Search: commits by message, author, hash — **landed**, on `Cmd+F`. One box searches every field,
+  because people type a fragment and expect it found rather than classifying it first, and each hit
+  says which field matched. The result reports whether the walk stopped at the limit: "these are the
+  first matches" and "these are the matches" are different answers. File search within a commit is
+  still to come
 - Blame view. **Landed**, and it is the last `GitBackend` method that was returning
   `NotImplementedYet` — the trait declared its whole surface from M1 and is now entirely
   implemented. Rename detection had to be turned on explicitly: gitoxide leaves it off by default,

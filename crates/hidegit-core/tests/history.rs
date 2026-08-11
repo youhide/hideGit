@@ -13,7 +13,7 @@ use hidegit_core::fixture::fixture;
 use hidegit_core::model::{ObjectId, RepoState};
 use hidegit_core::ops::{
     CommitOpts, FastForward, MergeOpts, MergeOutcome, RebaseAction, RebasePlan, RebaseStep,
-    ResetMode, SequenceControl, SequenceOutcome, StartPoint,
+    ResetMode, SearchField, SearchQuery, SequenceControl, SequenceOutcome, StartPoint,
 };
 use hidegit_core::process::GitCommand;
 
@@ -1310,4 +1310,130 @@ fn blame_follows_a_file_through_a_rename() {
         blame.lines[0].commit, head,
         "the line is attributed to the commit that wrote it, not to the rename"
     );
+}
+
+// --- search --------------------------------------------------------------------
+
+fn query(text: &str, limit: usize) -> SearchQuery {
+    SearchQuery {
+        text: text.to_owned(),
+        limit,
+    }
+}
+
+#[test]
+fn search_finds_a_commit_by_its_summary_and_says_why() {
+    let repo = fixture()
+        .commit("add the parser")
+        .commit("fix the lexer")
+        .commit("document the parser")
+        .build();
+
+    let found = repo
+        .backend()
+        .search(&query("parser", 50))
+        .expect("the search runs");
+
+    assert_eq!(
+        found
+            .hits
+            .iter()
+            .map(|h| h.commit.summary.as_str())
+            .collect::<Vec<_>>(),
+        vec!["document the parser", "add the parser"],
+        "newest first, and the unrelated commit is absent"
+    );
+    // A list that cannot say whether it matched the message or the author
+    // leaves the reader to guess.
+    assert!(found.hits.iter().all(|h| h.field == SearchField::Summary));
+    assert!(!found.truncated);
+}
+
+#[test]
+fn search_matches_the_author_and_the_hash_too() {
+    let repo = fixture().commit("something").build();
+    let backend = repo.backend();
+    let head = head_of(repo.path());
+
+    // The fixture commits as "hideGit Fixture".
+    let by_author = backend.search(&query("fixture", 10)).expect("it runs");
+    assert_eq!(by_author.hits.len(), 1);
+    assert_eq!(by_author.hits[0].field, SearchField::Author);
+
+    let by_hash = backend
+        .search(&query(&head.to_hex()[..7], 10))
+        .expect("it runs");
+    assert_eq!(by_hash.hits.len(), 1);
+    assert_eq!(by_hash.hits[0].field, SearchField::Hash);
+    assert_eq!(by_hash.hits[0].commit.id, head);
+}
+
+#[test]
+fn a_hash_matches_as_a_prefix_rather_than_anywhere_in_the_id() {
+    // A substring match would drag unrelated commits in whenever somebody
+    // searched for a short hex string, which "abc" and "dad" both are.
+    let repo = fixture().commit("one").build();
+    let head = head_of(repo.path());
+
+    let middle = &head.to_hex()[10..17];
+    let found = repo
+        .backend()
+        .search(&query(middle, 10))
+        .expect("the search runs");
+
+    assert!(
+        found.hits.is_empty(),
+        "matching mid-hash would make short hex searches useless"
+    );
+}
+
+#[test]
+fn search_says_when_it_stopped_at_the_limit() {
+    let repo = fixture()
+        .commit("match one")
+        .commit("match two")
+        .commit("match three")
+        .build();
+
+    let all = repo
+        .backend()
+        .search(&query("match", 50))
+        .expect("the search runs");
+    assert_eq!(all.hits.len(), 3);
+    assert!(!all.truncated, "it reached the end of history");
+
+    let capped = repo
+        .backend()
+        .search(&query("match", 2))
+        .expect("the search runs");
+    assert_eq!(capped.hits.len(), 2);
+    assert!(
+        capped.truncated,
+        "these are the first matches, not the matches, and the caller has to be able to say so"
+    );
+}
+
+#[test]
+fn an_empty_query_finds_nothing_rather_than_everything() {
+    // Reachable on every keystroke as a search box is cleared, and walking the
+    // whole history to match everything would be the most expensive possible
+    // way to say nothing.
+    let repo = fixture().commit("one").commit("two").build();
+
+    assert!(
+        repo.backend()
+            .search(&query("   ", 50))
+            .expect("the search runs")
+            .hits
+            .is_empty()
+    );
+}
+
+#[test]
+fn search_ignores_case_in_both_directions() {
+    let repo = fixture().commit("Fix the Parser").build();
+    let backend = repo.backend();
+
+    assert_eq!(backend.search(&query("parser", 10)).unwrap().hits.len(), 1);
+    assert_eq!(backend.search(&query("FIX", 10)).unwrap().hits.len(), 1);
 }

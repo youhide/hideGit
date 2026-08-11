@@ -28,6 +28,7 @@ pub mod widget {
     pub mod plan;
     pub mod pr;
     pub mod resolver;
+    pub mod search;
     pub mod settings;
     pub mod sidebar;
     pub mod staging;

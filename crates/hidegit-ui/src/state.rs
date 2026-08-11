@@ -16,7 +16,8 @@ use hidegit_core::model::{
     WorktreeStatus,
 };
 use hidegit_core::ops::{
-    BlameLine, CancelToken, ProgressUpdate, RebaseAction, RebasePlan, RebaseStep, StartPoint,
+    BlameLine, CancelToken, ProgressUpdate, RebaseAction, RebasePlan, RebaseStep, SearchResults,
+    StartPoint,
 };
 use hidegit_core::{GitBackend, LogPage};
 use hidegit_forge::{
@@ -396,6 +397,12 @@ pub const PROMPT_FIELD_IDS: [&str; 2] = ["hidegit-prompt-field-0", "hidegit-prom
 /// asks whether a field is being typed into — **ignores widgets that have
 /// none**. Without these it would report nothing focused while a commit message
 /// was being written, and `Space` would stage a file mid-sentence.
+/// The search box.
+///
+/// Carries an id so it can be focused when the panel opens — a search you have
+/// to click into before typing is a search that costs a click every time.
+pub const SEARCH_FIELD_ID: &str = "hidegit-search-field";
+
 pub const COMPOSER_FIELD_IDS: [&str; 2] = ["hidegit-composer-subject", "hidegit-composer-body"];
 
 /// What a [`Prompt`] is collecting text for.
@@ -668,6 +675,42 @@ pub struct OpenRepo {
     pub plan: Option<RebaseEditor>,
     /// The file open in the blame view, if one is.
     pub blame: Option<BlameView>,
+    /// The commit search, if it is open.
+    pub search: Option<Search>,
+}
+
+/// The commit search.
+///
+/// The query and its results are separate on purpose: typing runs a new search,
+/// and the previous results stay on screen until the new ones arrive rather than
+/// blinking empty on every keystroke.
+#[derive(Debug, Default)]
+pub struct Search {
+    pub query: String,
+    pub results: SearchResults,
+    /// A search is in flight for a query that is not `query` any more.
+    ///
+    /// Shown as a quiet marker rather than a spinner: on most repositories the
+    /// walk finishes between keystrokes, and a spinner that flashes on every
+    /// letter is worse than no spinner.
+    pub running: bool,
+    /// Which hit the keyboard is on.
+    pub selected: usize,
+}
+
+impl Search {
+    /// Moves the selection, clamped to the hits that exist.
+    pub fn step(&mut self, delta: i32) {
+        if self.results.hits.is_empty() {
+            return;
+        }
+        let last = self.results.hits.len() as i32 - 1;
+        self.selected = (self.selected as i32 + delta).clamp(0, last) as usize;
+    }
+
+    pub fn selected_commit(&self) -> Option<ObjectId> {
+        self.results.hits.get(self.selected).map(|h| h.commit.id)
+    }
 }
 
 /// One file, with the commit that last touched each line.

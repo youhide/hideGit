@@ -139,6 +139,15 @@ fn toolbar<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMess
             text("·").size(13.0).color(palette.muted),
             text(repo.head_label()).size(13.0).color(palette.accent),
             Space::new().width(Length::Fixed(16.0)),
+            // Search has a button as well as `Cmd+F`. A shortcut is how you use
+            // a thing you already know is there; a control is how you find out
+            // it exists at all, and the toolbar is where the eye goes.
+            action(
+                "⌕ Search",
+                "Search commits by summary, message, author or hash".to_owned(),
+                Some(RepoMessage::SearchRequested),
+                palette,
+            ),
             remote_actions(repo, palette),
             Space::new().width(Fill),
             text(loaded).size(11.0).color(palette.muted),
