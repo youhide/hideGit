@@ -468,7 +468,7 @@ and a new review thread both do notify.
 | **Navigation** | |
 | `↑` / `↓` | Move selection in the focused list |
 | `Tab` / `Shift+Tab` | Cycle panes: sidebar → graph → detail |
-| `Cmd+F` | Search commits — **not built** |
+| `Cmd+F` | Search commits — also a toolbar button, since a shortcut is how you use a thing you already know exists |
 | `Cmd+P` | Command palette — **not built** |
 | `G` then `W` | Go to working directory — **not built**; chords need a pending-key state nothing else wants yet |
 | `G` then `B` | Branch switcher — **not built**, same reason |

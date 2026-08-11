@@ -19,7 +19,7 @@ use crate::model::{
     ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState, RevSpec, Signature,
     StashEntry, Tag, WorktreeStatus,
 };
-use crate::ops::{Blame, BlameLine};
+use crate::ops::{Blame, BlameLine, SearchField, SearchHit, SearchQuery, SearchResults};
 
 /// Files past this size get a placeholder instead of a diff.
 ///
@@ -410,6 +410,84 @@ pub(crate) fn rebase_preview(repo: &gix::Repository, onto: &str) -> Result<Vec<C
 
     let refs = refs(repo)?;
     hydrate(repo, &entries, &refs)
+}
+
+/// Walks history looking for `query`, newest first.
+///
+/// Every field is searched — summary, body, author name and email, and the id
+/// as a prefix — because people type a fragment and expect it found, not to
+/// first classify it. The field that matched travels with the hit so the list
+/// can say why a commit is in it.
+///
+/// The walk stops at the limit, and says so. A search with no matches still
+/// walks the whole history: the cap bounds the result, not the work, and
+/// pretending otherwise would report "no matches" for a search that simply gave
+/// up early.
+pub(crate) fn search(
+    repo: &gix::Repository,
+    query: &SearchQuery,
+) -> Result<SearchResults, GitError> {
+    let needle = query.text.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(SearchResults::default());
+    }
+
+    let entries = walk(repo, &RevSpec::All)?;
+    let refs = refs(repo)?;
+
+    let mut hits = Vec::new();
+    let mut truncated = false;
+
+    // Hydrated in batches: decoding every commit in a 100,000-commit history to
+    // look at its message is the expensive part, and most searches match
+    // something long before the end.
+    for chunk in entries.chunks(512) {
+        for commit in hydrate(repo, chunk, &refs)? {
+            let Some(field) = matches(&commit, &needle) else {
+                continue;
+            };
+            if hits.len() == query.limit {
+                truncated = true;
+                break;
+            }
+            hits.push(SearchHit { commit, field });
+        }
+        if truncated {
+            break;
+        }
+    }
+
+    Ok(SearchResults { hits, truncated })
+}
+
+/// Which field of `commit` contains `needle`, already lowercased.
+///
+/// Ordered by what a reader would consider the reason: a summary match is the
+/// answer they wanted, and a hash match is the answer they get when they pasted
+/// an id.
+fn matches(commit: &Commit, needle: &str) -> Option<SearchField> {
+    if commit.summary.to_lowercase().contains(needle) {
+        return Some(SearchField::Summary);
+    }
+    if commit
+        .body
+        .as_deref()
+        .is_some_and(|body| body.to_lowercase().contains(needle))
+    {
+        return Some(SearchField::Body);
+    }
+    if commit.author.name.to_lowercase().contains(needle)
+        || commit.author.email.to_lowercase().contains(needle)
+    {
+        return Some(SearchField::Author);
+    }
+    // A prefix, not a substring: an id is looked up by its start, and a
+    // substring match would put unrelated commits in the list whenever somebody
+    // searched for a short hex string like `abc`.
+    if commit.id.to_hex().starts_with(needle) {
+        return Some(SearchField::Hash);
+    }
+    None
 }
 
 /// Who last touched each line of `path` as of `at`.

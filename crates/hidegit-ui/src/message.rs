@@ -17,7 +17,8 @@ use hidegit_core::model::{
 };
 use hidegit_core::ops::{
     BlameLine, CheckoutTarget, FetchOutcome, ForceMode, MergeOutcome, ProgressUpdate, PullOutcome,
-    PushOutcome, RebaseAction, ResetMode, SequenceControl, SequenceOutcome, StartPoint, StashOp,
+    PushOutcome, RebaseAction, ResetMode, SearchResults, SequenceControl, SequenceOutcome,
+    StartPoint, StashOp,
 };
 use hidegit_core::{GitBackend, GitError};
 use hidegit_forge::{
@@ -434,6 +435,22 @@ pub enum RepoMessage {
     StashDropRequested(usize),
     /// The confirmation was accepted. Only ever sent by the dialog.
     StashDropConfirmed(usize),
+
+    /// `Cmd+F`: open the commit search.
+    SearchRequested,
+    SearchDismissed,
+    /// The query changed. Each change runs a new search.
+    SearchChanged(String),
+    /// Results for a query. Carries the query they answer, so a slow search for
+    /// an older query cannot overwrite the results of a newer one.
+    SearchFinished {
+        query: String,
+        results: Box<Result<SearchResults, UiError>>,
+    },
+    /// `↑` / `↓` in the results.
+    SearchStepped(i32),
+    /// `Enter`, or a click: select the commit and close.
+    SearchAccepted(ObjectId),
 
     /// Open the blame view for a path, at the commit being shown.
     BlameRequested {
