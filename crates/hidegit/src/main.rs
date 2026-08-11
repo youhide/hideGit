@@ -18,10 +18,10 @@ const HELP: &str = "\
 hideGit — a desktop Git client with pull request alerts
 
 USAGE:
-    hidegit [OPTIONS] [PATH]
+    hidegit [OPTIONS] [PATH]...
 
 ARGUMENTS:
-    PATH    A repository to open on startup
+    PATH    A repository to open on startup. Give several for a tab each
 
 OPTIONS:
     -h, --help       Print this message
@@ -185,7 +185,7 @@ fn window_icon() -> Option<window::Icon> {
 }
 
 fn boot(
-    initial: Option<PathBuf>,
+    initial: Vec<PathBuf>,
     recents: Vec<PathBuf>,
     paths: Option<Paths>,
     config: Config,
@@ -281,12 +281,13 @@ fn subscription(shell: &Shell) -> Subscription<ShellMessage> {
 }
 
 enum Arguments {
-    Run(Option<PathBuf>),
+    /// The repositories to open, in the order given — one tab each.
+    Run(Vec<PathBuf>),
     Exit(String),
 }
 
 fn parse_arguments() -> Arguments {
-    let mut path = None;
+    let mut paths = Vec::new();
 
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
@@ -297,11 +298,14 @@ fn parse_arguments() -> Arguments {
             other if other.starts_with('-') => {
                 return Arguments::Exit(format!("unknown option: {other}\n\n{HELP}"));
             }
-            other => path = Some(PathBuf::from(other)),
+            // Every path is kept, not just the last: with tabs, `hidegit a b`
+            // opening one of them and silently dropping the other would be a
+            // worse answer than either opening both or refusing.
+            other => paths.push(PathBuf::from(other)),
         }
     }
 
-    Arguments::Run(path)
+    Arguments::Run(paths)
 }
 
 /// Says what is wrong and what to do about it, on the terminal and in a dialog.

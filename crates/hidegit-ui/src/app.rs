@@ -33,6 +33,7 @@ use crate::state::{
     Operation, PAGE_SIZE, PROMPT_FIELD_IDS, Pane, PrPanel, PrState, Prompt, PromptField,
     PromptKind, ROW_HEIGHT, RebaseEditor, Resolver, Screen, Section, Selection,
 };
+use crate::widget::tabs::tab_for_digit;
 use crate::{alerts, forge, screen, watcher, widget};
 
 /// How many search hits to stop at.
@@ -153,7 +154,7 @@ where
 
 impl Hidegit {
     pub fn new(
-        initial: Option<PathBuf>,
+        initial: Vec<PathBuf>,
         recents: Vec<PathBuf>,
         alerts: hidegit_forge::AlertPrefs,
         theme: &str,
@@ -178,7 +179,9 @@ impl Hidegit {
         // The forge client is built off the UI thread, because building it
         // reads the keychain and a keychain can prompt.
         let mut tasks = vec![forge::boot()];
-        if let Some(path) = initial {
+        // One tab each, in the order given. The last one opened ends up active,
+        // which matches the order they were typed.
+        for path in initial {
             tasks.push(Task::done(Message::OpenRepository(path)));
         }
 
@@ -244,6 +247,16 @@ impl Hidegit {
             ),
 
             Message::OpenRepository(path) => {
+                // Already open: switch to its tab rather than opening a second
+                // copy. Two tabs on one repository would each hold their own
+                // idea of its state, and the one you were not looking at would
+                // be wrong the moment you committed in the other.
+                if let Some(at) = self.app.repos.iter().position(|repo| repo.path == path) {
+                    self.app.active = Some(at);
+                    self.app.screen = Screen::Repository;
+                    return Task::none();
+                }
+
                 let for_task = path.clone();
                 blocking(move || open_repository(&for_task))
                     .map(|result| Message::RepositoryOpened(Box::new(result)))
@@ -257,12 +270,40 @@ impl Hidegit {
                 }
             },
 
-            Message::CloseRepository(index) => {
+            Message::RepositorySelected(index) => {
                 if index < self.app.repos.len() {
-                    self.app.repos.remove(index);
-                    self.caches.remove(&index);
+                    self.app.active = Some(index);
+                    self.app.screen = Screen::Repository;
                 }
-                self.app.active = self.app.repos.len().checked_sub(1);
+                Task::none()
+            }
+
+            Message::CloseRepository(index) => {
+                if index >= self.app.repos.len() {
+                    return Task::none();
+                }
+                self.app.repos.remove(index);
+
+                // The caches are keyed by position, and removing a repository
+                // shifts every later one down. Dropping the closed entry alone
+                // would leave every tab after it drawing another tab's graph —
+                // invisible with one repository open, which is why it survived
+                // until tabs existed.
+                self.caches.remove(&index);
+                let shifted: HashMap<usize, canvas::Cache> = self
+                    .caches
+                    .drain()
+                    .map(|(at, cache)| (if at > index { at - 1 } else { at }, cache))
+                    .collect();
+                self.caches = shifted;
+
+                // The neighbour, not the last tab. Closing the first of three
+                // and landing on the third is the kind of jump that makes you
+                // lose your place.
+                self.app.active = match self.app.repos.len() {
+                    0 => None,
+                    len => Some(index.min(len - 1)),
+                };
                 if self.app.repos.is_empty() {
                     self.app.screen = Screen::Welcome;
                 }
@@ -2691,6 +2732,17 @@ impl Hidegit {
     fn screen(&self) -> IcedElement<'_, Message> {
         let palette = &self.app.theme.palette;
 
+        let body = self.repository_screen();
+        match widget::tabs::view(&self.app.repos, self.app.active, palette) {
+            Some(tabs) => iced::widget::column![tabs, body].into(),
+            None => body,
+        }
+    }
+
+    /// The screen itself, without the tab bar above it.
+    fn repository_screen(&self) -> IcedElement<'_, Message> {
+        let palette = &self.app.theme.palette;
+
         match (self.app.screen, self.app.active) {
             (Screen::Repository, Some(index)) => {
                 let repo = &self.app.repos[index];
@@ -2726,26 +2778,30 @@ impl Hidegit {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        // Carried in the subscription's identity so every binding is resolved
+        // against state the subscription already has, rather than round-tripping
+        // through a message that would arrive a frame late.
         let context = (
-            self.app.active,
             self.modal_keys(),
-            self.app
-                .active_repo()
-                .is_some_and(|repo| repo.draft.editing),
-            // Cycling panes needs to know which one has focus now, and only the
-            // repository knows. Carried in the subscription's identity so the
-            // binding is resolved where the answer is, rather than round-tripping
-            // through a message that would arrive a frame late.
-            self.app.active_repo().map(|repo| repo.focus),
-            self.app.settings_open,
-            // Which repository's search is open, so the binding can address it.
-            self.app
-                .active
-                .filter(|_| self.app.active_repo().is_some_and(|r| r.search.is_some())),
+            KeyContext {
+                active: self.app.active,
+                editing: self
+                    .app
+                    .active_repo()
+                    .is_some_and(|repo| repo.draft.editing),
+                pane: self.app.active_repo().map(|repo| repo.focus),
+                settings_open: self.app.settings_open,
+                searching: self
+                    .app
+                    .active
+                    .filter(|_| self.app.active_repo().is_some_and(|r| r.search.is_some())),
+                open_repos: self.app.repos.len(),
+            },
         );
 
-        let keys = keyboard::listen().with(context).map(
-            |((active, modal, editing, pane, settings, searching), event)| {
+        let keys = keyboard::listen()
+            .with(context)
+            .map(|((modal, cx), event)| {
                 let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
                     return Message::ToastDismissed(u64::MAX);
                 };
@@ -2755,9 +2811,8 @@ impl Hidegit {
                 if let Some(modal) = modal {
                     return modal_shortcut(&key, modal);
                 }
-                shortcut(&key, modifiers, active, editing, pane, settings, searching)
-            },
-        );
+                shortcut(&key, modifiers, cx)
+            });
 
         // One watch per open repository, so a change made in an editor or by a
         // `git` command in a terminal refreshes the view on its own.
@@ -2830,16 +2885,39 @@ pub enum Modal {
     DeviceCode,
 }
 
+/// Everything a key press has to be resolved against.
+///
+/// A struct rather than a parameter list. It reached eight positional
+/// arguments, at which point every new binding that needed context meant
+/// editing every call site and reading `false, None, false, 1` at each one to
+/// work out which was which.
+///
+/// `Hash` because it rides in the keyboard subscription's identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct KeyContext {
+    /// The repository the keys address.
+    pub active: Option<usize>,
+    /// A text field has focus, so unmodified keys belong to it.
+    pub editing: bool,
+    /// Which pane has focus, for `Tab`.
+    pub pane: Option<Pane>,
+    pub settings_open: bool,
+    /// The repository whose search panel is open, if one is.
+    pub searching: Option<usize>,
+    /// How many tabs there are, so `Cmd+<n>` past the last does nothing.
+    pub open_repos: usize,
+}
+
 /// Maps a key press to a message. `Cmd` on macOS, `Ctrl` elsewhere.
-fn shortcut(
-    key: &keyboard::Key,
-    modifiers: keyboard::Modifiers,
-    active: Option<usize>,
-    editing: bool,
-    pane: Option<Pane>,
-    settings: bool,
-    searching: Option<usize>,
-) -> Message {
+fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext) -> Message {
+    let KeyContext {
+        active,
+        editing,
+        pane,
+        settings_open: settings,
+        searching,
+        open_repos,
+    } = cx;
     use keyboard::key::{Key, Named};
 
     let nothing = Message::ToastDismissed(u64::MAX);
@@ -2904,6 +2982,18 @@ fn shortcut(
         }
         Key::Character(c) if command && c.as_str() == "f" && !shift => {
             repo(RepoMessage::SearchRequested)
+        }
+        // `Cmd+1` … `Cmd+9`. Checked before the other command characters so a
+        // digit never falls through to something that treats it as a letter.
+        Key::Character(c)
+            if command
+                && c.chars().count() == 1
+                && c.chars().next().is_some_and(|d| d.is_ascii_digit()) =>
+        {
+            match c.chars().next().and_then(|d| tab_for_digit(d, open_repos)) {
+                Some(index) => Message::RepositorySelected(index),
+                None => nothing,
+            }
         }
         Key::Character(c) if command && c.as_str() == "," => Message::SettingsRequested,
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
@@ -4011,18 +4101,39 @@ mod tests {
         let command_shift = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
 
         assert!(matches!(
-            shortcut(&f, command, Some(0), false, None, false, None),
+            shortcut(
+                &f,
+                command,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::SearchRequested)
         ));
         // The shifted form has fetched every remote since M3 and must keep it.
         assert!(matches!(
-            shortcut(&f, command_shift, Some(0), false, None, false, None),
+            shortcut(
+                &f,
+                command_shift,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::FetchRequested)
         ));
         // With Shift held, most layouts report the shifted character.
         let upper = keyboard::Key::Character("F".into());
         assert!(matches!(
-            shortcut(&upper, command_shift, Some(0), false, None, false, None),
+            shortcut(
+                &upper,
+                command_shift,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::FetchRequested)
         ));
     }
@@ -4035,17 +4146,41 @@ mod tests {
         let none = keyboard::Modifiers::default();
 
         assert!(matches!(
-            shortcut(&down, none, Some(0), false, None, false, Some(0)),
+            shortcut(
+                &down,
+                none,
+                KeyContext {
+                    active: Some(0),
+                    searching: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::SearchStepped(1))
         ));
         assert!(matches!(
-            shortcut(&escape, none, Some(0), false, None, false, Some(0)),
+            shortcut(
+                &escape,
+                none,
+                KeyContext {
+                    active: Some(0),
+                    searching: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::SearchDismissed)
         ));
         // A bare letter belongs to the box being typed into, not to the hunks
         // behind the panel.
         assert!(matches!(
-            shortcut(&j, none, Some(0), false, None, false, Some(0)),
+            shortcut(
+                &j,
+                none,
+                KeyContext {
+                    active: Some(0),
+                    searching: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::ToastDismissed(_)
         ));
     }
@@ -4114,11 +4249,10 @@ mod tests {
             shortcut(
                 &comma,
                 keyboard::Modifiers::COMMAND,
-                Some(0),
-                false,
-                None,
-                false,
-                None
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
             ),
             Message::SettingsRequested
         ));
@@ -4138,12 +4272,28 @@ mod tests {
         let none = keyboard::Modifiers::default();
 
         assert!(matches!(
-            shortcut(&j, none, Some(0), false, None, true, None),
+            shortcut(
+                &j,
+                none,
+                KeyContext {
+                    active: Some(0),
+                    settings_open: true,
+                    ..KeyContext::default()
+                }
+            ),
             Message::ToastDismissed(_)
         ));
         let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
         assert!(matches!(
-            shortcut(&escape, none, Some(0), false, None, true, None),
+            shortcut(
+                &escape,
+                none,
+                KeyContext {
+                    active: Some(0),
+                    settings_open: true,
+                    ..KeyContext::default()
+                }
+            ),
             Message::SettingsDismissed
         ));
     }
@@ -4182,15 +4332,117 @@ mod tests {
     fn the_configured_theme_is_applied_and_a_typo_falls_back() {
         // The config has carried a theme name since M1 and nothing read it, so
         // setting one did nothing at all.
-        let (app, _) = Hidegit::new(None, Vec::new(), Default::default(), "hidegit-light");
+        let (app, _) = Hidegit::new(Vec::new(), Vec::new(), Default::default(), "hidegit-light");
         assert_eq!(app.app.theme.palette, crate::theme::Palette::LIGHT);
 
-        let (app, _) = Hidegit::new(None, Vec::new(), Default::default(), "hidegit-nope");
+        let (app, _) = Hidegit::new(Vec::new(), Vec::new(), Default::default(), "hidegit-nope");
         assert_eq!(
             app.app.theme.palette,
             crate::theme::Palette::DARK,
             "a typo falls back rather than leaving the window unthemed"
         );
+    }
+
+    /// An app with `count` repositories open, each at a distinct path.
+    fn app_with_tabs(count: usize) -> Hidegit {
+        let mut app = Hidegit::default();
+        for n in 0..count {
+            let mut opened = opened(5);
+            opened.path = PathBuf::from(format!("/fake/repo-{n}"));
+            let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+        }
+        app
+    }
+
+    #[test]
+    fn opening_a_repository_that_is_already_open_switches_to_its_tab() {
+        // Two tabs on one repository would each hold their own idea of its
+        // state, and the one you were not looking at would be wrong the moment
+        // you committed in the other.
+        let mut app = app_with_tabs(2);
+        assert_eq!(app.app.active, Some(1));
+
+        let _ = app.update(Message::OpenRepository(PathBuf::from("/fake/repo-0")));
+
+        assert_eq!(app.app.repos.len(), 2, "no second copy was opened");
+        assert_eq!(app.app.active, Some(0));
+    }
+
+    #[test]
+    fn closing_a_tab_lands_on_its_neighbour_not_the_last() {
+        // Closing the first of three and landing on the third is the kind of
+        // jump that makes you lose your place.
+        let mut app = app_with_tabs(3);
+
+        let _ = app.update(Message::CloseRepository(0));
+
+        assert_eq!(app.app.repos.len(), 2);
+        assert_eq!(app.app.active, Some(0));
+        assert_eq!(
+            app.app.repos[0].path,
+            PathBuf::from("/fake/repo-1"),
+            "the tab that took its place"
+        );
+    }
+
+    #[test]
+    fn closing_the_last_tab_falls_back_to_the_one_before_it() {
+        let mut app = app_with_tabs(3);
+
+        let _ = app.update(Message::CloseRepository(2));
+
+        assert_eq!(app.app.active, Some(1));
+    }
+
+    #[test]
+    fn closing_a_tab_reindexes_the_canvas_caches() {
+        // They are keyed by position, so removing one shifts every later
+        // repository down. Left alone, every tab after the closed one would
+        // draw another tab's graph — and `screen()` expects a cache per
+        // repository, so it would panic outright.
+        let mut app = app_with_tabs(3);
+
+        let _ = app.update(Message::CloseRepository(0));
+
+        assert_eq!(app.caches.len(), 2);
+        for index in 0..app.app.repos.len() {
+            assert!(
+                app.caches.contains_key(&index),
+                "no cache for tab {index}: {:?}",
+                app.caches.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn closing_the_only_tab_goes_back_to_the_welcome_screen() {
+        let mut app = app_with_tabs(1);
+
+        let _ = app.update(Message::CloseRepository(0));
+
+        assert_eq!(app.app.screen, Screen::Welcome);
+        assert_eq!(app.app.active, None);
+    }
+
+    #[test]
+    fn the_number_keys_switch_tabs_and_stop_at_the_last() {
+        let two = KeyContext {
+            open_repos: 3,
+            ..KeyContext::default()
+        };
+        let digit = |d: &str| keyboard::Key::Character(d.into());
+        let command = keyboard::Modifiers::COMMAND;
+
+        assert!(matches!(
+            shortcut(&digit("2"), command, two),
+            Message::RepositorySelected(1)
+        ));
+        // Past the last tab does nothing rather than clamping: `4` and `3` are
+        // adjacent keys, and landing somewhere unintended is worse.
+        assert!(matches!(
+            shortcut(&digit("4"), command, two),
+            Message::ToastDismissed(_)
+        ));
     }
 
     #[test]
@@ -4416,18 +4668,26 @@ mod tests {
         let shift = keyboard::Modifiers::SHIFT;
 
         assert!(matches!(
-            shortcut(&tab, none, Some(0), false, Some(Pane::Sidebar), false, None),
+            shortcut(
+                &tab,
+                none,
+                KeyContext {
+                    active: Some(0),
+                    pane: Some(Pane::Sidebar),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::FocusCycled(Pane::Graph))
         ));
         assert!(matches!(
             shortcut(
                 &tab,
                 shift,
-                Some(0),
-                false,
-                Some(Pane::Sidebar),
-                false,
-                None
+                KeyContext {
+                    active: Some(0),
+                    pane: Some(Pane::Sidebar),
+                    ..KeyContext::default()
+                }
             ),
             Message::Repo(0, RepoMessage::FocusCycled(Pane::Detail))
         ));
@@ -4443,11 +4703,11 @@ mod tests {
             shortcut(
                 &space,
                 keyboard::Modifiers::default(),
-                Some(0),
-                false,
-                Some(Pane::Detail),
-                false,
-                None
+                KeyContext {
+                    active: Some(0),
+                    pane: Some(Pane::Detail),
+                    ..KeyContext::default()
+                }
             ),
             Message::Repo(0, RepoMessage::StageToggleRequested)
         ));
@@ -4487,18 +4747,24 @@ mod tests {
         let command_shift = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
 
         assert!(matches!(
-            shortcut(&enter, command_shift, Some(0), false, None, false, None),
+            shortcut(
+                &enter,
+                command_shift,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::CommitAndPushRequested)
         ));
         assert!(matches!(
             shortcut(
                 &enter,
                 keyboard::Modifiers::COMMAND,
-                Some(0),
-                false,
-                None,
-                false,
-                None
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
             ),
             Message::Repo(0, RepoMessage::CommitRequested)
         ));
@@ -4529,11 +4795,25 @@ mod tests {
         let open = keyboard::Key::Character("[".into());
 
         assert!(matches!(
-            shortcut(&close, command, Some(0), false, None, false, None),
+            shortcut(
+                &close,
+                command,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::ConflictStepped(1))
         ));
         assert!(matches!(
-            shortcut(&open, command, Some(0), false, None, false, None),
+            shortcut(
+                &open,
+                command,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::ConflictStepped(-1))
         ));
     }
@@ -4547,11 +4827,26 @@ mod tests {
         let mods = keyboard::Modifiers::default();
 
         assert!(matches!(
-            shortcut(&j, mods, Some(0), false, None, false, None),
+            shortcut(
+                &j,
+                mods,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::HunkStepped(1))
         ));
         assert!(matches!(
-            shortcut(&j, mods, Some(0), true, None, false, None),
+            shortcut(
+                &j,
+                mods,
+                KeyContext {
+                    active: Some(0),
+                    editing: true,
+                    ..KeyContext::default()
+                }
+            ),
             Message::ToastDismissed(_)
         ));
 
@@ -4560,12 +4855,27 @@ mod tests {
         // followed by `Space` arrives before any keystroke has set the flag.
         // The answer comes back as `StageToggleResolved`.
         assert!(matches!(
-            shortcut(&space, mods, Some(0), false, None, false, None),
+            shortcut(
+                &space,
+                mods,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::StageToggleRequested)
         ));
         // And while the flag *is* set, it never even asks.
         assert!(matches!(
-            shortcut(&space, mods, Some(0), true, None, false, None),
+            shortcut(
+                &space,
+                mods,
+                KeyContext {
+                    active: Some(0),
+                    editing: true,
+                    ..KeyContext::default()
+                }
+            ),
             Message::ToastDismissed(_)
         ));
     }
@@ -4578,7 +4888,15 @@ mod tests {
         let command = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&enter, command, Some(0), true, None, false, None),
+            shortcut(
+                &enter,
+                command,
+                KeyContext {
+                    active: Some(0),
+                    editing: true,
+                    ..KeyContext::default()
+                }
+            ),
             Message::Repo(0, RepoMessage::CommitRequested)
         ));
     }
@@ -5703,7 +6021,15 @@ mod tests {
 
         for (character, expected) in [("f", "Fetch"), ("p", "Pull"), ("u", "Push")] {
             let key = keyboard::Key::Character(character.into());
-            let message = shortcut(&key, mods, Some(0), true, None, false, None);
+            let message = shortcut(
+                &key,
+                mods,
+                KeyContext {
+                    active: Some(0),
+                    editing: true,
+                    ..KeyContext::default()
+                },
+            );
             let described = format!("{message:?}");
             assert!(
                 described.contains(expected),
@@ -5720,7 +6046,14 @@ mod tests {
 
         let described = format!(
             "{:?}",
-            shortcut(&key, mods, Some(0), false, None, false, None)
+            shortcut(
+                &key,
+                mods,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            )
         );
         assert!(described.contains("Push"), "got {described}");
     }
@@ -6153,11 +6486,7 @@ mod tests {
             shortcut(
                 &keyboard::Key::Character("o".into()),
                 mods,
-                None,
-                false,
-                None,
-                false,
-                None
+                KeyContext::default()
             )
         );
         assert!(described.contains("Clone"), "got {described}");
@@ -6167,11 +6496,7 @@ mod tests {
             shortcut(
                 &keyboard::Key::Character("o".into()),
                 keyboard::Modifiers::COMMAND,
-                None,
-                false,
-                None,
-                false,
-                None
+                KeyContext::default()
             )
         );
         assert!(plain.contains("OpenDialogRequested"), "got {plain}");
@@ -6309,7 +6634,7 @@ mod tests {
         let mods = keyboard::Modifiers::COMMAND;
 
         assert!(matches!(
-            shortcut(&key, mods, None, false, None, false, None),
+            shortcut(&key, mods, KeyContext::default()),
             Message::OpenDialogRequested
         ));
     }
@@ -6319,15 +6644,7 @@ mod tests {
         let key = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
 
         assert!(matches!(
-            shortcut(
-                &key,
-                keyboard::Modifiers::default(),
-                None,
-                false,
-                None,
-                false,
-                None
-            ),
+            shortcut(&key, keyboard::Modifiers::default(), KeyContext::default()),
             Message::ToastDismissed(_)
         ));
     }

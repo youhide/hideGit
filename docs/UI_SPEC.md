@@ -463,7 +463,7 @@ and a new review thread both do notify.
 | `Cmd+O` | Open repository |
 | `Esc` | Close the device-code dialog — the sign-in continues in the background |
 | `Cmd+Shift+O` | Clone repository — checked before the unshifted `O`, or it would open a picker |
-| `Cmd+1` … `Cmd+9` | Switch repository tab — **not built**, waiting on multi-repository tabs |
+| `Cmd+1` … `Cmd+9` | Switch repository tab. Past the last tab does nothing rather than clamping to it |
 | `Cmd+,` | Settings |
 | **Navigation** | |
 | `↑` / `↓` | Move selection in the focused list |
