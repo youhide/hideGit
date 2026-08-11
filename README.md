@@ -9,16 +9,18 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](./LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](./docs/ROADMAP.md)
 
-> **Pre-alpha, and now a daily driver for ordinary work.** You can clone a repository or open one,
-> scroll its history, read any commit's diff, stage by file, by hunk or by individual line, commit,
-> branch, stash, and fetch, pull and push — with progress you can watch and cancel. Sign in to
-> GitHub and open pull requests appear in the sidebar with their review and CI state, with desktop
-> notifications when one of them changes. History rewriting works too: merge, rebase, cherry-pick,
-> revert and reset, with a three-pane conflict resolver — a rebase that conflicts on three separate
-> commits can be finished without opening a terminal.
+> **Pre-alpha, and a daily driver for ordinary work.** Clone or open a repository, scroll its
+> history, read any commit's diff, stage by file, by hunk or by individual line, commit, branch,
+> stash, and fetch, pull and push — with progress you can watch and cancel. Sign in to GitHub and
+> open pull requests appear in the sidebar with their review and CI state, with desktop
+> notifications when one of them changes.
 >
-> Interactive rebase works too: reorder, squash, fixup, edit and drop from a plan editor where
-> nothing runs until you start it.
+> History rewriting works: merge, rebase, cherry-pick, revert and reset, with a three-pane conflict
+> resolver — a rebase that conflicts on three separate commits can be finished without opening a
+> terminal. Interactive rebase has a plan editor where you reorder, squash, fixup, edit and drop,
+> and nothing runs until you start it. Drag a branch onto another on the graph to merge or rebase
+> it. Search every commit by summary, message, author or hash. Blame any file at any revision.
+> Dark and light themes, both designed against the same contrast rules rather than one inverted.
 >
 > Two caveats worth knowing before you rely on it. Pushing over SSH with a passphrase, or
 > over HTTPS with a credential helper, has not been verified — it should work, since hideGit hands
@@ -60,8 +62,9 @@ refused rather than being retried with `--force`.
 | ✅ | Clone, branches, tags, stash, remotes, fetch / pull / push with progress | [M3](./docs/ROADMAP.md#m3--branches--remotes) |
 | ✅ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
 | ✅ | Merge, rebase, cherry-pick, revert, reset, conflict resolution UI | [M5](./docs/ROADMAP.md#m5--history-operations) |
-| 🟡 | Interactive rebase editor ✅, drag-and-drop, themes, keyboard navigation, installers | [M6](./docs/ROADMAP.md#m6--polish--release) |
-| ⬜ | GitLab & Bitbucket, submodules, worktrees, LFS, PT-BR translation | [Post-1.0](./docs/ROADMAP.md#post-10) |
+| ✅ | Interactive rebase editor, graph drag-and-drop, blame, commit search, light theme, settings | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| 🟡 | Multi-repository tabs, accessibility, signed installers | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| ⬜ | Submodules, worktrees, LFS, PT-BR translation | [Post-1.0](./docs/ROADMAP.md#post-10) |
 
 Legend: ⬜ planned · 🟡 in progress · ✅ shipped
 
