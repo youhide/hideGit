@@ -244,6 +244,8 @@ pub enum Message {
     CloneFinished(Box<Result<PathBuf, UiError>>),
     /// The Cancel button on the clone banner.
     CloneCancelled,
+    /// `Cmd+1` … `Cmd+9`, or a click on a tab.
+    RepositorySelected(usize),
     CloseRepository(usize),
     Repo(usize, RepoMessage),
     ToastDismissed(u64),

@@ -32,6 +32,7 @@ pub mod widget {
     pub mod settings;
     pub mod sidebar;
     pub mod staging;
+    pub mod tabs;
 }
 
 pub use app::Hidegit;

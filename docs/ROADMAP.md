@@ -342,7 +342,11 @@ Everything between "works" and "someone who does not write Rust can install it".
   menu would make discovering `fixup` an act of exploration. Nothing runs until Start, so Cancel
   needs no confirmation. A plan Git would refuse — squashing the first step, dropping everything —
   disables Start and says which, because a greyed button explaining neither is a dead end
-- Multi-repository tabs, with per-repository state preserved
+- Multi-repository tabs, with per-repository state preserved. **Landed.** The tab bar is absent with
+  one repository open, because a bar showing a single tab costs a row of screen to say something you
+  can already see. Opening a repository that is already open switches to its tab rather than opening
+  a second copy — two tabs on one repository would each hold their own idea of its state. Closing
+  lands on the neighbour rather than the last tab
 - Settings UI covering everything currently in TOML. **Partly landed**: theme and every alert switch
   are on a `Cmd+,` panel, applied as they are changed and written back to `config.toml` **in place** —
   the file keeps its comments, its key order and any key hideGit does not own, because it is
