@@ -1479,6 +1479,65 @@ impl Hidegit {
                 Task::none()
             }
 
+            RepoMessage::BranchDropped { source, target } => {
+                if repo.state.is_in_progress() {
+                    return Task::none();
+                }
+
+                // Both operations act on the branch that is checked out, so a
+                // drop between two branches you are not on has no meaning
+                // without a checkout first — and doing that silently is exactly
+                // the unintended thing the gesture has to avoid.
+                let head = match &repo.head {
+                    hidegit_core::model::Head::Branch { name, .. } => name.short.clone(),
+                    _ => {
+                        self.app.toast(&UiError {
+                            summary: "A detached HEAD has no branch to merge or rebase".to_owned(),
+                            details: "Check out a branch first.".to_owned(),
+                        });
+                        return Task::none();
+                    }
+                };
+
+                let other = if target == head {
+                    source.clone()
+                } else if source == head {
+                    target.clone()
+                } else {
+                    self.app.toast(&UiError {
+                        summary: format!(
+                            "Neither {source} nor {target} is checked out, so there is nothing to \
+                             merge or rebase"
+                        ),
+                        details: format!("Check out {source} or {target} first."),
+                    });
+                    return Task::none();
+                };
+
+                // Both operations act on the branch that is checked out, so the
+                // *direction* of the drag does not change what is on offer —
+                // only which two branches were named. The title shows the drag
+                // as it happened; every entry names both branches in full,
+                // because a gesture is exactly the thing whose direction people
+                // misread.
+                self.app.sheet = Some(
+                    ActionSheet::new(format!("{source} → {target}"))
+                        .item(
+                            format!("Merge {other} into {head}"),
+                            Message::Repo(index, RepoMessage::MergeRequested(other.clone())),
+                        )
+                        .item(
+                            format!("Rebase {head} onto {other}…"),
+                            Message::Repo(index, RepoMessage::RebaseRequested(other.clone())),
+                        )
+                        .item(
+                            format!("Rebase {head} onto {other}, interactively…"),
+                            Message::Repo(index, RepoMessage::RebasePlanRequested(other)),
+                        ),
+                );
+                Task::none()
+            }
+
             RepoMessage::MergeRequested(from) => {
                 let backend = Arc::clone(&repo.backend);
                 blocking(move || backend.merge(&from, &MergeOpts::default()))
@@ -2974,6 +3033,117 @@ mod tests {
         let mut app = Hidegit::default();
         let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened(count)))));
         app
+    }
+
+    /// An app on branch `main` with a `feature` branch to drag.
+    fn app_with_branches() -> Hidegit {
+        let mut app = app_with(3);
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.head = Head::Branch {
+                name: RefName {
+                    kind: RefKind::LocalBranch,
+                    full: "refs/heads/main".to_owned(),
+                    short: "main".to_owned(),
+                },
+                target: repo.graph.commits[0].id,
+            };
+        }
+        app
+    }
+
+    #[test]
+    fn dropping_a_branch_asks_before_anything_runs() {
+        let mut app = app_with_branches();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BranchDropped {
+                source: "feature".to_owned(),
+                target: "main".to_owned(),
+            },
+        ));
+
+        let sheet = app.app.sheet.as_ref().expect("a drop asks first");
+        let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
+        // Every entry names both branches: a gesture is exactly the thing whose
+        // direction people misread.
+        assert!(
+            labels.contains(&"Merge feature into main"),
+            "got {labels:?}"
+        );
+        assert!(
+            labels.contains(&"Rebase main onto feature…"),
+            "got {labels:?}"
+        );
+        assert_eq!(sheet.title, "feature → main");
+    }
+
+    #[test]
+    fn the_drag_direction_does_not_change_what_is_offered() {
+        // Both operations act on the checked-out branch, so dragging `main`
+        // onto `feature` offers exactly what the reverse does. Only the title
+        // records which way the hand moved.
+        let mut app = app_with_branches();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BranchDropped {
+                source: "main".to_owned(),
+                target: "feature".to_owned(),
+            },
+        ));
+
+        let sheet = app.app.sheet.as_ref().expect("a drop asks first");
+        let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Merge feature into main"),
+            "got {labels:?}"
+        );
+        assert_eq!(sheet.title, "main → feature");
+    }
+
+    #[test]
+    fn a_drop_between_two_branches_you_are_not_on_says_so() {
+        // Both operations need a checkout first, and doing that silently is the
+        // unintended thing the gesture has to avoid.
+        let mut app = app_with_branches();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BranchDropped {
+                source: "one".to_owned(),
+                target: "two".to_owned(),
+            },
+        ));
+
+        assert!(app.app.sheet.is_none());
+        assert_eq!(app.app.toasts.len(), 1);
+        assert!(
+            app.app.toasts[0].summary.contains("checked out"),
+            "got {:?}",
+            app.app.toasts[0].summary
+        );
+    }
+
+    #[test]
+    fn a_drop_mid_operation_is_ignored() {
+        let mut app = app_with_branches();
+        {
+            let repo = app.app.repos.get_mut(0).unwrap();
+            repo.state = RepoState::Rebasing;
+        }
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BranchDropped {
+                source: "feature".to_owned(),
+                target: "main".to_owned(),
+            },
+        ));
+
+        // A rebase owns HEAD until it is finished or aborted.
+        assert!(app.app.sheet.is_none());
     }
 
     #[test]

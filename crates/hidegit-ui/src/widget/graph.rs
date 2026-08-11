@@ -10,7 +10,7 @@
 //! interaction. See `docs/COMMIT_GRAPH.md#rendering`.
 
 use hidegit_core::graph::{EdgeRole, NodeKind};
-use hidegit_core::model::RefKind;
+use hidegit_core::model::{RefKind, RefName};
 use iced::widget::canvas::{self, Frame, Path, Stroke, Text};
 use iced::{Color, Font, Pixels, Point, Rectangle, Renderer, Size, Vector, mouse};
 
@@ -46,6 +46,24 @@ const SCROLLBAR_HIT: f32 = 16.0;
 /// At a hundred thousand commits the proportional height is under a pixel, and
 /// a thumb nobody can grab is the same as no thumb.
 const MIN_THUMB: f32 = 24.0;
+
+/// How far the pointer must travel before a press becomes a drag.
+///
+/// Small enough that a deliberate drag feels immediate, large enough that the
+/// hand tremor in an ordinary click never arms a merge.
+const DRAG_THRESHOLD: f32 = 6.0;
+
+/// The height of a ref badge, shared by drawing and hit-testing.
+const BADGE_HEIGHT: f32 = 16.0;
+
+/// The width of a ref badge holding `label`.
+///
+/// Shared by drawing and hit-testing on purpose: two copies of this arithmetic
+/// would drift, and the symptom would be a badge that responds a few pixels
+/// away from where it is painted.
+fn badge_width(label: &str) -> f32 {
+    label.chars().count() as f32 * META_SIZE * CHAR_WIDTH + 12.0
+}
 
 const SUMMARY_SIZE: f32 = 13.0;
 const META_SIZE: f32 = 12.0;
@@ -86,6 +104,20 @@ struct Thumb {
 pub struct CanvasState {
     /// Where inside the thumb the drag started, in pixels from its top.
     grab: Option<f32>,
+    /// A branch badge the pointer went down on, and where.
+    ///
+    /// A press is not yet a drag: it becomes one only once the pointer has
+    /// moved past [`DRAG_THRESHOLD`], so clicking a badge still selects its
+    /// commit instead of arming an operation nobody asked for.
+    press: Option<Press>,
+    /// True once the press has travelled far enough to be a drag.
+    dragging: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Press {
+    branch: RefName,
+    at: Point,
 }
 
 impl GraphCanvas<'_> {
@@ -179,6 +211,53 @@ impl canvas::Program<RepoMessage> for GraphCanvas<'_> {
             }
         }
 
+        // A press on a branch badge that has travelled far enough becomes a
+        // drag, and the drop is what arms an operation. Tracked against the
+        // window like the scrollbar drag above, so leaving the widget and
+        // coming back does not silently cancel it.
+        if let Some(press) = state.press.clone() {
+            match event {
+                iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                    let now = cursor.position()?;
+                    if !state.dragging
+                        && (now.x - press.at.x).hypot(now.y - press.at.y) > DRAG_THRESHOLD
+                    {
+                        state.dragging = true;
+                    }
+                    return state.dragging.then(canvas::Action::request_redraw);
+                }
+                iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                    let was_dragging = state.dragging;
+                    state.press = None;
+                    state.dragging = false;
+                    if !was_dragging {
+                        // A press that never moved is a click, and the click
+                        // already selected the commit on the way down.
+                        return Some(canvas::Action::request_redraw());
+                    }
+
+                    let target = cursor
+                        .position_in(bounds)
+                        .and_then(|p| self.branch_at(p))
+                        // Dropping a branch on itself asks for nothing.
+                        .filter(|t| t.full != press.branch.full);
+
+                    return Some(match target {
+                        Some(target) => canvas::Action::publish(RepoMessage::BranchDropped {
+                            source: press.branch.short.clone(),
+                            target: target.short,
+                        })
+                        .and_capture(),
+                        // Dropped on empty space, or on itself: nothing happens
+                        // and nothing is said. An unfinished gesture is not an
+                        // error to report.
+                        None => canvas::Action::request_redraw().and_capture(),
+                    });
+                }
+                _ => return None,
+            }
+        }
+
         let position = cursor.position_in(bounds)?;
 
         match event {
@@ -216,6 +295,16 @@ impl canvas::Program<RepoMessage> for GraphCanvas<'_> {
                     );
                 }
 
+                // A press on a branch badge might become a drag. It still
+                // selects on the way down, so a badge behaves like the rest of
+                // the row until the pointer actually moves.
+                if let Some(branch) = self.branch_at(position) {
+                    state.press = Some(Press {
+                        branch,
+                        at: cursor.position()?,
+                    });
+                }
+
                 let row = self.row_at(position.y)?;
                 let commit = self.view.commits.get(row)?;
                 Some(
@@ -251,7 +340,7 @@ impl canvas::Program<RepoMessage> for GraphCanvas<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if state.grab.is_some() {
+        if state.grab.is_some() || state.dragging {
             return mouse::Interaction::Grabbing;
         }
 
@@ -263,6 +352,9 @@ impl canvas::Program<RepoMessage> for GraphCanvas<'_> {
             {
                 mouse::Interaction::Grab
             }
+            // A branch badge offers the grab hand, which is the only cue that
+            // the gesture exists at all — the badges look identical otherwise.
+            Some(position) if self.branch_at(position).is_some() => mouse::Interaction::Grab,
             Some(_) if !self.view.is_empty() => mouse::Interaction::Pointer,
             _ => mouse::Interaction::default(),
         }
@@ -438,13 +530,7 @@ impl GraphCanvas<'_> {
     }
 
     /// Draws a branch or tag badge and returns the x to continue from.
-    fn draw_badge(
-        &self,
-        frame: &mut Frame,
-        name: &hidegit_core::model::RefName,
-        x: f32,
-        middle: f32,
-    ) -> f32 {
+    fn draw_badge(&self, frame: &mut Frame, name: &RefName, x: f32, middle: f32) -> f32 {
         let colour = match name.kind {
             RefKind::LocalBranch => self.palette.accent,
             RefKind::RemoteBranch => self.palette.muted,
@@ -453,8 +539,8 @@ impl GraphCanvas<'_> {
         };
 
         let label = format::truncate(&name.short, 140.0);
-        let width = label.chars().count() as f32 * META_SIZE * CHAR_WIDTH + 12.0;
-        let height = 16.0;
+        let width = badge_width(&label);
+        let height = BADGE_HEIGHT;
 
         frame.fill(
             &Path::rounded_rectangle(
@@ -475,6 +561,37 @@ impl GraphCanvas<'_> {
         });
 
         x + width + 6.0
+    }
+
+    /// Which branch badge sits under `position`, if any.
+    ///
+    /// Walks the same geometry `draw_badge` lays out — through the same
+    /// `badge_width`, so the box that responds and the box that is drawn cannot
+    /// drift apart.
+    fn branch_at(&self, position: Point) -> Option<RefName> {
+        let row = self.row_at(position.y)?;
+        let commit = self.view.commits.get(row)?;
+
+        // The same arithmetic `draw_rows` uses, so the badge that responds is
+        // the badge that was drawn.
+        let middle = (row as f32 - self.view.scroll) * ROW_HEIGHT + ROW_HEIGHT / 2.0;
+        if (position.y - middle).abs() > BADGE_HEIGHT / 2.0 {
+            return None;
+        }
+
+        let (_, layout) = self.view.layout_visible();
+        let mut x = self.text_left(layout.width);
+        for name in &commit.refs {
+            let width = badge_width(&format::truncate(&name.short, 140.0));
+            if position.x >= x && position.x < x + width {
+                // Tags are not draggable: there is no operation that merges or
+                // rebases onto one, and offering the gesture would promise it.
+                return matches!(name.kind, RefKind::LocalBranch | RefKind::RemoteBranch)
+                    .then(|| name.clone());
+            }
+            x += width + 6.0;
+        }
+        None
     }
 
     fn draw_scrollbar(&self, frame: &mut Frame, size: Size) {

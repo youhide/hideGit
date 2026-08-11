@@ -588,6 +588,18 @@ on screen and taken nowhere. Copying does not dismiss the toast.
 PRs → connect GitHub, or "you have no open pull requests"; clean working directory → the last
 commit.
 
-**Drag and drop** (M5) on the graph performs merge and rebase. Every drop confirms with an explicit
-description of the operation before anything runs — the discoverability of drag and drop is the
-point, but not at the cost of an unintended rebase.
+**Drag and drop** on the graph performs merge and rebase. Drag a branch badge onto another and the
+action sheet opens naming both branches on every entry; nothing runs until one is chosen. The
+discoverability of the gesture is the point, but not at the cost of an unintended rebase.
+
+Three things fall out of that:
+
+- A press only becomes a drag once the pointer has travelled a few pixels, so clicking a badge still
+  selects its commit. Without the threshold, a slightly unsteady click would arm a merge.
+- Both operations act on the branch that is **checked out**, so the direction of the drag does not
+  change what is on offer — only which two branches were named. The title records the drag as it
+  happened; the entries name both branches in full, because a gesture is exactly the thing whose
+  direction people misread.
+- Dropping between two branches neither of which is checked out says so rather than checking one out
+  silently. Tags are not draggable at all: no operation merges or rebases onto one, and offering the
+  gesture would promise it.

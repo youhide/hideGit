@@ -307,10 +307,8 @@ test that counts conflicts.
 **Deferred, deliberately, to M6.** Two scope items above are not built, and both are listed there
 rather than quietly dropped:
 
-- **Drag-and-drop on the graph** for merge and rebase. Both operations are reachable — from the branch
-  row's action sheet, naming both branches so the direction cannot be guessed wrong — so this is
-  discoverability rather than capability. It also wants the graph to become a drop target, which is
-  M6's interaction work.
+- **Drag-and-drop on the graph** for merge and rebase. Deferred from here and **landed in M6**; see
+  [UI_SPEC](./UI_SPEC.md#the-commit-graph) for the three rules that came out of building it.
 - **The interactive rebase plan editor.** Deferred from here and **landed early in M6** — the entry
   stays because the reasoning still holds: it is a screen of its own rather than something bolted
   onto the resolver.
@@ -326,7 +324,10 @@ Everything between "works" and "someone who does not write Rust can install it".
 - Themes: dark and light, both designed rather than inverted; custom theme files
 - Complete keyboard navigation; a discoverable shortcut reference
 - **Drag-and-drop on the graph** for merge and rebase, with a confirmation step — deferred from
-  [M5](#m5--history-operations), where both operations landed as action-sheet entries instead
+  [M5](#m5--history-operations). **Landed.** A press becomes a drag only past a threshold, so
+  clicking a badge still selects; the drop opens the action sheet rather than running anything;
+  and a drop between two branches neither of which is checked out says so instead of checking one
+  out silently
 - **The interactive rebase plan editor** — reorder, squash, fixup, edit, drop. **Landed.** The
   commits a rebase would replay are listed oldest first, which is todo order rather than the graph's;
   showing them newest-first would silently invert every reorder. All six verbs are on every row
