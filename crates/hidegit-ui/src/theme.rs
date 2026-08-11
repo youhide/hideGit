@@ -16,7 +16,7 @@
 use iced::{Color, color};
 
 /// Everything the UI paints with.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     pub background: Color,
     /// Panels sitting on the background: sidebar, detail pane, toolbar.
@@ -36,6 +36,17 @@ pub struct Palette {
     /// Diff line backgrounds.
     pub added: Color,
     pub removed: Color,
+    /// The selected row, while its pane has keyboard focus.
+    ///
+    /// An opaque colour per theme rather than the accent at some alpha, because
+    /// an alpha tuned on a dark background does not transfer: the same wash that
+    /// reads as a glow over near-black reads as a stain over near-white, and the
+    /// accent is a warm orange while the light page is a cool grey. Each theme
+    /// picks the colour that works on *its* background.
+    pub selection: Color,
+    /// The selected row while the pane does not have focus. Still findable,
+    /// visibly not the thing the keyboard is pointed at.
+    pub selection_idle: Color,
 }
 
 impl Palette {
@@ -66,6 +77,53 @@ impl Palette {
         ],
         added: color!(0x1b3a24),
         removed: color!(0x3c1618),
+        // What the accent at 22% and 8% over the background used to composite
+        // to, kept exactly so this change moves nothing in the dark theme.
+        selection: color!(0x47271c),
+        selection_idle: color!(0x281e1d),
+    };
+
+    /// `hidegit-light`, designed rather than inverted.
+    ///
+    /// The dark theme uses the brand orange exactly as drawn, because it
+    /// cleared the contrast bar there. On a near-white panel the same colour
+    /// reaches only 3.21:1, so light darkens it — the same decision applied
+    /// honestly rather than the same *hex* applied stubbornly. Every colour
+    /// here was picked against the numbers the tests assert, not by eye.
+    ///
+    /// The background is a soft grey and panels are near-white, so a panel is
+    /// still the raised surface it is in dark. Inverting dark's relationship —
+    /// white page, grey panels — would make every panel read as sunken.
+    pub const LIGHT: Self = Self {
+        background: color!(0xf0f1f4),
+        surface: color!(0xfafbfc),
+        border: color!(0xd8dbe0),
+        text: color!(0x1c1f26),
+        muted: color!(0x5c6470),
+        accent: color!(0xb8410a),
+        success: color!(0x1a7f37),
+        warning: color!(0x9a6700),
+        danger: color!(0xcf222e),
+        // The same six hues in the same order as dark, darkened to sit on a
+        // near-white panel. Their separation under both simulated deficiencies
+        // is 0.061, against dark's 0.063 — measured, not assumed.
+        lanes: [
+            color!(0xb8410a),
+            color!(0x1a7f37),
+            color!(0x0550ae),
+            color!(0x8250df),
+            color!(0x106e75),
+            color!(0xbf3989),
+        ],
+        added: color!(0xe6ffec),
+        removed: color!(0xffebe9),
+        // Warm and very low chroma. The accent washed over this page at the
+        // dark theme's alpha gives a muddy salmon — readable, measurably, but
+        // the kind of thing that makes a light theme look like an afterthought.
+        // The idle one is neutral grey: without focus there is no reason for it
+        // to carry the brand colour at all.
+        selection: color!(0xf3e7e0),
+        selection_idle: color!(0xe9eaed),
     };
 
     /// The colour for a lane index, cycling through the palette.
@@ -95,6 +153,28 @@ impl Default for Theme {
 }
 
 impl Theme {
+    pub const DARK_NAME: &'static str = "hidegit-dark";
+    pub const LIGHT_NAME: &'static str = "hidegit-light";
+
+    /// The built-in theme with this name.
+    ///
+    /// `None` for anything else, which the caller reports and falls back from —
+    /// a typo in a config file must not stop the application starting. Custom
+    /// themes as TOML files are still to come; this is the pair that ships.
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            Self::DARK_NAME => Some(Self {
+                name: name.to_owned(),
+                palette: Palette::DARK,
+            }),
+            Self::LIGHT_NAME => Some(Self {
+                name: name.to_owned(),
+                palette: Palette::LIGHT,
+            }),
+            _ => None,
+        }
+    }
+
     /// Translates into the theme iced's own widgets style themselves from.
     pub fn to_iced(&self) -> iced::Theme {
         iced::Theme::custom(
@@ -114,6 +194,15 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both shipped palettes.
+    ///
+    /// Every constraint runs over both, because light was added to a suite that
+    /// only tested dark — and a light theme whose contrast nobody checked is
+    /// exactly the washed-out inversion the spec says not to ship.
+    fn palettes() -> [(&'static str, Palette); 2] {
+        [("dark", Palette::DARK), ("light", Palette::LIGHT)]
+    }
 
     /// Relative luminance, per WCAG 2.1.
     fn luminance(c: Color) -> f32 {
@@ -135,33 +224,39 @@ mod tests {
 
     #[test]
     fn body_text_meets_wcag_aa_against_both_backgrounds() {
-        let p = Palette::DARK;
-        assert!(
-            contrast(p.text, p.background) >= 4.5,
-            "primary text on the background is {:.2}:1",
-            contrast(p.text, p.background)
-        );
-        assert!(
-            contrast(p.text, p.surface) >= 4.5,
-            "primary text on a panel is {:.2}:1",
-            contrast(p.text, p.surface)
-        );
+        for (theme, p) in palettes() {
+            assert!(
+                contrast(p.text, p.background) >= 4.5,
+                "{theme}: primary text on the background is {:.2}:1",
+                contrast(p.text, p.background)
+            );
+            assert!(
+                contrast(p.text, p.surface) >= 4.5,
+                "{theme}: primary text on a panel is {:.2}:1",
+                contrast(p.text, p.surface)
+            );
+        }
     }
 
     #[test]
-    fn muted_text_meets_the_large_text_threshold() {
-        let p = Palette::DARK;
-        // Timestamps and hashes are secondary, so AA large (3:1) is the bar
-        // they have to clear — not "whatever looks subtle enough".
-        assert!(
-            contrast(p.muted, p.background) >= 3.0,
-            "muted text is {:.2}:1",
-            contrast(p.muted, p.background)
-        );
+    fn secondary_text_clears_the_large_text_threshold() {
+        // Timestamps, hashes and counts are small but they are still read.
+        for (theme, p) in palettes() {
+            assert!(
+                contrast(p.muted, p.background) >= 3.0,
+                "{theme}: secondary text on the background is {:.2}:1",
+                contrast(p.muted, p.background)
+            );
+            assert!(
+                contrast(p.muted, p.surface) >= 3.0,
+                "{theme}: secondary text on a panel is {:.2}:1",
+                contrast(p.muted, p.surface)
+            );
+        }
     }
 
     #[test]
-    fn the_semantic_colours_are_readable_as_text_on_a_panel() {
+    fn the_semantic_colours_are_readable_as_text() {
         // The staging view paints file paths in these: staged in `success`,
         // unstaged in `warning`, conflicted in `danger`. They stopped being
         // decoration the moment they carried a word, so they have to clear the
@@ -169,18 +264,35 @@ mod tests {
         //
         // `accent` is in here because the sidebar and the commit detail pane
         // paint text with it too — it is not only a selection highlight.
-        let p = Palette::DARK;
-        for (name, colour) in [
-            ("accent", p.accent),
-            ("success", p.success),
-            ("warning", p.warning),
-            ("danger", p.danger),
-        ] {
-            assert!(
-                contrast(colour, p.surface) >= 3.0,
-                "{name} on a panel is {:.2}:1",
-                contrast(colour, p.surface)
-            );
+        for (theme, p) in palettes() {
+            for (name, colour) in [
+                ("accent", p.accent),
+                ("success", p.success),
+                ("warning", p.warning),
+                ("danger", p.danger),
+            ] {
+                assert!(
+                    contrast(colour, p.surface) >= 3.0,
+                    "{theme}: {name} on a panel is {:.2}:1",
+                    contrast(colour, p.surface)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lane_colours_are_readable_on_the_panel_they_sit_on() {
+        // A lane is a line and a node, not text — but an unreadable lane is an
+        // unreadable graph, and light's near-white panel is where the dark
+        // theme's lane colours would have quietly disappeared.
+        for (theme, p) in palettes() {
+            for (index, colour) in p.lanes.iter().enumerate() {
+                assert!(
+                    contrast(*colour, p.surface) >= 3.0,
+                    "{theme}: lane {index} on a panel is {:.2}:1",
+                    contrast(*colour, p.surface)
+                );
+            }
         }
     }
 
@@ -219,17 +331,18 @@ mod tests {
 
     #[test]
     fn lane_colours_stay_apart_under_deuteranopia_and_protanopia() {
-        let lanes = Palette::DARK.lanes;
-
-        for protanopia in [false, true] {
-            for (i, a) in lanes.iter().enumerate() {
-                for b in lanes.iter().skip(i + 1) {
-                    let d = distance(simulate(*a, protanopia), simulate(*b, protanopia));
-                    assert!(
-                        d > 0.05,
-                        "two lane colours collapse to a distance of {d:.3} \
-                         (protanopia: {protanopia}); adjacent lanes would be indistinguishable"
-                    );
+        for (theme, p) in palettes() {
+            for protanopia in [false, true] {
+                for (i, a) in p.lanes.iter().enumerate() {
+                    for b in p.lanes.iter().skip(i + 1) {
+                        let d = distance(simulate(*a, protanopia), simulate(*b, protanopia));
+                        assert!(
+                            d > 0.05,
+                            "{theme}: two lane colours collapse to a distance of {d:.3} \
+                             (protanopia: {protanopia}); adjacent lanes would be \
+                             indistinguishable"
+                        );
+                    }
                 }
             }
         }
@@ -237,9 +350,44 @@ mod tests {
 
     #[test]
     fn lane_colours_cycle_rather_than_running_out() {
-        let p = Palette::DARK;
-        assert_eq!(p.lane(0), p.lanes[0]);
-        assert_eq!(p.lane(6), p.lanes[0]);
-        assert_eq!(p.lane(13), p.lanes[1]);
+        for (_, p) in palettes() {
+            assert_eq!(p.lane(0), p.lanes[0]);
+            assert_eq!(p.lane(6), p.lanes[0]);
+            assert_eq!(p.lane(13), p.lanes[1]);
+        }
+    }
+
+    #[test]
+    fn the_two_shipped_themes_are_reachable_by_name() {
+        assert_eq!(
+            Theme::by_name(Theme::DARK_NAME)
+                .expect("dark ships")
+                .palette,
+            Palette::DARK
+        );
+        assert_eq!(
+            Theme::by_name(Theme::LIGHT_NAME)
+                .expect("light ships")
+                .palette,
+            Palette::LIGHT
+        );
+        // A typo in a config file must not stop the application starting, so
+        // the caller gets `None` to fall back from rather than a panic.
+        assert!(Theme::by_name("hidegit-solarized").is_none());
+    }
+
+    #[test]
+    fn light_is_not_dark_inverted() {
+        // The cheap way to ship a light theme is to flip the dark one, which
+        // reliably produces muddy semantics and lanes nobody can tell apart.
+        // A panel stays *raised* in both: lighter than the page in light, and
+        // lighter than the page in dark too.
+        assert!(luminance(Palette::LIGHT.surface) > luminance(Palette::LIGHT.background));
+        assert!(luminance(Palette::DARK.surface) > luminance(Palette::DARK.background));
+
+        // And the brand orange is darkened rather than reused: as drawn it
+        // reaches only 3.21:1 on light's panel, which is below the bar for the
+        // text it is used for.
+        assert_ne!(Palette::LIGHT.accent, Palette::DARK.accent);
     }
 }

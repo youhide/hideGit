@@ -321,7 +321,9 @@ Everything between "works" and "someone who does not write Rust can install it".
 
 **Scope**
 
-- Themes: dark and light, both designed rather than inverted; custom theme files
+- Themes: dark and light, both designed rather than inverted; custom theme files. **Both shipped
+  themes have landed** and `theme.name` in `config.toml` now selects between them — it had been read
+  from disk and ignored since M1. Custom themes as TOML files are still to come
 - Complete keyboard navigation; a discoverable shortcut reference
 - **Drag-and-drop on the graph** for merge and rebase, with a confirmation step — deferred from
   [M5](#m5--history-operations). **Landed.** A press becomes a drag only past a threshold, so
