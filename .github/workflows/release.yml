@@ -32,7 +32,7 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: resolve
         run: |
@@ -57,7 +57,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -95,7 +95,7 @@ jobs:
             target/release/bundle/hideGit.app \
             "dist/hidegit-${VERSION}-macos-universal.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-universal
           path: dist/*
@@ -111,7 +111,7 @@ jobs:
       # the first thing someone sees is a missing-DLL dialog.
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -126,7 +126,7 @@ jobs:
             -Path target/release/hidegit.exe, LICENSE, README.md `
             -DestinationPath "dist/hidegit-$env:VERSION-windows-x86_64.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-x86_64
           path: dist/*
@@ -141,7 +141,7 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install windowing and font dependencies
         run: |
@@ -172,7 +172,7 @@ jobs:
           cp LICENSE README.md "$stage/"
           tar -czf "dist/${stage}.tar.gz" "$stage"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64
           path: dist/*
@@ -188,9 +188,12 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      # v8 fails the run on a download digest mismatch rather than logging a
+      # warning and carrying on. Left at that default deliberately: the files
+      # this step collects are the ones people download and run.
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
