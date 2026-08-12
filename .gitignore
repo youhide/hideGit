@@ -10,6 +10,9 @@
 # --- Local agent notes --------------------------------------------------
 # Personal, untracked context for AI assistants. See CLAUDE.md.
 CLAUDE.local.md
+# Per-machine tool permissions. Only the `.local` file is ignored, so a shared
+# `.claude/settings.json` remains trackable if the project ever wants one.
+/.claude/settings.local.json
 
 # --- Local configuration ------------------------------------------------
 .env
