@@ -381,10 +381,26 @@ Everything between "works" and "someone who does not write Rust can install it".
   (Linux); an update-available check that never auto-installs
 
   Landed early, because an application icon is not something to bolt on at the end: the icon
-  itself in every platform format, the Windows executable resource, an unsigned macOS `.app`
+  itself in every platform format, the Windows executable resource, a macOS `.app`
   (`cargo run -p xtask -- bundle-macos`), and a Linux `.desktop` entry with a hicolor icon set
-  (`packaging/linux/install.sh`). What remains here is signing, notarisation, and the installers
-  themselves.
+  (`packaging/linux/install.sh`).
+
+  **Downloadable archives have landed** — a universal macOS `.app`, a Windows `.exe` and a Linux
+  tarball, built and published by tag from `.github/workflows/release.yml`. They are **unsigned**,
+  deliberately and temporarily: waiting for a certificate would have meant no downloads at all,
+  and every alternative to a warning dialog costs money this project does not have yet. What that
+  means in practice, and what signing would take, is written down in [RELEASING.md](./RELEASING.md)
+  rather than left for someone to rediscover.
+
+  One thing that turned out not to be optional: the macOS bundle is **ad-hoc signed**. arm64 macOS
+  will not execute a Mach-O carrying no signature at all, and `lipo` strips the signature the linker
+  applies — so a universal build without that step would fail to launch on every Apple Silicon Mac,
+  which is most of them. An ad-hoc signature is free and anonymous; it is not the notarisation that
+  quiets Gatekeeper.
+
+  What remains here is signing, notarisation, and the installers themselves — and they belong in the
+  same piece of work, since an unsigned `.dmg` adds a step for the user without removing the warning
+  it would have been justified by.
 - Benchmarks in CI so a performance regression fails a build rather than being noticed by a user
 
 **Done when:** a person who has never installed Rust can download an installer for their platform,

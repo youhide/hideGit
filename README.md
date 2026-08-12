@@ -89,10 +89,30 @@ The full reasoning, including how this changes as gitoxide matures, is in
 
 ## Installing
 
-Pre-built installers (`.dmg`, `.msi`, AppImage, Flatpak) arrive at
-[M6](./docs/ROADMAP.md#m6--polish--release). Until then, build from source — and if you want hideGit
-to behave like an installed application rather than a binary in `target/`, see
-[Installing locally](#installing-locally) below.
+Download the archive for your platform from
+[the latest release](https://github.com/youhide/hideGit/releases/latest):
+
+| Platform | File |
+|---|---|
+| macOS 11+, Intel and Apple Silicon | `hidegit-<version>-macos-universal.zip` |
+| Windows 10+ | `hidegit-<version>-windows-x86_64.zip` |
+| Linux, glibc 2.35 or newer | `hidegit-<version>-linux-x86_64.tar.gz` |
+
+**These builds are not signed with a developer certificate**, so macOS and Windows each ask once
+whether you meant to run it. That is the trade for shipping downloads now rather than when there is
+a certificate to pay for; [RELEASING.md](./docs/RELEASING.md) explains what changes when there is.
+
+- **macOS** — unzip, drag `hideGit.app` to Applications, open it. The first launch is refused: go to
+  System Settings → Privacy & Security, find the message about hideGit, and choose **Open Anyway**.
+  Control-click → Open stopped working as a bypass in macOS 15.
+- **Windows** — unzip and run `hidegit.exe`. SmartScreen says "Windows protected your PC"; choose
+  **More info** → **Run anyway**.
+- **Linux** — unpack and run `./hidegit`, or `PREFIX=~/.local ./install.sh` to get a launcher entry
+  and icons along with the binary.
+
+Every release carries a `SHA256SUMS.txt` to check a download against. There are no `.dmg`, `.msi`,
+AppImage or Flatpak packages yet — an unsigned installer would add a step without removing the
+warning that justifies it.
 
 ## Building from source
 
@@ -109,9 +129,8 @@ need the usual windowing and font development packages (`libxkbcommon-dev`, `lib
 
 ### Installing locally
 
-Neither of these is signed, and neither is a package. They exist so that hideGit gets a real
-application icon and launcher entry while the actual installers are still ahead at
-[M6](./docs/ROADMAP.md#m6--polish--release).
+For a build from source that behaves like an installed application rather than a binary in
+`target/`. These are the same steps the release workflow runs.
 
 **macOS.** A window icon does nothing here — macOS has no per-window icons and reads the Dock icon
 from an application bundle — so there is a task that builds one:
@@ -121,7 +140,9 @@ cargo build --release
 cargo run -p xtask -- bundle-macos       # target/release/bundle/hideGit.app
 ```
 
-Being unsigned, Gatekeeper will want a right-click → Open the first time.
+The bundle is ad-hoc signed, which is what lets it run on Apple Silicon at all; it is not notarised.
+A bundle you built yourself was never downloaded, so it carries no quarantine attribute and
+Gatekeeper stays out of the way.
 
 **Linux.** Installs the binary, a `.desktop` entry and the hicolor icon set. `PREFIX` defaults to
 `/usr/local`; point it at `~/.local` to avoid needing root, and pass `uninstall` to reverse it:
@@ -157,6 +178,7 @@ enough for Explorer, the taskbar and Alt-Tab to show it. There is nothing else t
 | [ROADMAP](./docs/ROADMAP.md) | Milestones M0–M6 with acceptance criteria |
 | [UI_SPEC](./docs/UI_SPEC.md) | Screens, state and message shapes, keyboard shortcuts, theming |
 | [COMMIT_GRAPH](./docs/COMMIT_GRAPH.md) | Lane assignment algorithm and rendering |
+| [RELEASING](./docs/RELEASING.md) | How a release is cut, what ships, and why nothing is signed yet |
 | [ADRs](./docs/adr/README.md) | Why each major technical decision was made |
 
 ## Contributing

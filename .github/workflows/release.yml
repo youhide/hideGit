@@ -1,0 +1,248 @@
+name: Release
+
+# Builds one downloadable archive per platform and attaches them to a GitHub
+# release. No installers and no paid signing certificate is involved: see
+# docs/RELEASING.md for what that costs the person downloading.
+#
+# Push a `v*` tag to publish. Run it by hand (workflow_dispatch) to build the
+# same archives without publishing anything — they land as workflow artifacts,
+# which is how to test a change to this file before tagging.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Resolved once and shared, so the three build jobs cannot disagree about
+  # what they are building, and so a mismatched tag fails before any compiling.
+  version:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: resolve
+        run: |
+          set -eu
+          # `[workspace.package]` is the first table in Cargo.toml carrying a
+          # version, so the first match is the workspace version.
+          manifest=$(grep -m1 -E '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+            tagged=${GITHUB_REF_NAME#v}
+            if [ "$tagged" != "$manifest" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match the workspace version ${manifest} — bump Cargo.toml or retag" >&2
+              exit 1
+            fi
+          fi
+          echo "version=$manifest" >> "$GITHUB_OUTPUT"
+          echo "building $manifest"
+
+  macos:
+    name: macOS (universal)
+    needs: version
+    runs-on: macos-14
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release --locked -p hidegit --target aarch64-apple-darwin
+      - run: cargo build --release --locked -p hidegit --target x86_64-apple-darwin
+
+      # One download rather than asking someone to know which Mac they own.
+      # `bundle-macos` reads target/release/hidegit, so the fused binary goes
+      # exactly where a plain `cargo build --release` would have put it.
+      - name: Fuse the two architectures
+        run: |
+          mkdir -p target/release
+          lipo -create -output target/release/hidegit \
+            target/aarch64-apple-darwin/release/hidegit \
+            target/x86_64-apple-darwin/release/hidegit
+          lipo -info target/release/hidegit
+
+      # `bundle-macos` ad-hoc signs the bundle itself — free, no certificate,
+      # and not optional, since arm64 macOS will not execute a Mach-O that
+      # `lipo` has stripped the linker's signature from. Verified here so a
+      # broken bundle fails the build rather than the download.
+      - run: cargo run -p xtask -- bundle-macos
+      - run: codesign --verify --verbose target/release/bundle/hideGit.app
+
+      # `ditto`, not `zip`: it preserves the bundle's resource forks and
+      # extended attributes, which is what keeps the signature valid.
+      - name: Archive
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent \
+            target/release/bundle/hideGit.app \
+            "dist/hidegit-${VERSION}-macos-universal.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: dist/*
+
+  windows:
+    name: Windows (x86_64)
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # Statically links the MSVC runtime. Without it the executable needs a
+      # VC++ redistributable that a clean Windows install does not have, and
+      # the first thing someone sees is a missing-DLL dialog.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release --locked -p hidegit
+
+      - name: Archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive `
+            -Path target/release/hidegit.exe, LICENSE, README.md `
+            -DestinationPath "dist/hidegit-$env:VERSION-windows-x86_64.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/*
+
+  linux:
+    name: Linux (x86_64)
+    needs: version
+    # Deliberately not `ubuntu-latest`: a binary linked against a newer glibc
+    # will not start on an older distribution, and the reverse is fine. This
+    # sets the floor at glibc 2.35.
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install windowing and font dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release --locked -p hidegit
+
+      # The `.desktop` entry and the icon set travel with the binary: on
+      # Wayland they are what connects the running window to an icon at all.
+      # `install.sh` detects this flat layout and installs from it.
+      - name: Archive
+        run: |
+          set -eu
+          stage="hidegit-${VERSION}-linux-x86_64"
+          mkdir -p dist "$stage"
+          cp target/release/hidegit "$stage/"
+          cp packaging/linux/install.sh "$stage/"
+          cp packaging/linux/com.youhide.hidegit.desktop "$stage/"
+          cp -R assets/generated/hicolor "$stage/"
+          cp LICENSE README.md "$stage/"
+          tar -czf "dist/${stage}.tar.gz" "$stage"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+
+  release:
+    name: publish
+    if: github.ref_type == 'tag'
+    needs: [version, macos, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # These notes are prepended to GitHub's generated changelog. They say the
+      # unsigned part out loud, in the place someone hits it, rather than
+      # leaving them to guess at a Gatekeeper dialog.
+      - name: Release notes
+        run: |
+          cat > notes.md <<'EOF'
+          hideGit is **pre-alpha**. Git 2.30 or newer must be installed and on your `PATH`.
+
+          | Platform | Download |
+          |---|---|
+          | macOS 11+ (Intel and Apple Silicon) | `hidegit-*-macos-universal.zip` |
+          | Windows 10+ | `hidegit-*-windows-x86_64.zip` |
+          | Linux (glibc 2.35+) | `hidegit-*-linux-x86_64.tar.gz` |
+
+          ### These builds are not signed with a developer certificate
+
+          There is no paid signing certificate behind this project yet, so each
+          operating system will ask you once whether you meant to run it.
+
+          **macOS** — unzip, drag `hideGit.app` to Applications, open it. macOS
+          refuses the first launch; go to System Settings → Privacy & Security,
+          scroll to the message about hideGit, and choose **Open Anyway**. From a
+          terminal, `xattr -dr com.apple.quarantine /Applications/hideGit.app`
+          does the same thing in one step.
+
+          **Windows** — unzip and run `hidegit.exe`. SmartScreen shows "Windows
+          protected your PC"; choose **More info** → **Run anyway**.
+
+          **Linux** — unpack and run `./hidegit`, or install the binary along with
+          its launcher entry and icons:
+
+          ```sh
+          PREFIX=~/.local ./install.sh
+          ```
+
+          Verify a download against `SHA256SUMS.txt` before running it.
+          EOF
+
+      - name: Publish
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "hideGit $VERSION" \
+            --notes-file notes.md \
+            --generate-notes \
+            --prerelease

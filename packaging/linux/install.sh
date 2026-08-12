@@ -1,8 +1,15 @@
 #!/bin/sh
 # Installs hideGit's binary, desktop entry and icons.
 #
-# Not a package. AppImage and Flatpak are M6; this is the manual path until
-# then, and it is what a distribution packager would otherwise hand-write.
+# Not a package. AppImage and Flatpak wait on a signing certificate; this is
+# what ships in the release tarball, and what a distribution packager would
+# otherwise hand-write.
+#
+# From a release tarball, where the binary sits beside this script:
+#
+#   PREFIX=~/.local ./install.sh
+#
+# From a source checkout, against target/release/hidegit:
 #
 #   cargo build --release
 #   sudo ./packaging/linux/install.sh
@@ -17,10 +24,23 @@ set -eu
 PREFIX="${PREFIX:-/usr/local}"
 DESTDIR="${DESTDIR:-}"
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-binary="$root/target/release/hidegit"
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 desktop="com.youhide.hidegit.desktop"
 icon_sizes="16 24 32 48 64 128 256 512"
+
+# The release tarball is flat — binary, desktop entry and icons all beside this
+# script — while a checkout keeps them in three different places. Detecting the
+# layout rather than shipping two scripts keeps one of them from going stale.
+if [ -f "$here/hidegit" ]; then
+	binary="$here/hidegit"
+	desktop_file="$here/$desktop"
+	icons="$here/hicolor"
+else
+	root=$(CDPATH= cd -- "$here/../.." && pwd)
+	binary="$root/target/release/hidegit"
+	desktop_file="$root/packaging/linux/$desktop"
+	icons="$root/assets/generated/hicolor"
+fi
 
 bindir="$DESTDIR$PREFIX/bin"
 appdir="$DESTDIR$PREFIX/share/applications"
@@ -35,7 +55,9 @@ if [ "${1:-install}" = "uninstall" ]; then
 	exit 0
 fi
 
-if [ ! -x "$binary" ]; then
+# -f rather than -x: `install` sets the mode itself, and an archive unpacked
+# without the executable bit is still perfectly installable.
+if [ ! -f "$binary" ]; then
 	echo "$binary does not exist — run \`cargo build --release\` first" >&2
 	exit 1
 fi
@@ -49,11 +71,11 @@ install_file() {
 }
 
 install_file 755 "$binary" "$bindir/hidegit"
-install_file 644 "$root/packaging/linux/$desktop" "$appdir/$desktop"
+install_file 644 "$desktop_file" "$appdir/$desktop"
 
 for size in $icon_sizes; do
 	install_file 644 \
-		"$root/assets/generated/hicolor/${size}x${size}/apps/com.youhide.hidegit.png" \
+		"$icons/${size}x${size}/apps/com.youhide.hidegit.png" \
 		"$icondir/${size}x${size}/apps/com.youhide.hidegit.png"
 done
 
