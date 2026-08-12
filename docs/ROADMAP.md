@@ -362,7 +362,20 @@ Everything between "works" and "someone who does not write Rust can install it".
   implemented. Rename detection had to be turned on explicitly: gitoxide leaves it off by default,
   and without it every line of a renamed file is attributed to the commit that moved it rather than
   the commit that wrote it, which answers the wrong question entirely
-- Accessibility: focus order, contrast, screen-reader labels where iced supports them
+- Accessibility: focus order, contrast, screen-reader labels where iced supports them. **Partly
+  landed, and the rest is blocked on the toolkit.** iced 0.14 has no accessibility surface at all —
+  no AccessKit integration, no accessible trait, nothing a screen reader can read. That was checked
+  against the crate sources rather than assumed, and it means "screen-reader labels where iced
+  supports them" currently means nowhere. Do not plan that part until iced ships it.
+
+  What is real and has landed: contrast is asserted for both palettes by the theme tests, and
+  **keyboard reachability**. An action sheet can now be walked with `↑`/`↓` and chosen with `Enter` —
+  every per-item action in the sidebar goes through a sheet, so a sheet that only answered the mouse
+  put branch, tag, remote and stash actions behind one. `Tab` moves between a prompt's fields, which
+  a two-field prompt like "Add a remote" needed and did not have.
+
+  Still to do: a focus ring that is visible on every focusable widget, and an audit that every
+  action has a keyboard route
 - Crash reporting that is local and opt-in
 - **Packaging:** signed and notarised `.dmg` (macOS), `.msi` (Windows), AppImage and Flatpak
   (Linux); an update-available check that never auto-installs

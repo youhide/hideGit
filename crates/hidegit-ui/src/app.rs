@@ -502,6 +502,20 @@ impl Hidegit {
                 Task::done(*action)
             }
 
+            Message::SheetStepped(delta) => {
+                if let Some(sheet) = &mut self.app.sheet {
+                    sheet.step(delta);
+                }
+                Task::none()
+            }
+
+            Message::SheetAccepted => match self.app.sheet.as_ref().and_then(ActionSheet::chosen) {
+                // Nothing highlighted yet, so nothing is chosen. A sheet whose
+                // rows include "Delete" must not act on a bare `Enter`.
+                None => Task::none(),
+                Some(message) => Task::done(Message::SheetChosen(Box::new(message))),
+            },
+
             Message::SheetDismissed => {
                 self.app.sheet = None;
                 Task::none()
@@ -540,6 +554,15 @@ impl Hidegit {
                     Some(message) => Task::done(message),
                     None => Task::none(),
                 }
+            }
+
+            Message::PromptFieldStepped => {
+                // Which field has focus is not observable, so this asks iced to
+                // move focus on rather than tracking it here — the same widget
+                // operation `Space` uses to find out whether anything holds it.
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::focus_next(),
+                )
             }
 
             Message::PromptDismissed => {
@@ -3070,11 +3093,20 @@ fn modal_shortcut(key: &keyboard::Key, modal: Modal) -> Message {
         // second arrival finds nothing and does nothing.
         (Key::Named(Named::Enter), Modal::Prompt) => Message::PromptAccepted,
         (Key::Named(Named::Escape), Modal::Sheet) => Message::SheetDismissed,
+        // Every per-item action in the sidebar goes through a sheet, so a sheet
+        // that cannot be driven from the keyboard makes merging a branch or
+        // deleting a tag reachable only with a mouse.
+        (Key::Named(Named::ArrowDown), Modal::Sheet) => Message::SheetStepped(1),
+        (Key::Named(Named::ArrowUp), Modal::Sheet) => Message::SheetStepped(-1),
+        (Key::Named(Named::Enter), Modal::Sheet) => Message::SheetAccepted,
         // Dismisses the dialog, not the flow: the token still arrives and is
         // still stored, which is why there is no `Enter` binding to "accept".
         (Key::Named(Named::Escape), Modal::DeviceCode) => Message::DeviceCodeDismissed,
-        // A sheet has no default action. `Enter` on a list of things one of which
-        // may be "Delete" must not pick anything.
+        // `Tab` moves between a prompt's fields. A two-field prompt — "Add a
+        // remote" takes a name and a URL — was otherwise reachable only with a
+        // mouse, because the global `Tab` binding cycles panes and modals
+        // swallow everything they do not name.
+        (Key::Named(Named::Tab), Modal::Prompt) => Message::PromptFieldStepped,
         _ => Message::ToastDismissed(u64::MAX),
     }
 }
@@ -4352,6 +4384,84 @@ mod tests {
             let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
         }
         app
+    }
+
+    fn sheet_of(app: &Hidegit) -> &ActionSheet {
+        app.app.sheet.as_ref().expect("a sheet is open")
+    }
+
+    fn open_sheet(app: &mut Hidegit) {
+        let sheet = ActionSheet::new("feat/graph")
+            .item("Checkout", Message::ToastDismissed(1))
+            .item("Rename…", Message::ToastDismissed(2))
+            .destructive("Delete", Message::ToastDismissed(3));
+        let _ = app.update(Message::SheetRequested(Box::new(sheet)));
+    }
+
+    #[test]
+    fn a_sheet_opens_with_nothing_chosen_and_enter_does_nothing() {
+        // Every per-item action in the sidebar goes through a sheet, and one of
+        // a sheet's rows may be "Delete". `Enter` before you have moved to a row
+        // must not pick one for you.
+        let mut app = app_with(3);
+        open_sheet(&mut app);
+        assert_eq!(sheet_of(&app).selected, None);
+
+        let _ = app.update(Message::SheetAccepted);
+
+        assert!(
+            app.app.sheet.is_some(),
+            "nothing was chosen, so the sheet is still up"
+        );
+    }
+
+    #[test]
+    fn the_arrows_walk_a_sheet_and_wrap() {
+        // Without this a sheet is reachable only with a mouse, which puts every
+        // branch, tag, remote and stash action behind one.
+        let mut app = app_with(3);
+        open_sheet(&mut app);
+
+        let _ = app.update(Message::SheetStepped(1));
+        assert_eq!(sheet_of(&app).selected, Some(0), "down lands on the first");
+
+        let _ = app.update(Message::SheetStepped(-1));
+        assert_eq!(sheet_of(&app).selected, Some(2), "and wraps to the last");
+
+        let _ = app.update(Message::SheetStepped(1));
+        assert_eq!(sheet_of(&app).selected, Some(0));
+    }
+
+    #[test]
+    fn up_from_nothing_lands_on_the_last_row() {
+        let mut app = app_with(3);
+        open_sheet(&mut app);
+
+        let _ = app.update(Message::SheetStepped(-1));
+
+        assert_eq!(sheet_of(&app).selected, Some(2));
+    }
+
+    #[test]
+    fn the_sheet_keys_are_bound_on_the_modal_layer() {
+        let down = keyboard::Key::Named(keyboard::key::Named::ArrowDown);
+        let enter = keyboard::Key::Named(keyboard::key::Named::Enter);
+        let tab = keyboard::Key::Named(keyboard::key::Named::Tab);
+
+        assert!(matches!(
+            modal_shortcut(&down, Modal::Sheet),
+            Message::SheetStepped(1)
+        ));
+        assert!(matches!(
+            modal_shortcut(&enter, Modal::Sheet),
+            Message::SheetAccepted
+        ));
+        // A two-field prompt was otherwise reachable only with a mouse: the
+        // global `Tab` cycles panes, and modals swallow what they do not name.
+        assert!(matches!(
+            modal_shortcut(&tab, Modal::Prompt),
+            Message::PromptFieldStepped
+        ));
     }
 
     #[test]
@@ -6541,11 +6651,14 @@ mod tests {
             modal_shortcut(&escape, Modal::Sheet),
             Message::SheetDismissed
         ));
-        // A sheet has no default action: `Enter` on a list one of whose items may
-        // be "Delete" must not pick anything at all.
+        // A sheet still has no default action, but the guarantee moved: `Enter`
+        // now asks the sheet what is highlighted, and a freshly opened sheet
+        // highlights nothing. `a_sheet_opens_with_nothing_chosen_and_enter_does_nothing`
+        // is where that is asserted now — it has to be, because binding `Enter`
+        // to nothing at all is what made sheets mouse-only.
         assert!(matches!(
             modal_shortcut(&enter, Modal::Sheet),
-            Message::ToastDismissed(_)
+            Message::SheetAccepted
         ));
     }
 

@@ -294,6 +294,12 @@ pub struct ActionSheet {
     /// The item being acted on, e.g. `feat/graph`.
     pub title: String,
     pub items: Vec<SheetItem>,
+    /// Which row the keyboard is on.
+    ///
+    /// `None` until an arrow key moves it, which is deliberate: a sheet has no
+    /// default action, and one of its rows may be "Delete". `Enter` before you
+    /// have chosen a row must not pick one for you.
+    pub selected: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -312,7 +318,32 @@ impl ActionSheet {
         Self {
             title: title.into(),
             items: Vec::new(),
+            selected: None,
         }
+    }
+
+    /// Moves the highlight by `delta`, wrapping.
+    ///
+    /// From nothing selected, down lands on the first row and up on the last —
+    /// which is what every menu does, and what a hand reaching for the arrow
+    /// keys expects.
+    pub fn step(&mut self, delta: i32) {
+        if self.items.is_empty() {
+            return;
+        }
+        let len = self.items.len() as i32;
+        self.selected = Some(match self.selected {
+            None if delta > 0 => 0,
+            None => (len - 1) as usize,
+            Some(at) => (((at as i32 + delta) % len + len) % len) as usize,
+        });
+    }
+
+    /// The message the highlighted row would dispatch, if one is highlighted.
+    pub fn chosen(&self) -> Option<Message> {
+        self.items
+            .get(self.selected?)
+            .map(|item| item.message.clone())
     }
 
     pub fn item(mut self, label: impl Into<String>, message: Message) -> Self {

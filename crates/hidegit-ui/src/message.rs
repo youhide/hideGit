@@ -222,6 +222,10 @@ pub enum Message {
     /// one place. Without it, choosing an action leaves the sheet sitting over
     /// whatever the action produced — including a toast reporting that it failed.
     SheetChosen(Box<Message>),
+    /// `↑` / `↓` in a sheet.
+    SheetStepped(i32),
+    /// `Enter` in a sheet: choose the highlighted row, if one is highlighted.
+    SheetAccepted,
     SheetDismissed,
     /// Raises a modal that collects text before acting.
     PromptRequested(Box<Prompt>),
@@ -229,6 +233,8 @@ pub enum Message {
     PromptChanged(usize, String),
     /// `Enter`, or the prompt's own button. `update` turns the prompt's kind and
     /// its current values into the message that does the work.
+    /// `Tab` in a prompt: move to the next field, wrapping.
+    PromptFieldStepped,
     PromptAccepted,
     PromptDismissed,
     OpenRepository(PathBuf),
