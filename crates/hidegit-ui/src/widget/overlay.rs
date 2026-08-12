@@ -167,8 +167,8 @@ fn action_sheet<'a>(sheet: &'a ActionSheet, palette: &'a Palette) -> Element<'a,
     ]
     .spacing(2);
 
-    for item in &sheet.items {
-        body = body.push(sheet_row(item, palette));
+    for (index, item) in sheet.items.iter().enumerate() {
+        body = body.push(sheet_row(item, sheet.selected == Some(index), palette));
     }
 
     body = body.push(Space::new().height(Length::Fixed(6.0)));
@@ -189,7 +189,7 @@ fn action_sheet<'a>(sheet: &'a ActionSheet, palette: &'a Palette) -> Element<'a,
     scrim(container(body), palette)
 }
 
-fn sheet_row<'a>(item: &'a SheetItem, palette: Palette) -> Element<'a, Message> {
+fn sheet_row<'a>(item: &'a SheetItem, highlighted: bool, palette: Palette) -> Element<'a, Message> {
     // A destructive action is distinguishable by colour *and* by a glyph, so it
     // reads as destructive without relying on hue.
     let (colour, marker) = if item.destructive {
@@ -212,7 +212,15 @@ fn sheet_row<'a>(item: &'a SheetItem, palette: Palette) -> Element<'a, Message> 
     )
     .width(Fill)
     .padding(0)
-    .style(move |_, status| quiet_style(palette, status))
+    // The keyboard highlight has to be visible, or arrow-key navigation moves
+    // something nobody can see.
+    .style(move |_, status| {
+        let mut style = quiet_style(palette, status);
+        if highlighted && matches!(status, button::Status::Active) {
+            style.background = Some(palette.selection.into());
+        }
+        style
+    })
     // Wrapped so the sheet closes as the action is dispatched. Every route out
     // of a sheet — an item, Cancel, `Esc` — has to leave the layer empty.
     .on_press(Message::SheetChosen(Box::new(item.message.clone())))
