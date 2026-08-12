@@ -14,7 +14,7 @@ use std::{
     fs::{self, File},
     io::BufWriter,
     path::{Path, PathBuf},
-    process::ExitCode,
+    process::{Command, ExitCode},
 };
 
 use icns::{IconFamily, IconType, PixelFormat};
@@ -250,10 +250,12 @@ fn report(path: &Path, dimensions: Option<(u32, u32)>, note: Option<String>) {
     }
 }
 
-/// Assembles an unsigned `.app` around an already-built release binary.
+/// Assembles an ad-hoc signed `.app` around an already-built release binary.
 ///
-/// Unsigned and un-notarised on purpose: this exists so the icon shows in the
-/// Dock during development. A signed, notarised `.dmg` is M6.
+/// Un-notarised on purpose — that needs a paid certificate, and the release
+/// archives ship without one. Gatekeeper asks the person who downloads it to
+/// allow the app once; see [`sign_adhoc`] for why the signature is not
+/// optional even so.
 fn bundle_macos(root: &Path) -> Result<()> {
     let binary = root.join("target/release/hidegit");
     if !binary.is_file() {
@@ -284,10 +286,33 @@ fn bundle_macos(root: &Path) -> Result<()> {
         contents.join("Resources/hidegit.icns"),
     )?;
 
+    sign_adhoc(&app)?;
+
     println!("{}", app.display());
     println!(
-        "\nUnsigned. macOS caches icons aggressively — if the Dock shows a stale\n\
-         one, `touch` the bundle or move it."
+        "\nAd-hoc signed, not notarised. macOS caches icons aggressively — if the\n\
+         Dock shows a stale one, `touch` the bundle or move it."
     );
+    Ok(())
+}
+
+/// Signs a bundle with an ad-hoc signature — no certificate, no identity, no
+/// Apple Developer account.
+///
+/// This is not the notarisation step and it does not quiet Gatekeeper. It is
+/// here because arm64 macOS refuses to execute a Mach-O carrying no signature
+/// at all, and two things in this pipeline produce one: `lipo`, which strips
+/// the signature the linker applied when it fuses two architectures, and
+/// cross-compiling to `x86_64-apple-darwin`. Signing the assembled bundle also
+/// seals `Info.plist` and the icon, which copying the binary alone does not.
+fn sign_adhoc(app: &Path) -> Result<()> {
+    let status = Command::new("codesign")
+        .args(["--force", "--sign", "-", "--timestamp=none"])
+        .arg(app)
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("codesign failed on {}", app.display()).into());
+    }
     Ok(())
 }
