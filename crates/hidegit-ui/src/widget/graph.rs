@@ -575,6 +575,16 @@ impl GraphCanvas<'_> {
             return None;
         }
 
+        // Checked before the layout, because almost every commit fails it and
+        // the layout is the expensive part. This runs from `mouse_interaction`,
+        // which iced calls as the cursor moves — so laying the window out first
+        // and *then* discovering there are no badges to hit meant paying for a
+        // full visible-window layout on nearly every mouse move, to iterate an
+        // empty list. Most commits carry no refs at all.
+        if commit.refs.is_empty() {
+            return None;
+        }
+
         let (_, layout) = self.view.layout_visible();
         let mut x = self.text_left(layout.width);
         for name in &commit.refs {
@@ -672,6 +682,52 @@ mod tests {
             viewport_rows: 10,
             cache,
         }
+    }
+
+    /// The same view, with a branch badge on its first commit.
+    fn view_with_a_badge() -> GraphView {
+        let mut view = view_with(100, 0.0);
+        view.commits[0].refs = vec![RefName {
+            kind: RefKind::LocalBranch,
+            full: "refs/heads/main".to_owned(),
+            short: "main".to_owned(),
+        }];
+        view
+    }
+
+    #[test]
+    fn a_commit_with_no_refs_offers_no_branch_to_drag() {
+        // Most commits carry no refs, which is why the emptiness check comes
+        // before the layout: this is reached from `mouse_interaction`, so the
+        // cheap answer has to be the common one.
+        let view = view_with(100, 0.0);
+        let palette = Palette::DARK;
+        let cache = canvas::Cache::new();
+        let canvas = canvas_for(&view, &palette, &cache);
+
+        // Dead centre of the first row, where a badge would be if there were one.
+        let middle = ROW_HEIGHT / 2.0;
+        assert!(canvas.branch_at(Point::new(200.0, middle)).is_none());
+    }
+
+    #[test]
+    fn a_badge_is_still_found_where_it_is_drawn() {
+        // The other half: the early return must not have swallowed the badges
+        // that do exist. Hit-tested through the same `text_left` the drawing
+        // uses, so the box that responds is the box on screen.
+        let view = view_with_a_badge();
+        let palette = Palette::DARK;
+        let cache = canvas::Cache::new();
+        let canvas = canvas_for(&view, &palette, &cache);
+
+        let (_, layout) = view.layout_visible();
+        let x = canvas.text_left(layout.width) + 4.0;
+        let middle = ROW_HEIGHT / 2.0;
+
+        assert_eq!(
+            canvas.branch_at(Point::new(x, middle)).map(|r| r.short),
+            Some("main".to_owned())
+        );
     }
 
     #[test]
