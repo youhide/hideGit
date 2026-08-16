@@ -164,16 +164,31 @@ impl Hidegit {
         this.app.alerts = alerts;
 
         // An unknown name falls back rather than refusing to start: a typo in a
-        // config file is not a reason to have no window. It is said out loud,
-        // because a theme silently not applying reads as the setting being
-        // ignored — which, until now, it was.
+        // config file is not a reason to have no window.
+        //
+        // Said out loud *on screen*, not only to the log. A theme silently not
+        // applying reads as the setting being ignored, and the person it reads
+        // that way to is looking at a window — not at stderr under
+        // `HIDEGIT_LOG`, which is where the warning used to go and stop.
         match crate::theme::Theme::by_name(theme) {
             Some(theme) => this.app.theme = theme,
-            None => tracing::warn!(
-                requested = theme,
-                falling_back_to = crate::theme::Theme::DARK_NAME,
-                "unknown theme name"
-            ),
+            None => {
+                tracing::warn!(
+                    requested = theme,
+                    falling_back_to = crate::theme::Theme::DARK_NAME,
+                    "unknown theme name"
+                );
+                this.app.toast(&UiError {
+                    summary: format!("No theme called “{theme}”"),
+                    details: format!(
+                        "`theme.name` in config.toml is set to “{theme}”, which is not a theme \
+                         hideGit knows. Using {} instead.\n\nThe themes that ship are {} and {}.",
+                        crate::theme::Theme::DARK_NAME,
+                        crate::theme::Theme::DARK_NAME,
+                        crate::theme::Theme::LIGHT_NAME,
+                    ),
+                });
+            }
         }
 
         // The forge client is built off the UI thread, because building it
@@ -3046,8 +3061,16 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         // arrived — so a click into the message field followed by `Space`
         // would otherwise stage a file. See `StageToggleRequested`.
         Key::Named(Named::Space) if !command => repo(RepoMessage::StageToggleRequested),
-        Key::Character(c) if c.as_str() == "j" && !command => repo(RepoMessage::HunkStepped(1)),
-        Key::Character(c) if c.as_str() == "k" && !command => repo(RepoMessage::HunkStepped(-1)),
+        // Matched case-insensitively for the reason the remote shortcuts below
+        // are: with Shift held, the character iced reports is the shifted one on
+        // most layouts, so an exact comparison makes `Shift+J` do nothing at all
+        // — and UI_SPEC writes these bindings as `J` / `K`.
+        Key::Character(c) if c.eq_ignore_ascii_case("j") && !command => {
+            repo(RepoMessage::HunkStepped(1))
+        }
+        Key::Character(c) if c.eq_ignore_ascii_case("k") && !command => {
+            repo(RepoMessage::HunkStepped(-1))
+        }
         Key::Named(Named::ArrowDown) => repo(RepoMessage::SelectionMoved(1)),
         Key::Named(Named::ArrowUp) => repo(RepoMessage::SelectionMoved(-1)),
         Key::Named(Named::PageDown) => repo(RepoMessage::SelectionMoved(20)),
@@ -4126,6 +4149,86 @@ mod tests {
 
         assert!(search_of(&app).results.hits.is_empty());
         assert!(!search_of(&app).running, "and nothing is left running");
+    }
+
+    #[test]
+    fn shift_j_and_shift_k_step_hunks_like_the_unshifted_pair() {
+        // UI_SPEC writes these as `J` / `K`. With Shift held, most layouts have
+        // iced report the *shifted* character, so an exact comparison made the
+        // documented binding do nothing at all.
+        let shift = keyboard::Modifiers::SHIFT;
+        let context = || KeyContext {
+            active: Some(0),
+            ..KeyContext::default()
+        };
+
+        for (key, step) in [("J", 1), ("K", -1)] {
+            let pressed = keyboard::Key::Character(key.into());
+            let message = shortcut(&pressed, shift, context());
+            assert!(
+                matches!(
+                    message,
+                    Message::Repo(0, RepoMessage::HunkStepped(n)) if n == step
+                ),
+                "Shift+{key} produced {message:?}"
+            );
+        }
+
+        // And the unshifted pair still works, which is the binding people use.
+        for (key, step) in [("j", 1), ("k", -1)] {
+            let pressed = keyboard::Key::Character(key.into());
+            assert!(matches!(
+                shortcut(&pressed, keyboard::Modifiers::default(), context()),
+                Message::Repo(0, RepoMessage::HunkStepped(n)) if n == step
+            ));
+        }
+    }
+
+    #[test]
+    fn an_unknown_theme_name_is_said_on_screen_rather_than_only_to_the_log() {
+        // A theme that silently does not apply reads as the setting being
+        // ignored — and the person it reads that way to is looking at a window,
+        // not at stderr under `HIDEGIT_LOG`.
+        let (app, _) = Hidegit::new(
+            Vec::new(),
+            Vec::new(),
+            hidegit_forge::AlertPrefs::default(),
+            "hidegit-solarized",
+        );
+
+        assert_eq!(
+            app.app.theme.name,
+            crate::theme::Theme::DARK_NAME,
+            "an unknown name falls back rather than refusing to start"
+        );
+        let toast = app
+            .app
+            .toasts
+            .first()
+            .expect("an ignored theme setting has to be visible");
+        assert!(
+            toast.summary.contains("hidegit-solarized"),
+            "the toast names what was asked for: {:?}",
+            toast.summary
+        );
+        assert!(
+            toast.details.contains(crate::theme::Theme::LIGHT_NAME),
+            "and says what the real options are: {:?}",
+            toast.details
+        );
+    }
+
+    #[test]
+    fn a_theme_that_exists_raises_nothing() {
+        let (app, _) = Hidegit::new(
+            Vec::new(),
+            Vec::new(),
+            hidegit_forge::AlertPrefs::default(),
+            crate::theme::Theme::LIGHT_NAME,
+        );
+
+        assert_eq!(app.app.theme.name, crate::theme::Theme::LIGHT_NAME);
+        assert!(app.app.toasts.is_empty(), "nothing went wrong to report");
     }
 
     #[test]
