@@ -50,6 +50,25 @@ const INTERESTING: &[&str] = &[
     "MERGE_MSG",
 ];
 
+/// What changed, and therefore what has gone stale.
+///
+/// The distinction earns its keep: reading the working directory is cheap and
+/// reading history is not. Ordering a full topological walk because somebody
+/// saved a file costs about a second on a hundred-thousand-commit repository,
+/// and a file save cannot move a ref.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Change {
+    /// Files in the working tree. `status` and the diffs are stale; the history
+    /// behind them cannot have moved, so a memoised walk is still correct.
+    Worktree,
+    /// Something under `.git` that describes state: a ref moved, the index was
+    /// rewritten, an operation started or finished. Anything may be stale.
+    ///
+    /// Ordered above [`Change::Worktree`] so a burst containing both is
+    /// reported as this one.
+    Repository,
+}
+
 /// A live watch on a repository.
 ///
 /// Dropping it stops the watch. Changes are collected into a channel rather
@@ -62,7 +81,7 @@ pub struct Watch {
         reason = "held to keep the watch alive; dropping it stops it"
     )]
     debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
-    changes: Receiver<()>,
+    changes: Receiver<Change>,
 }
 
 impl Watch {
@@ -86,14 +105,19 @@ impl Watch {
                     return;
                 }
             };
-            if events
+            // The strongest change in the burst, because a burst that touched a
+            // ref *and* a file is a repository change however many file events
+            // came with it.
+            let strongest = events
                 .iter()
                 .flat_map(|event| event.paths.iter())
-                .any(|path| matters(path, &git_dir))
-            {
+                .filter_map(|path| classify(path, &git_dir))
+                .max();
+
+            if let Some(change) = strongest {
                 // A full channel means a refresh is already pending, which is
                 // exactly as much as anyone needs to know.
-                let _ = tx.send(());
+                let _ = tx.send(change);
             }
         })
         .map_err(|e| GitError::gix("starting the filesystem watcher", e))?;
@@ -108,44 +132,47 @@ impl Watch {
         })
     }
 
-    /// Takes every pending change, returning whether there was at least one.
+    /// Takes every pending change, returning the strongest one seen.
     ///
-    /// Draining rather than counting: several bursts still mean one reread, and
-    /// the reread is the same size either way.
-    pub fn drain(&self) -> bool {
-        let mut seen = false;
+    /// Draining rather than counting: several bursts still mean one refresh.
+    /// The *kind* is kept, though, because it decides how big that refresh has
+    /// to be — and a burst that included a repository change is a repository
+    /// change even if a hundred file events arrived with it.
+    pub fn drain(&self) -> Option<Change> {
+        let mut strongest = None;
         loop {
             match self.changes.try_recv() {
-                Ok(()) => seen = true,
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return seen,
+                Ok(change) => strongest = strongest.max(Some(change)),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return strongest,
             }
         }
     }
 }
 
-/// Is this path worth a refresh?
-fn matters(path: &Path, git_dir: &Path) -> bool {
+/// What kind of refresh this path is worth, if any.
+fn classify(path: &Path, git_dir: &Path) -> Option<Change> {
     let Ok(inside) = path.strip_prefix(git_dir) else {
         // Everything in the working tree is interesting: it is what `status`
-        // reports on.
-        return true;
+        // reports on. It cannot move a ref, so history stays valid.
+        return Some(Change::Worktree);
     };
 
     // A lock file is the *start* of a write, not the end of one. Refreshing on
     // it reads a repository mid-change and gets the answer wrong.
     if path.extension().is_some_and(|e| e == "lock") {
-        return false;
+        return None;
     }
 
     let mut components = inside.components();
-    let Some(first) = components.next() else {
-        return false;
-    };
+    let first = components.next()?;
     let name = first.as_os_str();
 
     // `refs/` and `packed-refs` change when a branch moves; the named state
     // files change when an operation starts or finishes.
-    name == "refs" || name == "packed-refs" || INTERESTING.iter().any(|known| name == *known)
+    let interesting =
+        name == "refs" || name == "packed-refs" || INTERESTING.iter().any(|known| name == *known);
+
+    interesting.then_some(Change::Repository)
 }
 
 #[cfg(test)]
@@ -158,36 +185,51 @@ mod tests {
     }
 
     #[test]
-    fn a_file_in_the_working_tree_matters() {
-        assert!(matters(Path::new("/repo/src/main.rs"), &git_dir()));
+    fn a_file_in_the_working_tree_is_a_worktree_change() {
+        // The distinction that matters: editing a file cannot move a ref, so
+        // the memoised history walk behind it is still correct.
+        assert_eq!(
+            classify(Path::new("/repo/src/main.rs"), &git_dir()),
+            Some(Change::Worktree)
+        );
     }
 
     #[test]
     fn the_index_matters_but_the_objects_it_points_at_do_not() {
-        assert!(matters(Path::new("/repo/.git/index"), &git_dir()));
-        assert!(!matters(
-            Path::new("/repo/.git/objects/ab/cdef1234"),
-            &git_dir()
-        ));
-        assert!(!matters(Path::new("/repo/.git/logs/HEAD"), &git_dir()));
+        assert_eq!(
+            classify(Path::new("/repo/.git/index"), &git_dir()),
+            Some(Change::Repository)
+        );
+        assert_eq!(
+            classify(Path::new("/repo/.git/objects/ab/cdef1234"), &git_dir()),
+            None
+        );
+        assert_eq!(
+            classify(Path::new("/repo/.git/logs/HEAD"), &git_dir()),
+            None
+        );
     }
 
     #[test]
     fn a_lock_file_is_the_start_of_a_write_rather_than_the_end() {
         // Refreshing here reads the repository mid-change and gets the answer
         // wrong; the unlocked file that follows is the real signal.
-        assert!(!matters(Path::new("/repo/.git/index.lock"), &git_dir()));
-        assert!(!matters(
-            Path::new("/repo/.git/refs/heads/main.lock"),
-            &git_dir()
-        ));
+        assert_eq!(
+            classify(Path::new("/repo/.git/index.lock"), &git_dir()),
+            None
+        );
+        assert_eq!(
+            classify(Path::new("/repo/.git/refs/heads/main.lock"), &git_dir()),
+            None
+        );
     }
 
     #[test]
     fn the_files_that_say_what_is_in_progress_matter() {
         for name in ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "HEAD"] {
-            assert!(
-                matters(&git_dir().join(name), &git_dir()),
+            assert_eq!(
+                classify(&git_dir().join(name), &git_dir()),
+                Some(Change::Repository),
                 "{name} decides whether the UI offers to commit"
             );
         }
@@ -195,10 +237,28 @@ mod tests {
 
     #[test]
     fn a_branch_moving_matters() {
-        assert!(matters(
-            Path::new("/repo/.git/refs/heads/feature"),
-            &git_dir()
-        ));
-        assert!(matters(Path::new("/repo/.git/packed-refs"), &git_dir()));
+        assert_eq!(
+            classify(Path::new("/repo/.git/refs/heads/feature"), &git_dir()),
+            Some(Change::Repository)
+        );
+        assert_eq!(
+            classify(Path::new("/repo/.git/packed-refs"), &git_dir()),
+            Some(Change::Repository)
+        );
+    }
+
+    #[test]
+    fn a_repository_change_outranks_the_worktree_changes_it_arrives_with() {
+        // A `git commit` from a terminal writes the index and moves a ref while
+        // the editor that triggered it is still writing files. Reporting that
+        // burst as a worktree change would leave the graph showing the commit
+        // before it.
+        assert!(Change::Repository > Change::Worktree);
+        assert_eq!(
+            [Change::Worktree, Change::Repository, Change::Worktree]
+                .into_iter()
+                .max(),
+            Some(Change::Repository)
+        );
     }
 }

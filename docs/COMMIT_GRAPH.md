@@ -186,6 +186,7 @@ Measured, not assumed. `cargo bench -p hidegit-core` builds a 100,000-commit rep
 | Walk and topologically order 100,000 commits | 1.01 s | Once, when a repository opens |
 | Build checkpoints over 100,000 commits | 47.6 ms | Once per loaded page |
 | Hydrate one 2,000-commit page into full commits | 14.8 ms | Once per loaded page |
+| **Read the working directory after a file save** | **1.26 ms** | Every save, while you type |
 
 The first row is the one that decides whether scrolling is smooth. The gap between it and the
 second is the entire justification for checkpoints: without them the per-frame cost grows with how
@@ -193,6 +194,12 @@ far down the history you have scrolled, and by row 50,000 it is 450× over budge
 
 Everything else runs off the UI thread. The 1.01s ordering pass is the cost of opening a repository
 that size — it is the first-screen latency, and the thing to attack if opening feels slow.
+
+**The last row used to be the third one.** The filesystem watcher invalidated the memoised walk
+whatever had changed, so saving a file in an editor ordered the whole history again: a second of CPU
+per save, continuously, while somebody typed. The watcher now says *what* changed — a working-tree
+file cannot move a ref, so the memo survives it — and a save reads the working directory and nothing
+else. Measured on the same machine and run, that is 1.19 s against 1.26 ms.
 
 Strategies:
 
