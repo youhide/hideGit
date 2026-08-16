@@ -1160,6 +1160,19 @@ pub struct App {
     /// is nothing to hold and nothing to discard on close. Settings that only
     /// take effect on OK are settings people are afraid to explore.
     pub settings_open: bool,
+    /// Why the last settings change did not reach the file, if it did not.
+    ///
+    /// Set by whoever owns the file — the shell, not the interface — because
+    /// `hidegit-ui` has no business knowing where `config.toml` lives. Carried
+    /// as text rather than a typed error for the same reason: the crate that
+    /// writes the file is the one that can say what went wrong, and this crate
+    /// only has to show it.
+    ///
+    /// The panel says settings are saved as they are made. When that is not
+    /// true, it has to say so instead — a toggle that visibly flips, a footer
+    /// that claims it saved, and a change that is gone on restart is worse than
+    /// having no settings screen at all.
+    pub settings_error: Option<String>,
     pub sheet: Option<ActionSheet>,
     /// The prompt currently on screen, if any.
     pub prompt: Option<Prompt>,
@@ -1185,6 +1198,7 @@ impl Default for App {
             recents: Vec::new(),
             theme: Theme::default(),
             settings_open: false,
+            settings_error: None,
             toasts: Vec::new(),
             confirming: None,
             sheet: None,

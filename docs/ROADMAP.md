@@ -351,7 +351,14 @@ Everything between "works" and "someone who does not write Rust can install it".
   are on a `Cmd+,` panel, applied as they are changed and written back to `config.toml` **in place** —
   the file keeps its comments, its key order and any key hideGit does not own, because it is
   hand-edited and often lives in a dotfiles repository. Quiet hours and muted repositories are still
-  file-only
+  file-only.
+
+  **The panel used to lie.** Writing in place means refusing to overwrite a file somebody is
+  part-way through editing, and that refusal — along with an unreadable file, a config directory
+  that cannot be created, and a system with no config directory at all — was a log line nobody sees
+  in a GUI, under a footer that read "Saved to config.toml as you change it". The toggle flipped, the
+  footer agreed, and the change was gone on restart. `save_settings` now reports why it declined and
+  the footer says so instead
 - Search: commits by message, author, hash — **landed**, on `Cmd+F`. One box searches every field,
   because people type a fragment and expect it found rather than classifying it first, and each hit
   says which field matched. The result reports whether the walk stopped at the limit: "these are the

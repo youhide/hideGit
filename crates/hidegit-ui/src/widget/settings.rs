@@ -27,7 +27,7 @@ pub fn view<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
                 .height(Fill)
                 .padding([10, 16]),
             divider(palette),
-            footer(palette),
+            footer(app, palette),
         ]
         .height(Fill),
     )
@@ -128,14 +128,24 @@ fn section<'a>(label: &'a str, palette: &'a Palette) -> Element<'a, Message> {
         .into()
 }
 
-fn footer<'a>(palette: &'a Palette) -> Element<'a, Message> {
-    container(
-        row![
+fn footer<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
+    // The claim and its contradiction share a line, because they answer the
+    // same question: did that toggle survive? Saying "saved" while it did not
+    // is the whole bug — the switch flips either way, so the footer is the only
+    // thing that can tell the difference.
+    let (note, colour) = match &app.settings_error {
+        None => (
             // Named so the file can be found and edited directly, which is
             // still the way to reach everything this screen does not cover.
-            text("Saved to config.toml as you change it.")
-                .size(11.0)
-                .color(palette.muted),
+            "Saved to config.toml as you change it.".to_owned(),
+            palette.muted,
+        ),
+        Some(reason) => (format!("Not saved — {reason}"), palette.warning),
+    };
+
+    container(
+        row![
+            text(note).size(11.0).color(colour),
             Space::new().width(Fill),
             button(text("Done").size(11.0))
                 .padding([5, 14])

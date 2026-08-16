@@ -304,9 +304,10 @@ mod tests {
 /// anything else in the file is left alone, including keys hideGit does not
 /// know about.
 ///
-/// Never fatal. A settings file that cannot be written is worth a warning, not
-/// a refusal to run.
-pub fn save_settings(path: &Path, settings: &Settings) {
+/// Never fatal. A settings file that cannot be written is worth reporting, not
+/// a refusal to run — but it **is** reported, because the panel tells the user
+/// their change was saved and has no way to know otherwise.
+pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), SaveError> {
     use toml_edit::{Item, value};
 
     let mut doc = match std::fs::read_to_string(path) {
@@ -314,20 +315,10 @@ pub fn save_settings(path: &Path, settings: &Settings) {
             Ok(doc) => doc,
             // Unparseable: writing a fresh document would delete whatever they
             // were in the middle of typing. Refusing keeps their file.
-            Err(error) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    %error,
-                    "the settings file is not valid TOML; not overwriting it"
-                );
-                return;
-            }
+            Err(error) => return Err(SaveError::NotValidToml(error)),
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => toml_edit::DocumentMut::new(),
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "could not read the settings file");
-            return;
-        }
+        Err(error) => return Err(SaveError::Unreadable(error)),
     };
 
     // `or_insert` on a missing table creates it; an existing one keeps its
@@ -352,13 +343,32 @@ pub fn save_settings(path: &Path, settings: &Settings) {
     if let Some(parent) = path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
-        tracing::warn!(path = %parent.display(), %error, "could not create the config directory");
-        return;
+        return Err(SaveError::NoDirectory(error));
     }
 
-    if let Err(error) = std::fs::write(path, doc.to_string()) {
-        tracing::warn!(path = %path.display(), %error, "could not write the settings file");
-    }
+    std::fs::write(path, doc.to_string()).map_err(SaveError::Unwritable)
+}
+
+/// Why a settings change did not reach the file.
+///
+/// Each variant is something the user can act on, which is the reason this is
+/// an error type rather than a log line: refusing to overwrite a file somebody
+/// is part-way through editing is right, and doing it silently — under a panel
+/// that says "Saved to config.toml as you change it" — is not.
+#[derive(Debug, thiserror::Error)]
+pub enum SaveError {
+    #[error("config.toml is not valid TOML, so it was left alone: {0}")]
+    NotValidToml(toml_edit::TomlError),
+    #[error("config.toml could not be read: {0}")]
+    Unreadable(std::io::Error),
+    #[error("the config directory could not be created: {0}")]
+    NoDirectory(std::io::Error),
+    #[error("config.toml could not be written: {0}")]
+    Unwritable(std::io::Error),
+    /// There is no platform config directory at all, so nothing persists for
+    /// the whole session. Known at startup rather than at the first toggle.
+    #[error("there is no config directory on this system, so settings will not persist")]
+    NoConfigDirectory,
 }
 
 /// The settings the interface can change.
@@ -403,7 +413,7 @@ mod settings_tests {
         )
         .unwrap();
 
-        save_settings(&path, &settings("hidegit-light"));
+        save_settings(&path, &settings("hidegit-light")).expect("a writable file saves");
 
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("# my settings, do not laugh"), "{after}");
@@ -427,9 +437,17 @@ mod settings_tests {
         let broken = "[theme]\nname = \"unclosed\n";
         std::fs::write(&path, broken).unwrap();
 
-        save_settings(&path, &settings("hidegit-light"));
+        let outcome = save_settings(&path, &settings("hidegit-light"));
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
+        // Refusing is right. Refusing *silently* is the bug: the panel says
+        // settings are saved as they are made, so a refusal nobody is told
+        // about is a toggle that flips, claims to have stuck, and is gone on
+        // restart.
+        assert!(
+            matches!(outcome, Err(SaveError::NotValidToml(_))),
+            "a refusal has to be reported, got {outcome:?}"
+        );
     }
 
     #[test]
@@ -437,9 +455,30 @@ mod settings_tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("config.toml");
 
-        save_settings(&path, &settings("hidegit-light"));
+        save_settings(&path, &settings("hidegit-light")).expect("a missing file is created");
 
         let reloaded: Config = load(&path);
         assert_eq!(reloaded.theme.name, "hidegit-light");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_written_is_reported_rather_than_swallowed() {
+        // Read-only rather than absent: this has to fail at the *last* step,
+        // after the document parsed and every earlier check passed, which is
+        // the path a permissions problem actually takes.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[theme]\nname = \"hidegit-dark\"\n").unwrap();
+
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        let outcome = save_settings(&path, &settings("hidegit-light"));
+
+        assert!(
+            matches!(outcome, Err(SaveError::Unwritable(_))),
+            "got {outcome:?}"
+        );
     }
 }

@@ -191,7 +191,14 @@ fn boot(
     config: Config,
     geometry: Geometry,
 ) -> (Shell, Task<ShellMessage>) {
-    let (ui, task) = Hidegit::new(initial, recents, config.alerts.clone(), &config.theme.name);
+    let (mut ui, task) = Hidegit::new(initial, recents, config.alerts.clone(), &config.theme.name);
+
+    // Known now rather than at the first toggle: with no config directory,
+    // nothing persists for the whole session, and the panel should say that the
+    // moment it is opened instead of claiming to have saved and then losing it.
+    if paths.is_none() {
+        ui.app.settings_error = Some(config::SaveError::NoConfigDirectory.to_string());
+    }
 
     (
         Shell {
@@ -217,15 +224,27 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             if touched_settings {
                 shell.config.theme.name = shell.ui.app.theme.name.clone();
                 shell.config.alerts = shell.ui.app.alerts.clone();
-                if let Some(paths) = &shell.paths {
-                    config::save_settings(
+
+                // The outcome goes back to the panel, which otherwise says the
+                // change was saved whatever happened to the file.
+                let outcome = match &shell.paths {
+                    Some(paths) => config::save_settings(
                         &paths.config,
                         &config::Settings {
                             theme: shell.config.theme.name.clone(),
                             alerts: shell.config.alerts.clone(),
                         },
-                    );
-                }
+                    ),
+                    None => Err(config::SaveError::NoConfigDirectory),
+                };
+
+                shell.ui.app.settings_error = match outcome {
+                    Ok(()) => None,
+                    Err(error) => {
+                        tracing::warn!(%error, "the settings change was not written");
+                        Some(error.to_string())
+                    }
+                };
             }
             task
         }
