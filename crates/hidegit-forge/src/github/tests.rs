@@ -702,3 +702,183 @@ async fn signing_out_forgets_the_token_here_and_in_the_keychain() {
     assert_eq!(store.load(PUBLIC_HOST).unwrap(), None);
     assert_eq!(github.resume().await.unwrap(), None);
 }
+
+// ---- creating a pull request ------------------------------------------
+//
+// The write half of the forge layer, and the only method here that had no
+// test at all.
+
+fn draft_pr() -> NewPullRequest {
+    NewPullRequest {
+        title: "Lane colours".to_owned(),
+        body: "Fixes the stain on light backgrounds.".to_owned(),
+        head: "feat/lanes".to_owned(),
+        base: "main".to_owned(),
+        draft: false,
+    }
+}
+
+/// The `user` object as the REST schema actually shapes it.
+///
+/// Every URL field is required and typed, so a two-key stand-in does not
+/// deserialise — which is worth knowing rather than working around, since it is
+/// the same shape a real response carries.
+fn author_json(login: &str) -> Value {
+    let root = format!("https://github.com/{login}");
+    json!({
+        "login": login,
+        "id": 7,
+        "node_id": "U_kgDOAA",
+        "avatar_url": format!("{root}.png"),
+        "gravatar_id": "",
+        "url": format!("https://api.github.com/users/{login}"),
+        "html_url": root,
+        "followers_url": format!("https://api.github.com/users/{login}/followers"),
+        "following_url": format!("https://api.github.com/users/{login}/following"),
+        "gists_url": format!("https://api.github.com/users/{login}/gists"),
+        "starred_url": format!("https://api.github.com/users/{login}/starred"),
+        "subscriptions_url": format!("https://api.github.com/users/{login}/subscriptions"),
+        "organizations_url": format!("https://api.github.com/users/{login}/orgs"),
+        "repos_url": format!("https://api.github.com/users/{login}/repos"),
+        "events_url": format!("https://api.github.com/users/{login}/events"),
+        "received_events_url": format!("https://api.github.com/users/{login}/received_events"),
+        "type": "User",
+        "site_admin": false,
+    })
+}
+
+/// A mock server answering the REST endpoint pull requests are created on.
+async fn creating(body: Value) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/youhide/hideGit/pulls"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(body))
+        .mount(&server)
+        .await;
+    server
+}
+
+#[tokio::test]
+async fn a_created_pull_request_answers_with_what_the_forge_made() {
+    // The forge decides the number and the URL, and may normalise the title.
+    // Echoing the draft back would show the user what they asked for rather
+    // than what exists.
+    let server = creating(json!({
+        "id": 1,
+        "number": 42,
+        "url": "https://api.github.com/repos/youhide/hideGit/pulls/42",
+        "head": { "ref": "feat/lanes", "sha": "a3f9c21" },
+        "base": { "ref": "main", "sha": "b7e2d10" },
+        "title": "Lane colours (normalised)",
+        "html_url": "https://github.com/youhide/hideGit/pull/42",
+        "user": author_json("youhide"),
+        "draft": true,
+    }))
+    .await;
+    let github = client(&server).await;
+
+    let created = github
+        .create_pull_request(&repo(), draft_pr())
+        .await
+        .expect("the mock answers");
+
+    assert_eq!(created.number, 42);
+    assert_eq!(created.title, "Lane colours (normalised)");
+    assert_eq!(created.url, "https://github.com/youhide/hideGit/pull/42");
+    assert_eq!(created.author, "youhide");
+    // Asked for false, and the forge said true — the forge wins.
+    assert!(created.draft);
+    // Branches come from the draft: they are what was asked for, and the
+    // response describes them in a shape this layer does not read.
+    assert_eq!(created.head, "feat/lanes");
+    assert_eq!(created.base, "main");
+}
+
+#[tokio::test]
+async fn a_new_pull_request_invents_no_review_or_check_state() {
+    // A pull request one second old has no review decision and no checks that
+    // have reported. Guessing here would show a green tick before anything had
+    // run, and the poll that follows is what fills these in.
+    let server = creating(json!({
+        "id": 1,
+        "number": 42,
+        "url": "https://api.github.com/repos/youhide/hideGit/pulls/42",
+        "head": { "ref": "feat/lanes", "sha": "a3f9c21" },
+        "base": { "ref": "main", "sha": "b7e2d10" },
+        "title": "Lane colours",
+        "html_url": "https://github.com/youhide/hideGit/pull/42",
+        "user": author_json("youhide"),
+        "draft": false,
+    }))
+    .await;
+    let github = client(&server).await;
+
+    let created = github
+        .create_pull_request(&repo(), draft_pr())
+        .await
+        .expect("the mock answers");
+
+    assert_eq!(created.review, ReviewState::NotRequired);
+    assert_eq!(created.checks, CheckState::None);
+    assert_eq!(created.merge, MergeState::Unknown);
+    assert_eq!(created.comments, 0);
+    // You opened it, so you are its author and it belongs in your panel.
+    assert!(created.roles.contains(&PrRole::Author));
+}
+
+#[tokio::test]
+async fn a_response_missing_the_optional_fields_falls_back_rather_than_failing() {
+    // `title`, `html_url`, `user` and `draft` are all optional in the REST
+    // schema, and the fallbacks for them are defensive code no test had run.
+    let server = creating(json!({
+        "id": 1,
+        "number": 42,
+        "url": "https://api.github.com/repos/youhide/hideGit/pulls/42",
+        "head": { "ref": "feat/lanes", "sha": "a3f9c21" },
+        "base": { "ref": "main", "sha": "b7e2d10" },
+    }))
+    .await;
+    let github = client(&server).await;
+
+    let created = github
+        .create_pull_request(&repo(), draft_pr())
+        .await
+        .expect("a sparse response is still a created pull request");
+
+    assert_eq!(created.number, 42);
+    // No title from the forge, so the one that was asked for.
+    assert_eq!(created.title, "Lane colours");
+    // No URL, so the repository page — which at least lands somewhere useful.
+    assert_eq!(created.url, "https://github.com/youhide/hideGit");
+    assert_eq!(created.author, "ghost");
+    assert!(
+        !created.draft,
+        "and the draft flag falls back to what was asked"
+    );
+}
+
+#[tokio::test]
+async fn a_refused_creation_is_reported_rather_than_invented() {
+    // The common real failure: a pull request for that branch pair already
+    // exists. Returning a fabricated `PullRequest` here would put a row in the
+    // panel for something that was never created.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/repos/youhide/hideGit/pulls"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+            "message": "Validation Failed",
+        })))
+        .mount(&server)
+        .await;
+    let github = client(&server).await;
+
+    let error = github
+        .create_pull_request(&repo(), draft_pr())
+        .await
+        .expect_err("422 is not a created pull request");
+
+    assert!(
+        matches!(error, ForgeError::Api { status: 422, .. }),
+        "got {error:?}"
+    );
+}
