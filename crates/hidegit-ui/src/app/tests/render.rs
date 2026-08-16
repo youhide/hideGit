@@ -143,6 +143,24 @@ fn the_settings_panel_lays_out() {
     let _ = app.update(Message::SettingsRequested);
 
     shows(&app, "Settings");
+    shows(&app, "Saved to config.toml as you change it.");
+}
+
+#[test]
+fn the_settings_panel_stops_claiming_it_saved_when_it_did_not() {
+    // The toggle flips either way — the value lives in memory and applies at
+    // once — so the footer is the only thing on screen that can tell a change
+    // that survived from one that will be gone on restart.
+    let mut app = app_with(1);
+    let _ = app.update(Message::SettingsRequested);
+    app.app.settings_error = Some("config.toml is not valid TOML".to_owned());
+
+    let mut ui = render(&app);
+    assert!(
+        ui.find("Saved to config.toml as you change it.").is_err(),
+        "the panel went on claiming the change was saved"
+    );
+    shows(&app, "Not saved — config.toml is not valid TOML");
 }
 
 #[test]
