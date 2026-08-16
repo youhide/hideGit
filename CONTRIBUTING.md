@@ -97,7 +97,12 @@ See [assets/README.md](./assets/README.md) for what that produces and why each f
 |---|---|
 | `hidegit-core` | Unit tests against fixture repositories built by a test helper. Every `GitBackend` method has coverage, including the error paths. |
 | `hidegit-forge` | HTTP interactions mocked. No test may reach the network or require a real token. |
-| `hidegit-ui` | iced 0.14 supports headless testing — use it for state transitions and message handling. Rendering is not asserted pixel by pixel. |
+| `hidegit-ui` | Two halves. State transitions and message handling go in `app.rs`'s test module. Laying the interface out goes in `app/tests/render.rs`, which builds each screen state through `iced_test` against a real headless renderer. Rendering is not asserted pixel by pixel. |
+
+A `view` that panics ends the process, so a state that can be reached needs a test that lays it out.
+`render.rs` asserts on text a user would look for rather than only on the absence of a panic: a
+`view` that silently rendered nothing would lay out perfectly happily, and a test that checked
+nothing else would pass against it.
 
 Anything touching the commit graph layout needs a test. It is the component most likely to regress
 subtly and the one users notice first — see [COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md).

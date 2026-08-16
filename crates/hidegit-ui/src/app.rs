@@ -3351,6 +3351,8 @@ pub use widget::graph::GraphCanvas;
 
 #[cfg(test)]
 mod tests {
+    mod render;
+
     use super::*;
     use hidegit_core::FakeBackend;
     use hidegit_core::model::{
