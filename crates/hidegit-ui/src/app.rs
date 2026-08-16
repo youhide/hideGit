@@ -3435,6 +3435,7 @@ pub use widget::graph::GraphCanvas;
 
 #[cfg(test)]
 mod tests {
+    mod drive;
     mod render;
 
     use super::*;

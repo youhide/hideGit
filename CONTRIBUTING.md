@@ -104,6 +104,14 @@ A `view` that panics ends the process, so a state that can be reached needs a te
 `view` that silently rendered nothing would lay out perfectly happily, and a test that checked
 nothing else would pass against it.
 
+**A message whose whole job is to reach the backend is tested by running its `Task`.** `app/tests/drive.rs`
+executes one to completion and returns the messages it produced, so a test can assert the operation
+happened rather than that a button carried the message that would have caused it — the strongest
+assertion available before it existed. Reach for it whenever `update` answers with `blocking(…)` and
+the state that comes back says nothing about what was asked for. It is the one place that touches
+`iced_runtime`, deliberately: that is an internal crate of a pre-1.0 toolkit, and confining it to a
+single file means an iced upgrade moves one import rather than every test.
+
 Anything touching the commit graph layout needs a test. It is the component most likely to regress
 subtly and the one users notice first — see [COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md).
 
