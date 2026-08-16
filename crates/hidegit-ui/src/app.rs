@@ -1196,7 +1196,27 @@ impl Hidegit {
                     }
                     cache.clear();
 
-                    Task::batch([self.checkpoint_task(index), self.load_more_task(index)])
+                    // Checkpoints are rebuilt when paging *stops*, not after
+                    // every page. Each page invalidates what the page before it
+                    // produced — `layout_row` filters parents through the set of
+                    // loaded commits, and that set grows with every append — so
+                    // the intermediate builds are thrown away by the next one.
+                    //
+                    // Rebuilding per page also copies the whole accumulated
+                    // history each time, on the UI thread before the work is
+                    // handed off: fifty pages of a hundred thousand commits is
+                    // 2,000 + 4,000 + … + 100,000 clones for forty-nine results
+                    // nobody ever reads.
+                    //
+                    // Nothing is broken in between. `layout_visible` treats
+                    // checkpoints as a hint and replays from `HEAD` without them,
+                    // which the benchmark puts at 23.9 ms for the worst window —
+                    // a frame and a half, and only while a load is still running.
+                    if repo.graph.loading_more {
+                        self.load_more_task(index)
+                    } else {
+                        Task::batch([self.checkpoint_task(index), self.load_more_task(index)])
+                    }
                 }
                 Err(error) => {
                     if let Some(repo) = self.app.repos.get_mut(index) {
