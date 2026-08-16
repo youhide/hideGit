@@ -66,6 +66,15 @@ fn read_path(c: &mut Criterion) {
         });
     });
 
+    // What a file save costs now. The comparison that matters is against
+    // `walk_and_order_100k` directly above: that walk is what every editor save
+    // used to pay, because the watcher invalidated the memo whatever had
+    // changed. A worktree change now reads the working directory and nothing
+    // else.
+    group.bench_function("status_after_a_file_save_100k", |b| {
+        b.iter(|| black_box(backend.status().expect("status is readable")));
+    });
+
     group.bench_function("hydrate_one_page_of_2000", |b| {
         b.iter(|| {
             black_box(

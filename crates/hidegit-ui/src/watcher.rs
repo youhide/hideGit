@@ -76,10 +76,10 @@ pub fn subscribe(index: usize, workdir: PathBuf, git_dir: PathBuf) -> Subscripti
 
                     loop {
                         tokio::time::sleep(POLL).await;
-                        if watch.drain() {
+                        if let Some(change) = watch.drain() {
                             let index = target.index;
                             return Some((
-                                Message::Repo(index, RepoMessage::RepositoryChanged),
+                                Message::Repo(index, RepoMessage::RepositoryChanged(change)),
                                 (target, Some(watch)),
                             ));
                         }

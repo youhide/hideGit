@@ -601,11 +601,14 @@ pub enum RepoMessage {
     /// Ahead/behind, loaded separately from a refresh because it costs a commit
     /// walk per tracking branch and a refresh runs on every file save.
     DivergenceLoaded(Box<Result<HashMap<String, Divergence>, UiError>>),
-    /// Something changed the repository: reload refs, state and history.
+    /// Something changed the repository: reload what the change can have made
+    /// stale.
     ///
     /// One code path for "something changed", rather than each operation
-    /// remembering which views it invalidated.
-    RepositoryChanged,
+    /// remembering which views it invalidated — but carrying *what* changed,
+    /// because rereading history costs about a second on a large repository and
+    /// a file save cannot have moved a ref.
+    RepositoryChanged(hidegit_core::watch::Change),
     /// The reread that `RepositoryChanged` asked for, applied in place.
     Refreshed(Box<Result<Refreshed, UiError>>),
 

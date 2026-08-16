@@ -18,6 +18,7 @@ use hidegit_core::ops::{
     SequenceControl, SequenceOutcome, StartPoint, StashOp, TagSpec,
 };
 use hidegit_core::patch::Selection as PatchSelection;
+use hidegit_core::watch::Change;
 use hidegit_core::{GitBackend, GitError, HybridBackend};
 use iced::widget::{canvas, text_editor};
 use iced::{Element as IcedElement, Subscription, Task, keyboard};
@@ -1343,7 +1344,10 @@ impl Hidegit {
                     // Success has no message of its own: the refresh that
                     // follows is the result, and a toast saying "staged" for
                     // every click would be noise.
-                    Ok(()) => Task::done(Message::Repo(index, RepoMessage::RepositoryChanged)),
+                    Ok(()) => Task::done(Message::Repo(
+                        index,
+                        RepoMessage::RepositoryChanged(Change::Repository),
+                    )),
                     Err(error) => {
                         self.app.toast(&error);
                         Task::none()
@@ -1530,7 +1534,10 @@ impl Hidegit {
                                 "the pull conflicted; the repository is mid-merge"
                             );
                         }
-                        Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                        Task::done(Message::Repo(
+                            index,
+                            RepoMessage::RepositoryChanged(Change::Repository),
+                        ))
                     }
                     Err(error) => {
                         // Cancelling is what was asked for, so it is silent — unless
@@ -1541,13 +1548,16 @@ impl Hidegit {
                         {
                             return Task::done(Message::Repo(
                                 index,
-                                RepoMessage::RepositoryChanged,
+                                RepoMessage::RepositoryChanged(Change::Repository),
                             ));
                         }
                         self.app.toast(&error);
                         // Refreshed even on failure: a fetch that failed part-way
                         // may still have moved some refs.
-                        Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                        Task::done(Message::Repo(
+                            index,
+                            RepoMessage::RepositoryChanged(Change::Repository),
+                        ))
                     }
                 }
             }
@@ -1848,7 +1858,10 @@ impl Hidegit {
                     // A conflict is reported by the refreshed state — the banner
                     // and the conflicted list — rather than by a toast, because
                     // the next thing to do is on screen, not in a message.
-                    Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                    Task::done(Message::Repo(
+                        index,
+                        RepoMessage::RepositoryChanged(Change::Repository),
+                    ))
                 }
                 Err(error) => {
                     self.app.toast(&error);
@@ -2138,7 +2151,10 @@ impl Hidegit {
                     // The file is no longer conflicted, so the resolver has
                     // nothing left to show. The refresh repopulates the list.
                     repo.resolver = None;
-                    Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                    Task::done(Message::Repo(
+                        index,
+                        RepoMessage::RepositoryChanged(Change::Repository),
+                    ))
                 }
                 Err(error) => {
                     self.app.toast(&error);
@@ -2188,7 +2204,10 @@ impl Hidegit {
                         if let SequenceOutcome::Stopped { .. } = outcome {
                             repo.resolver = None;
                         }
-                        Task::done(Message::Repo(index, RepoMessage::RepositoryChanged))
+                        Task::done(Message::Repo(
+                            index,
+                            RepoMessage::RepositoryChanged(Change::Repository),
+                        ))
                     }
                     Err(error) => {
                         self.app.toast(&error);
@@ -2413,7 +2432,7 @@ impl Hidegit {
                     repo.draft = Draft::default();
                     let mut tasks = vec![Task::done(Message::Repo(
                         index,
-                        RepoMessage::RepositoryChanged,
+                        RepoMessage::RepositoryChanged(Change::Repository),
                     ))];
                     if then_push {
                         tasks.push(Task::done(Message::Repo(
@@ -2466,7 +2485,19 @@ impl Hidegit {
             // for the same repository and reset the user's scroll and
             // selection — every write, and eventually every file save once the
             // watcher exists.
-            RepoMessage::RepositoryChanged => {
+            // A file save cannot move a ref, so it must not cost a walk of the
+            // whole history. `invalidate` drops the memoised topological order,
+            // and rebuilding it is benchmarked at about a second against
+            // 100,000 commits — which is what every editor save used to pay,
+            // continuously, on a large repository.
+            RepoMessage::RepositoryChanged(Change::Worktree) => {
+                let backend = Arc::clone(&repo.backend);
+                blocking(move || load_status(backend.as_ref())).map(move |result| {
+                    Message::Repo(index, RepoMessage::StatusLoaded(Box::new(result)))
+                })
+            }
+
+            RepoMessage::RepositoryChanged(Change::Repository) => {
                 repo.backend.invalidate();
                 let backend = Arc::clone(&repo.backend);
                 blocking(move || reread(backend.as_ref())).map(move |result| {
@@ -4926,6 +4957,59 @@ mod tests {
             ),
             Message::Repo(0, RepoMessage::StageToggleRequested)
         ));
+    }
+
+    /// An app on a `FakeBackend` the test keeps a handle to, so it can ask what
+    /// the backend was actually asked to do.
+    fn app_on_fake(fake: &Arc<FakeBackend>) -> Hidegit {
+        let mut app = Hidegit::default();
+        let mut opened = opened(3);
+        opened.backend = Arc::clone(fake) as Arc<dyn GitBackend>;
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+        app
+    }
+
+    #[test]
+    fn saving_a_file_does_not_reread_the_whole_history() {
+        // `invalidate` drops the memoised topological order, and rebuilding it
+        // is benchmarked at about a second against 100,000 commits. Paying that
+        // on every editor save pins a core continuously while somebody types —
+        // and a file save cannot have moved a ref, so it buys nothing.
+        let fake = Arc::new(FakeBackend::new().with_commits(commits(3)));
+        let mut app = app_on_fake(&fake);
+        let before = fake.invalidations();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::RepositoryChanged(Change::Worktree),
+        ));
+
+        assert_eq!(
+            fake.invalidations(),
+            before,
+            "a worktree change threw away the memoised walk"
+        );
+    }
+
+    #[test]
+    fn a_ref_moving_underneath_still_rereads_everything() {
+        // The other half, and the reason this cannot simply be made cheaper for
+        // everything: a commit made in a terminal *does* move history, and a
+        // graph that kept its memo would go on showing the commit before it.
+        let fake = Arc::new(FakeBackend::new().with_commits(commits(3)));
+        let mut app = app_on_fake(&fake);
+        let before = fake.invalidations();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::RepositoryChanged(Change::Repository),
+        ));
+
+        assert_eq!(
+            fake.invalidations(),
+            before + 1,
+            "a repository change has to drop the memoised walk"
+        );
     }
 
     #[test]
