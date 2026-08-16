@@ -255,6 +255,21 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::QuietHoursToggled => {
+                let quiet = &mut self.app.alerts.quiet_hours;
+                quiet.enabled = !quiet.enabled;
+                Task::none()
+            }
+
+            Message::QuietHourChosen(bound, hour) => {
+                let quiet = &mut self.app.alerts.quiet_hours;
+                match bound {
+                    crate::message::QuietBound::From => quiet.from = hour,
+                    crate::message::QuietBound::To => quiet.to = hour,
+                }
+                Task::none()
+            }
+
             Message::OpenDialogRequested => Task::perform(
                 async {
                     rfd::AsyncFileDialog::new()

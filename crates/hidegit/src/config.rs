@@ -398,6 +398,13 @@ pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), SaveError> 
     let alerts = doc["alerts"].or_insert(Item::Table(toml_edit::Table::new()));
     alerts["enabled"] = value(settings.alerts.enabled);
 
+    let quiet = alerts["quiet_hours"].or_insert(Item::Table(toml_edit::Table::new()));
+    quiet["enabled"] = value(settings.alerts.quiet_hours.enabled);
+    // `i64` because TOML has one integer type; the values are hours, so the
+    // cast is lossless and the file stays readable as `from = 22`.
+    quiet["from"] = value(i64::from(settings.alerts.quiet_hours.from));
+    quiet["to"] = value(i64::from(settings.alerts.quiet_hours.to));
+
     let events = alerts["events"].or_insert(Item::Table(toml_edit::Table::new()));
     let e = &settings.alerts.events;
     events["review_requested"] = value(e.review_requested);
@@ -528,6 +535,71 @@ mod settings_tests {
 
         let reloaded: Config = load(&path);
         assert_eq!(reloaded.theme.name, "hidegit-light");
+    }
+
+    #[test]
+    fn quiet_hours_survive_the_file() {
+        // They were editable only by hand until the panel grew controls, and
+        // `save_settings` did not write them at all — so a screen that set them
+        // would have lost them on the next write of anything else.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut alerts = hidegit_forge::AlertPrefs::default();
+        alerts.quiet_hours.enabled = true;
+        alerts.quiet_hours.from = 23;
+        alerts.quiet_hours.to = 7;
+
+        save_settings(
+            &path,
+            &Settings {
+                theme: "hidegit-dark".to_owned(),
+                alerts,
+            },
+        )
+        .expect("a writable file saves");
+
+        let reloaded: Config = load(&path);
+        assert!(reloaded.alerts.quiet_hours.enabled);
+        assert_eq!(reloaded.alerts.quiet_hours.from, 23);
+        assert_eq!(reloaded.alerts.quiet_hours.to, 7);
+    }
+
+    #[test]
+    fn writing_quiet_hours_leaves_the_rest_of_the_file_alone() {
+        // The property the whole in-place write exists for, checked against the
+        // keys this change added rather than only the ones that were there.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# mine\n\
+             [window]\n\
+             remember_geometry = false\n\
+             \n\
+             [alerts.quiet_hours]\n\
+             # I go to bed late\n\
+             from = 1\n",
+        )
+        .unwrap();
+
+        let mut alerts = hidegit_forge::AlertPrefs::default();
+        alerts.quiet_hours.enabled = true;
+        alerts.quiet_hours.from = 2;
+
+        save_settings(
+            &path,
+            &Settings {
+                theme: "hidegit-dark".to_owned(),
+                alerts,
+            },
+        )
+        .expect("a writable file saves");
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(after.contains("# I go to bed late"), "{after}");
+        assert!(after.contains("remember_geometry = false"), "{after}");
+        assert!(after.contains("from = 2"), "{after}");
     }
 
     #[test]

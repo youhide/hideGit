@@ -238,8 +238,13 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             // made too. Checked before the message moves into `update`, and the
             // values are read back out afterwards — the interface owns them
             // while it runs, the file owns them between runs.
-            let touched_settings =
-                matches!(message, Message::ThemeChosen(_) | Message::AlertToggled(_));
+            let touched_settings = matches!(
+                message,
+                Message::ThemeChosen(_)
+                    | Message::AlertToggled(_)
+                    | Message::QuietHoursToggled
+                    | Message::QuietHourChosen(..)
+            );
             // Opening a repository is what changes the recents list, and it is
             // the only thing that does. Written at once rather than at exit,
             // because there are ordinary ways to quit that never reach an exit

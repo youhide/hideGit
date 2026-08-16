@@ -10,11 +10,11 @@
 //! discard, because settings that only take effect on OK are settings people
 //! are afraid to explore.
 
-use iced::widget::{Space, button, checkbox, column, container, row, scrollable, text};
+use iced::widget::{Space, button, checkbox, column, container, pick_list, row, scrollable, text};
 use iced::{Center, Fill, Font, Length};
 
 use crate::Element;
-use crate::message::{AlertToggle, Message};
+use crate::message::{AlertToggle, Message, QuietBound};
 use crate::state::App;
 use crate::theme::{Palette, Theme};
 
@@ -106,7 +106,7 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
 
         if master {
             sections = sections.push(
-                text("Quiet hours and muted repositories are in config.toml.")
+                text("Muted repositories are in config.toml.")
                     .size(11.0)
                     .color(palette.muted),
             );
@@ -114,7 +114,95 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
         }
     }
 
+    sections = sections.push(Space::new().height(8));
+    sections = sections.push(quiet_hours(app, palette));
+
     sections.into()
+}
+
+/// The window in which nothing is shown on the desktop.
+///
+/// Indented under the alerts it modifies, and unavailable when they are off:
+/// a quiet window on an alert set that never fires is a setting with nothing to
+/// act on, and offering it there suggests otherwise.
+fn quiet_hours<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
+    let quiet = &app.alerts.quiet_hours;
+    let live = app.alerts.enabled;
+
+    let switch = checkbox(quiet.enabled)
+        .label("Quiet hours")
+        .size(15.0)
+        .text_size(13.0)
+        .on_toggle_maybe(live.then_some(|_| Message::QuietHoursToggled));
+
+    // Picked from a list rather than typed: an hour is one of twenty-four
+    // values, and a text field would have to decide what "25" or "" means.
+    let bounds = row![
+        text("from").size(12.0).color(palette.muted),
+        hour_picker(QuietBound::From, quiet.from, live && quiet.enabled, palette),
+        text("to").size(12.0).color(palette.muted),
+        hour_picker(QuietBound::To, quiet.to, live && quiet.enabled, palette),
+    ]
+    .spacing(8)
+    .align_y(Center);
+
+    let mut block = column![switch, container(bounds).padding([4, 22])].spacing(4);
+
+    // Said once, where it applies. A window whose ends are equal covers nothing,
+    // which is the only reading that does not silence either everything or
+    // nothing depending on which comparison you write.
+    if quiet.enabled && quiet.from == quiet.to {
+        block = block.push(
+            container(
+                text("A window that starts and ends at the same hour silences nothing.")
+                    .size(11.0)
+                    .color(palette.warning),
+            )
+            .padding([0, 22]),
+        );
+    }
+
+    block.into()
+}
+
+/// One end of the window, as a list of the twenty-four hours.
+///
+/// Rendered as plain text when it cannot be changed, rather than as a dropdown
+/// that opens onto a choice it will not accept: the value still has to be
+/// readable — it is what quiet hours would use once they are switched on.
+fn hour_picker<'a>(
+    bound: QuietBound,
+    chosen: u8,
+    live: bool,
+    palette: &'a Palette,
+) -> Element<'a, Message> {
+    if !live {
+        return text(Hour(chosen).to_string())
+            .size(12.0)
+            .color(palette.muted)
+            .into();
+    }
+
+    let hours: Vec<Hour> = (0..24).map(Hour).collect();
+    pick_list(hours, Some(Hour(chosen)), move |Hour(hour)| {
+        Message::QuietHourChosen(bound, hour)
+    })
+    .text_size(12.0)
+    .padding([3, 8])
+    .into()
+}
+
+/// An hour of the day, shown the way a clock shows it.
+///
+/// A newtype purely for `Display`: `pick_list` renders with it, and a bare `u8`
+/// would put "8" in a list where every other entry is two digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Hour(u8);
+
+impl std::fmt::Display for Hour {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}:00", self.0)
+    }
 }
 
 fn section<'a>(label: &'a str, palette: &'a Palette) -> Element<'a, Message> {
