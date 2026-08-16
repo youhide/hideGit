@@ -10,7 +10,7 @@ would take to change.
 2. Tag it and push the tag:
 
 ```sh
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.0.1 && git push origin v0.0.1
 ```
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) does the rest: it builds on
