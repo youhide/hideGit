@@ -185,6 +185,16 @@ walk's topological order is memoised — it is the expensive part of drawing a g
 change until the repository does — and only the requested page is hydrated into full `Commit`
 values. `invalidate` is what says that memo is stale.
 
+**Both locks around those caches recover from poisoning rather than honouring it.** A `Mutex` is
+poisoned when a thread panics while holding it, and every later `lock()` fails from then on. Every
+read here runs on a blocking task the UI spawned, so honouring the poison would turn one panicked
+task into a repository that fails *everything* asked of it for the life of the process — and quietly,
+because the UI catches each panic individually and shows a toast rather than crashing. Recovery is
+sound for the reason it usually is not: the guarded values are a memo and a repository handle, this
+is safe Rust so neither can be left structurally invalid, and the worst a recovered entry can be is
+stale — which is what `invalidate` already exists to clear. The GitHub client handle in
+`hidegit-forge` is recovered the same way and for the same reason.
+
 **Topological order is computed by hideGit, not by gitoxide.** `gix` offers breadth-first and
 date-ordered traversal but not `--topo-order`, so the date-ordered walk is corrected afterwards by
 Kahn's algorithm with commit date as the tiebreak. Date order alone is not sufficient: clock skew
