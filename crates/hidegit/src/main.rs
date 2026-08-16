@@ -73,6 +73,7 @@ struct Shell {
 enum ShellMessage {
     Ui(Message),
     Resized(Size),
+    Moved(iced::Point),
     /// The periodic write of anything that has been collected since the last.
     Flush,
     CloseRequested,
@@ -285,6 +286,13 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             Task::none()
         }
 
+        ShellMessage::Moved(position) => {
+            shell.geometry.x = Some(position.x);
+            shell.geometry.y = Some(position.y);
+            shell.unsaved_geometry = true;
+            Task::none()
+        }
+
         ShellMessage::Flush => {
             if shell.unsaved_geometry {
                 persist(shell);
@@ -307,6 +315,11 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
 /// `CloseRequested` at all, so an exit-only write loses the session for the
 /// most ordinary quit there is.
 fn persist(shell: &mut Shell) {
+    // Cleared first, and unconditionally: with nowhere to write, there is
+    // nothing pending either, and leaving the flag set would have the timer
+    // call this every five seconds for the life of the session.
+    shell.unsaved_geometry = false;
+
     let Some(paths) = &shell.paths else {
         return;
     };
@@ -327,7 +340,6 @@ fn persist(shell: &mut Shell) {
     };
 
     config::save(&paths.state, &state);
-    shell.unsaved_geometry = false;
 }
 
 fn view(shell: &Shell) -> iced::Element<'_, ShellMessage> {
@@ -338,6 +350,15 @@ fn subscription(shell: &Shell) -> Subscription<ShellMessage> {
     Subscription::batch([
         shell.ui.subscription().map(ShellMessage::Ui),
         window::resize_events().map(|(_, size)| ShellMessage::Resized(size)),
+        // There is no `move_events()` to match `resize_events()`, so the moves
+        // are filtered out of the full window stream. Without this the window
+        // remembered its size and never its position: `x` and `y` were read at
+        // startup and written back unchanged, so a window dragged to a second
+        // monitor reopened where it was two sessions ago.
+        window::events().filter_map(|(_, event)| match event {
+            window::Event::Moved(position) => Some(ShellMessage::Moved(position)),
+            _ => None,
+        }),
         // The only timer in the application, and it exists because resize
         // events arrive per frame: collecting them and writing once is the
         // difference between one file write and one per frame of a drag.
@@ -409,4 +430,92 @@ fn report_missing_git(error: &GitError) {
         .set_title(title)
         .set_description(&body)
         .show();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A shell with nowhere to write, which is all these need: what is under
+    /// test is which events reach the geometry, not the file behind it.
+    fn shell() -> Shell {
+        Shell {
+            ui: Hidegit::default(),
+            paths: None,
+            config: Config::default(),
+            geometry: Geometry::default(),
+            unsaved_geometry: false,
+        }
+    }
+
+    #[test]
+    fn moving_the_window_records_where_it_went() {
+        // Nothing wrote `x`/`y` before this: the values saved on exit were
+        // whatever had been loaded at startup, echoed back. So "remember
+        // geometry" remembered the size and reopened at the position from
+        // whenever it was last set by hand — or centred, forever.
+        let mut shell = shell();
+        assert_eq!(shell.geometry.x, None, "a fresh geometry has no position");
+
+        let _ = update(
+            &mut shell,
+            ShellMessage::Moved(iced::Point::new(120.0, 80.0)),
+        );
+
+        assert_eq!(shell.geometry.x, Some(120.0));
+        assert_eq!(shell.geometry.y, Some(80.0));
+        assert!(shell.unsaved_geometry, "and it is owed a write");
+    }
+
+    #[test]
+    fn resizing_records_the_size_without_touching_the_position() {
+        let mut shell = shell();
+        let _ = update(
+            &mut shell,
+            ShellMessage::Moved(iced::Point::new(10.0, 20.0)),
+        );
+
+        let _ = update(&mut shell, ShellMessage::Resized(Size::new(1000.0, 700.0)));
+
+        assert_eq!(shell.geometry.width, 1000.0);
+        assert_eq!(shell.geometry.height, 700.0);
+        assert_eq!(shell.geometry.x, Some(10.0), "a resize is not a move");
+        assert_eq!(shell.geometry.y, Some(20.0));
+    }
+
+    #[test]
+    fn a_flush_with_nowhere_to_write_still_stops_asking() {
+        // Otherwise the timer would call `persist` every five seconds for the
+        // life of a session that has no config directory.
+        let mut shell = shell();
+        let _ = update(&mut shell, ShellMessage::Moved(iced::Point::new(1.0, 2.0)));
+        assert!(shell.unsaved_geometry);
+
+        let _ = update(&mut shell, ShellMessage::Flush);
+
+        assert!(!shell.unsaved_geometry);
+    }
+
+    #[test]
+    fn a_position_survives_the_file() {
+        // The other half: recording it is useless if it does not round-trip.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+
+        let state = State {
+            window: Geometry {
+                width: 1200.0,
+                height: 800.0,
+                x: Some(64.0),
+                y: Some(32.0),
+            },
+            ..State::default()
+        };
+        config::save(&path, &state);
+
+        let loaded: State = config::load(&path);
+        assert_eq!(loaded.window.x, Some(64.0));
+        assert_eq!(loaded.window.y, Some(32.0));
+        assert_eq!(loaded.window.sanitised().x, Some(64.0));
+    }
 }

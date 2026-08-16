@@ -657,6 +657,11 @@ on the application's one timer. Both go through a write that stages to a sibling
 over the target, because a write that happens while the application runs is a write that can be
 interrupted part-way.
 
+Geometry means size **and position**. It did not: `x` and `y` were read at startup to place the
+window and written back unchanged, because only resizes were listened for. iced has a
+`resize_events()` helper and no `move_events()` to match it, so the moves are filtered out of the
+full window event stream — which is the whole reason the position was missed.
+
 ## Testing strategy
 
 | Layer | Approach |
