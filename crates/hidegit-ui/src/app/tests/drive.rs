@@ -106,3 +106,60 @@ mod tests {
         );
     }
 }
+
+/// Checkpoint rebuilding while history pages in.
+///
+/// These are the tests the harness above was built for: the whole difference is
+/// *which* `Task` a landed page answers with, which nothing could observe until
+/// one could be run.
+#[cfg(test)]
+mod paging {
+    use super::*;
+
+    fn page(count: usize, more: bool) -> Box<Result<crate::message::Page, UiError>> {
+        Box::new(Ok(crate::message::Page {
+            commits: commits(count),
+            more,
+        }))
+    }
+
+    #[test]
+    fn a_page_with_more_to_come_does_not_rebuild_the_checkpoints() {
+        // Each page invalidates the checkpoints the page before it produced, so
+        // building them mid-load is work whose only result is thrown away — and
+        // it copies the whole accumulated history to do it, on the UI thread.
+        let mut app = app_with(3);
+
+        let produced = update_and_drive(
+            &mut app,
+            Message::Repo(0, RepoMessage::CommitsLoaded(page(3, true))),
+        );
+
+        assert!(
+            !produced
+                .iter()
+                .any(|m| matches!(m, Message::Repo(_, RepoMessage::CheckpointsBuilt(_)))),
+            "checkpoints were rebuilt mid-load: {produced:?}"
+        );
+    }
+
+    #[test]
+    fn the_last_page_rebuilds_them_once() {
+        // The other half. Skipping the rebuild entirely would leave the graph
+        // replaying from HEAD for every frame of a deep scroll, which is the
+        // 23.9 ms the benchmark records for a window without checkpoints.
+        let mut app = app_with(3);
+
+        let produced = update_and_drive(
+            &mut app,
+            Message::Repo(0, RepoMessage::CommitsLoaded(page(3, false))),
+        );
+
+        assert!(
+            produced
+                .iter()
+                .any(|m| matches!(m, Message::Repo(_, RepoMessage::CheckpointsBuilt(_)))),
+            "the last page has to leave usable checkpoints behind: {produced:?}"
+        );
+    }
+}

@@ -222,6 +222,14 @@ Strategies:
    next page rather than blocking on a full traversal.
 3. **Checkpoint lane state.** Snapshot the `lanes` vector every N rows so a jump to an arbitrary
    scroll position resumes from a nearby checkpoint instead of replaying from `HEAD`.
+
+   **Rebuilt when paging stops, not per page.** Lane routing depends on which commits are loaded —
+   `layout_row` filters parents through that set — so each page invalidates the checkpoints the page
+   before it produced. Rebuilding after every one meant fifty builds and fifty copies of the whole
+   accumulated history to open a 100,000-commit repository, forty-nine of them discarded by the next
+   append: 2,000 + 4,000 + … + 98,000 commit clones on the UI thread, against a recorded 47.6 ms for
+   a single full build. Nothing is missing in the meantime — checkpoints are a hint, and a window
+   laid out without them costs the 23.9 ms in the table above.
 4. **Layout off the UI thread.** Like all `gix` work — `Task::perform`, results back as a `Message`.
 5. **Cache the geometry, not the pixels.** `GraphLayout` for the current window is retained;
    redraws that do not move the viewport reuse it.
