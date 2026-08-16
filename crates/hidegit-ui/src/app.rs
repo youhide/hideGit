@@ -3690,6 +3690,71 @@ mod tests {
             "it says the commits are rewritten, got {:?}",
             confirming.body
         );
+        // And confirming runs a rebase onto the branch that was asked for. The
+        // body being right about *what* happens is worth little if the button
+        // underneath carries a different branch.
+        assert!(
+            matches!(
+                &*confirming.action,
+                Message::Repo(0, RepoMessage::RebaseConfirmed(onto)) if onto == "main"
+            ),
+            "the confirm button carries {:?}",
+            confirming.action
+        );
+    }
+
+    #[test]
+    fn the_drop_sheet_offers_the_interactive_rebase_by_its_own_message() {
+        // Three entries, three different operations. The plain rebase and the
+        // interactive one differ only in the message they carry, so a sheet that
+        // wired both to the same one would look right and do the wrong thing.
+        let mut app = app_with_branches();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BranchDropped {
+                source: "feature".to_owned(),
+                target: "main".to_owned(),
+            },
+        ));
+
+        let sheet = app.app.sheet.as_ref().expect("a drop asks first");
+        let interactive = sheet
+            .items
+            .iter()
+            .find(|item| item.label.contains("interactively"))
+            .expect("the sheet offers an interactive rebase");
+
+        assert!(
+            matches!(
+                &interactive.message,
+                Message::Repo(0, RepoMessage::RebasePlanRequested(onto)) if onto == "feature"
+            ),
+            "the interactive entry carries {:?}",
+            interactive.message
+        );
+    }
+
+    #[test]
+    fn a_plan_that_could_not_be_read_closes_the_editor_and_says_so() {
+        // Otherwise the editor sits open over the graph with no steps in it,
+        // which reads as a rebase with nothing to do rather than as a failure.
+        let mut app = app_planning();
+        assert!(app.app.active_repo().unwrap().plan.is_some());
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::RebasePlanLoaded(Box::new(Err(UiError {
+                summary: "not a valid ref".to_owned(),
+                details: String::new(),
+            }))),
+        ));
+
+        assert!(
+            app.app.active_repo().unwrap().plan.is_none(),
+            "a failed preview must not leave an empty editor open"
+        );
+        assert_eq!(app.app.toasts.len(), 1, "and it has to be reported");
     }
 
     #[test]
