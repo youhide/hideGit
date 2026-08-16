@@ -75,6 +75,26 @@ fn read_path(c: &mut Criterion) {
         b.iter(|| black_box(backend.status().expect("status is readable")));
     });
 
+    // The claim under test: paging is O(page), not O(total). `log` walks and
+    // then slices, so it *looks* like every page pays for the whole history —
+    // but the walk is memoised, so only the first one does. If these two
+    // diverge, the memo has stopped working.
+    group.bench_function("hydrate_a_deep_page_of_2000_at_row_50000", |b| {
+        b.iter(|| {
+            black_box(
+                backend
+                    .log(
+                        &RevSpec::All,
+                        LogPage {
+                            skip: 50_000,
+                            limit: 2_000,
+                        },
+                    )
+                    .expect("a deep page is readable"),
+            )
+        });
+    });
+
     group.bench_function("hydrate_one_page_of_2000", |b| {
         b.iter(|| {
             black_box(

@@ -201,6 +201,19 @@ per save, continuously, while somebody typed. The watcher now says *what* change
 file cannot move a ref, so the memo survives it — and a save reads the working directory and nothing
 else. Measured on the same machine and run, that is 1.19 s against 1.26 ms.
 
+**Paging is O(page), not O(total), and this is worth stating because the code reads otherwise.**
+`log` walks and *then* slices, so every page appears to pay for the whole history. It does not: the
+walk is memoised, and only the first page after an invalidation pays for it. A page at row 50,000
+benchmarks within a few milliseconds of the first page — against a full walk that costs three orders
+of magnitude more — and `hydrate_a_deep_page_of_2000_at_row_50000` exists next to
+`hydrate_one_page_of_2000` so the two can be compared. If they ever diverge, the memo has stopped
+working.
+
+Topological order is also why paging cannot be made cheaper by walking less: where a commit sits
+depends on the whole graph, so the first page cannot be ordered without walking all of it. The cost
+is real, it is paid once per invalidation, and it is the repository-open latency above rather than a
+per-page one.
+
 Strategies:
 
 1. **Never lay out the whole history.** Layout runs over a window around the viewport. Lane state
