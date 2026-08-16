@@ -3007,6 +3007,7 @@ dependencies = [
  "hidegit-core",
  "hidegit-forge",
  "iced",
+ "iced_runtime",
  "iced_test",
  "open",
  "rfd",

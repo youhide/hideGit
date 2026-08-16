@@ -22,4 +22,5 @@ open = "5.4.0"
 workspace = true
 
 [dev-dependencies]
+iced_runtime = "0.14"
 iced_test = "0.14"
