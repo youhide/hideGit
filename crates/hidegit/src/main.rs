@@ -244,6 +244,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                     | Message::AlertToggled(_)
                     | Message::QuietHoursToggled
                     | Message::QuietHourChosen(..)
+                    | Message::RepositoryMuteToggled(_)
             );
             // Opening a repository is what changes the recents list, and it is
             // the only thing that does. Written at once rather than at exit,

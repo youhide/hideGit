@@ -398,6 +398,14 @@ pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), SaveError> 
     let alerts = doc["alerts"].or_insert(Item::Table(toml_edit::Table::new()));
     alerts["enabled"] = value(settings.alerts.enabled);
 
+    // An array of strings, which is what the file has always held — the panel
+    // is a second way to edit it, not a different format.
+    let mut list = toml_edit::Array::new();
+    for repository in &settings.alerts.muted {
+        list.push(repository.as_str());
+    }
+    alerts["muted"] = value(list);
+
     let quiet = alerts["quiet_hours"].or_insert(Item::Table(toml_edit::Table::new()));
     quiet["enabled"] = value(settings.alerts.quiet_hours.enabled);
     // `i64` because TOML has one integer type; the values are hours, so the
@@ -600,6 +608,58 @@ mod settings_tests {
         assert!(after.contains("# I go to bed late"), "{after}");
         assert!(after.contains("remember_geometry = false"), "{after}");
         assert!(after.contains("from = 2"), "{after}");
+    }
+
+    #[test]
+    fn muted_repositories_survive_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let alerts = hidegit_forge::AlertPrefs {
+            muted: vec!["youhide/hideGit".to_owned(), "youhide/noisy".to_owned()],
+            ..hidegit_forge::AlertPrefs::default()
+        };
+
+        save_settings(
+            &path,
+            &Settings {
+                theme: "hidegit-dark".to_owned(),
+                alerts,
+            },
+        )
+        .expect("a writable file saves");
+
+        let reloaded: Config = load(&path);
+        assert_eq!(
+            reloaded.alerts.muted,
+            vec!["youhide/hideGit".to_owned(), "youhide/noisy".to_owned()]
+        );
+    }
+
+    #[test]
+    fn unmuting_everything_leaves_an_empty_list_rather_than_the_old_one() {
+        // The case a naive "write the entries" would get wrong: removing the
+        // last one has to shrink the array, not leave the previous contents in
+        // place under a key nobody rewrote.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[alerts]\nmuted = [\"youhide/noisy\"]\n").unwrap();
+
+        save_settings(
+            &path,
+            &Settings {
+                theme: "hidegit-dark".to_owned(),
+                alerts: hidegit_forge::AlertPrefs::default(),
+            },
+        )
+        .expect("a writable file saves");
+
+        let reloaded: Config = load(&path);
+        assert!(
+            reloaded.alerts.muted.is_empty(),
+            "got {:?}",
+            reloaded.alerts.muted
+        );
     }
 
     #[test]

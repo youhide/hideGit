@@ -105,19 +105,67 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
         sections = sections.push(container(row).padding(if master { [0, 0] } else { [0, 14] }));
 
         if master {
-            sections = sections.push(
-                text("Muted repositories are in config.toml.")
-                    .size(11.0)
-                    .color(palette.muted),
-            );
             sections = sections.push(Space::new().height(6));
         }
     }
 
     sections = sections.push(Space::new().height(8));
     sections = sections.push(quiet_hours(app, palette));
+    sections = sections.push(Space::new().height(14));
+    sections = sections.push(section("Muted repositories", palette));
+    sections = sections.push(muted(app, palette));
 
     sections.into()
+}
+
+/// The repositories that stay silent, and the ones that could.
+///
+/// Listed rather than typed into: the key is `owner/name` as the forge spells
+/// it, and a name typed by hand that does not match silences nothing while
+/// looking as though it does.
+///
+/// Shows every repository it can name — the open ones that have a forge remote,
+/// plus anything already muted, which may well not be open. A muted entry that
+/// vanished from the panel the moment you closed its tab would be a setting you
+/// could not undo without editing the file.
+fn muted<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
+    let mut names: Vec<String> = app
+        .repos
+        .iter()
+        .filter_map(|repo| repo.prs.repo.as_ref().map(ToString::to_string))
+        .chain(app.alerts.muted.iter().cloned())
+        .collect();
+    names.sort();
+    names.dedup();
+
+    if names.is_empty() {
+        return text(
+            "Repositories appear here once one is open with a GitHub remote, \
+             or is muted in config.toml.",
+        )
+        .size(11.0)
+        .color(palette.muted)
+        .into();
+    }
+
+    let live = app.alerts.enabled;
+    let mut list = column![].spacing(2);
+
+    for name in names {
+        let on = app.alerts.muted.contains(&name);
+        let key = name.clone();
+        list = list.push(
+            checkbox(on)
+                .label(name)
+                .size(15.0)
+                .text_size(13.0)
+                .on_toggle_maybe(
+                    live.then_some(move |_| Message::RepositoryMuteToggled(key.clone())),
+                ),
+        );
+    }
+
+    list.into()
 }
 
 /// The window in which nothing is shown on the desktop.
