@@ -90,7 +90,7 @@ The full reasoning, including how this changes as gitoxide matures, is in
 ## Installing
 
 Download the archive for your platform from
-[the latest release](https://github.com/youhide/hideGit/releases/latest):
+[the releases page](https://github.com/youhide/hideGit/releases):
 
 | Platform | File |
 |---|---|
