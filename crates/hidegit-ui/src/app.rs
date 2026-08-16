@@ -4192,6 +4192,95 @@ mod tests {
         );
     }
 
+    // ---- blame ---------------------------------------------------------
+    //
+    // Every blame message was unreachable from the test suite: the feature was
+    // covered in `hidegit-core`, where the attribution happens, and not at all
+    // in the layer that decides when to ask and what to do with the answer.
+
+    fn blame_load(path: &str) -> crate::message::BlameLoad {
+        let history = commits(2);
+        crate::message::BlameLoad {
+            path: PathBuf::from(path),
+            at: history[0].id,
+            lines: vec![
+                hidegit_core::ops::BlameLine {
+                    commit: history[0].id,
+                    lineno: 1,
+                    text: "first".to_owned(),
+                },
+                hidegit_core::ops::BlameLine {
+                    commit: history[1].id,
+                    lineno: 2,
+                    text: "second".to_owned(),
+                },
+            ],
+            commits: history,
+        }
+    }
+
+    #[test]
+    fn a_loaded_blame_keeps_the_revision_it_was_taken_at() {
+        // Blame answers a different question at every revision, so the view has
+        // to carry which one it used — a pane that showed an answer without
+        // saying what it answered would be worse than showing nothing.
+        let mut app = app_with(2);
+        let load = blame_load("src/main.rs");
+        let at = load.at;
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BlameLoaded(Box::new(Ok(load))),
+        ));
+
+        let blame = app
+            .app
+            .active_repo()
+            .unwrap()
+            .blame
+            .as_ref()
+            .expect("a loaded blame opens the pane");
+        assert_eq!(blame.path, PathBuf::from("src/main.rs"));
+        assert_eq!(blame.at, at);
+        assert_eq!(blame.lines.len(), 2);
+        // Keyed by id, so the gutter can look a line's commit up rather than
+        // scanning the list per line.
+        assert_eq!(blame.commits.len(), 2);
+    }
+
+    #[test]
+    fn a_blame_that_failed_leaves_no_pane_and_says_so() {
+        let mut app = app_with(2);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BlameLoaded(Box::new(Err(UiError {
+                summary: "no such path in that revision".to_owned(),
+                details: String::new(),
+            }))),
+        ));
+
+        assert!(
+            app.app.active_repo().unwrap().blame.is_none(),
+            "a failure must not leave an empty pane over the diff"
+        );
+        assert_eq!(app.app.toasts.len(), 1, "and it has to be reported");
+    }
+
+    #[test]
+    fn dismissing_blame_closes_it() {
+        let mut app = app_with(2);
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::BlameLoaded(Box::new(Ok(blame_load("src/main.rs")))),
+        ));
+        assert!(app.app.active_repo().unwrap().blame.is_some());
+
+        let _ = app.update(Message::Repo(0, RepoMessage::BlameDismissed));
+
+        assert!(app.app.active_repo().unwrap().blame.is_none());
+    }
+
     #[test]
     fn typing_does_not_search_on_every_letter() {
         // A search walks the entire history. Typing a ten-letter word used to

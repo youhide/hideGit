@@ -138,6 +138,42 @@ fn the_rebase_plan_editor_lays_out_every_verb() {
 }
 
 #[test]
+fn the_blame_pane_lays_out_over_the_diff() {
+    // Blame replaces the diff rather than sitting beside it, so this is also
+    // the assertion that it actually took the pane: the diff's placeholder must
+    // not still be there.
+    let mut app = app_with(2);
+    let history = commits(2);
+    let id = history[0].id;
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::Selected(Selection::Commit(id)),
+    ));
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::DetailLoaded(Box::new(Ok(CommitLoad {
+            id,
+            detail: hidegit_core::model::CommitDetail {
+                commit: history[0].clone(),
+                changes: Vec::new(),
+                stats: Default::default(),
+            },
+            diff: Diff::default(),
+        }))),
+    ));
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::BlameLoaded(Box::new(Ok(blame_load("src/main.rs")))),
+    ));
+
+    // The header names the revision, because blame answers a different question
+    // at each one.
+    shows(&app, "src/main.rs");
+    shows(&app, &format!("blamed at {}", id.short(7)));
+    shows(&app, "Close");
+}
+
+#[test]
 fn the_settings_panel_lays_out() {
     let mut app = app_with(1);
     let _ = app.update(Message::SettingsRequested);

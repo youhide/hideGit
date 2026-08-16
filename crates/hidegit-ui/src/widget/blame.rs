@@ -7,6 +7,7 @@
 //! boundaries are visible without a rule between them.
 
 use hidegit_core::model::{Commit, ObjectId};
+use hidegit_core::ops::BlameLine;
 use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{Center, Fill, Font, Length};
 
@@ -20,20 +21,39 @@ const CODE_SIZE: f32 = 12.0;
 /// Wide enough for a short hash, a name and a relative date without wrapping.
 const GUTTER_WIDTH: f32 = 250.0;
 
-pub fn view<'a>(blame: &'a BlameView, palette: &'a Palette) -> Element<'a, RepoMessage> {
-    let mut rows = column![];
+/// The block each line belongs to: consecutive lines from the same commit share
+/// one, and a block starts wherever the commit changes.
+///
+/// A function rather than a counter kept inside `view`, because this is the rule
+/// the banding depends on and it is the thing worth asserting. Held as a rule of
+/// its own, a test can run *it* — rather than a copy of it written next to the
+/// test, which is what was here before and would have gone on passing however
+/// the view drifted.
+fn blocks(lines: &[BlameLine]) -> Vec<usize> {
+    let mut out = Vec::with_capacity(lines.len());
     let mut previous: Option<ObjectId> = None;
     let mut block = 0usize;
 
-    for line in &blame.lines {
-        // A block starts wherever the commit changes. Only the first line of a
-        // block carries the gutter text: repeating the same hash for forty
-        // lines is noise that makes the boundaries harder to see, not easier.
-        let starts_block = previous != Some(line.commit);
-        if starts_block && previous.is_some() {
+    for line in lines {
+        if previous.is_some_and(|p| p != line.commit) {
             block += 1;
         }
         previous = Some(line.commit);
+        out.push(block);
+    }
+    out
+}
+
+pub fn view<'a>(blame: &'a BlameView, palette: &'a Palette) -> Element<'a, RepoMessage> {
+    let mut rows = column![];
+    let blocks = blocks(&blame.lines);
+
+    for (index, line) in blame.lines.iter().enumerate() {
+        // Only the first line of a block carries the gutter text: repeating the
+        // same hash for forty lines is noise that makes the boundaries harder to
+        // see, not easier.
+        let block = blocks[index];
+        let starts_block = index == 0 || blocks[index - 1] != block;
 
         // Banded by *block*, not by commit. Banding by commit was tried and is
         // subtly wrong: a file where one commit's lines appear twice with
@@ -170,7 +190,6 @@ fn divider<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hidegit_core::ops::BlameLine;
 
     fn line(commit: u8, lineno: u32) -> BlameLine {
         BlameLine {
@@ -178,24 +197,6 @@ mod tests {
             lineno,
             text: format!("line {lineno}"),
         }
-    }
-
-    /// The banding the view applies, as a sequence of block indices per line.
-    ///
-    /// Extracted so the rule can be asserted without a renderer: what matters
-    /// is that consecutive blocks never land on the same band.
-    fn blocks(lines: &[BlameLine]) -> Vec<usize> {
-        let mut out = Vec::new();
-        let mut previous: Option<ObjectId> = None;
-        let mut block = 0usize;
-        for line in lines {
-            if previous.is_some_and(|p| p != line.commit) {
-                block += 1;
-            }
-            previous = Some(line.commit);
-            out.push(block);
-        }
-        out
     }
 
     #[test]
