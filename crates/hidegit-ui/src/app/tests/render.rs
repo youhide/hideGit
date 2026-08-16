@@ -17,6 +17,7 @@
 //! that file is already long enough to be hard to move around in.
 
 use super::*;
+use crate::message::QuietBound;
 
 /// Lays the whole interface out the way the window would.
 ///
@@ -180,6 +181,34 @@ fn the_settings_panel_lays_out() {
 
     shows(&app, "Settings");
     shows(&app, "Saved to config.toml as you change it.");
+}
+
+#[test]
+fn the_settings_panel_offers_quiet_hours() {
+    // Reachable only by editing `config.toml` before this, which for most
+    // people means not reachable.
+    let mut app = app_with(1);
+    let _ = app.update(Message::SettingsRequested);
+
+    shows(&app, "Quiet hours");
+    // The window's ends read as a clock, not as bare numbers.
+    shows(&app, "22:00");
+    shows(&app, "08:00");
+}
+
+#[test]
+fn a_window_that_covers_nothing_says_so() {
+    // Equal ends silence nothing — that is what `QuietHours::covers` decides,
+    // and the panel is where somebody would otherwise have to guess it.
+    let mut app = app_with(1);
+    let _ = app.update(Message::SettingsRequested);
+    let _ = app.update(Message::QuietHoursToggled);
+    let _ = app.update(Message::QuietHourChosen(QuietBound::To, 22));
+
+    shows(
+        &app,
+        "A window that starts and ends at the same hour silences nothing.",
+    );
 }
 
 #[test]

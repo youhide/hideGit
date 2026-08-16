@@ -353,8 +353,12 @@ Everything between "works" and "someone who does not write Rust can install it".
 - Settings UI covering everything currently in TOML. **Partly landed**: theme and every alert switch
   are on a `Cmd+,` panel, applied as they are changed and written back to `config.toml` **in place** —
   the file keeps its comments, its key order and any key hideGit does not own, because it is
-  hand-edited and often lives in a dotfiles repository. Quiet hours and muted repositories are still
-  file-only.
+  hand-edited and often lives in a dotfiles repository. **Quiet hours have landed** — a switch and
+  the two ends of the window, picked from the twenty-four hours rather than typed, since a text field
+  would have to decide what "25" means. They sit under the alerts they modify and go unavailable with
+  them, and a window whose ends are equal says on the panel that it silences nothing, which is what
+  `QuietHours::covers` decides and what somebody would otherwise have to guess. Muted repositories
+  are still file-only.
 
   **The panel used to lie.** Writing in place means refusing to overwrite a file somebody is
   part-way through editing, and that refusal — along with an unreadable file, a config directory

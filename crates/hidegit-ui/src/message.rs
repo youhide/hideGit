@@ -93,6 +93,16 @@ impl From<ForgeError> for UiError {
     }
 }
 
+/// Which end of the quiet-hours window an hour was chosen for.
+///
+/// Named rather than a bool, because "from" and "to" are not symmetrical to a
+/// reader and `QuietHourChosen(true, 22)` says nothing about which is which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuietBound {
+    From,
+    To,
+}
+
 /// Which alert switch a [`Message::AlertToggled`] flipped.
 ///
 /// An enum rather than a closure or a field path, because messages have to be
@@ -270,6 +280,10 @@ pub enum Message {
     ThemeChosen(String),
     /// One alert switch was flipped.
     AlertToggled(AlertToggle),
+    /// Quiet hours were turned on or off.
+    QuietHoursToggled,
+    /// One end of the quiet-hours window was set to an hour.
+    QuietHourChosen(QuietBound, u8),
 
     // ---- the forge ----
     /// The client exists, and a stored session was restored if there was one.
