@@ -44,6 +44,14 @@ use crate::{alerts, forge, screen, watcher, widget};
 /// here, so the count is never mistaken for the whole answer.
 const SEARCH_LIMIT: usize = 200;
 
+/// How long the box has to go quiet before a query is searched for.
+///
+/// A search walks the whole history, so typing a ten-letter word used to order
+/// ten of them. Short enough that a search still feels like it happens as you
+/// type — comfortably inside the gap between deliberate keystrokes — and long
+/// enough that the letters of one word collapse into a single walk.
+const SEARCH_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// The application, plus the bits of view state that are not domain state.
 #[derive(Debug, Default)]
 pub struct Hidegit {
@@ -1638,6 +1646,28 @@ impl Hidegit {
                     // last search's hits under an empty query.
                     search.results = Default::default();
                     search.running = false;
+                    return Task::none();
+                }
+
+                // Not searched here. Searching walks the entire history, and a
+                // ten-letter word typed at speed is one request for results, not
+                // ten — the stale-result guard on `SearchFinished` stopped the
+                // wrong answers from landing, but every one of those walks still
+                // ran.
+                Task::future(async move {
+                    tokio::time::sleep(SEARCH_DEBOUNCE).await;
+                    Message::Repo(index, RepoMessage::SearchDebounceElapsed(query))
+                })
+            }
+
+            RepoMessage::SearchDebounceElapsed(query) => {
+                let Some(search) = &mut repo.search else {
+                    return Task::none();
+                };
+                // Typed past. A later timer is already pending for whatever is
+                // in the box now, so this one has nothing to do — and this is
+                // the arm that does the saving.
+                if search.query != query {
                     return Task::none();
                 }
 
@@ -4130,6 +4160,12 @@ mod tests {
             0,
             RepoMessage::SearchChanged("parser".into()),
         ));
+        // The debounce is what puts the search in flight now; typing alone only
+        // starts a timer.
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SearchDebounceElapsed("parser".into()),
+        ));
 
         let stale = hidegit_core::ops::SearchResults {
             hits: vec![hidegit_core::ops::SearchHit {
@@ -4153,6 +4189,53 @@ mod tests {
         assert!(
             search_of(&app).running,
             "the newer search is still in flight"
+        );
+    }
+
+    #[test]
+    fn typing_does_not_search_on_every_letter() {
+        // A search walks the entire history. Typing a ten-letter word used to
+        // order ten walks: the guard on `SearchFinished` stopped the older
+        // answers from landing, but every one of those walks still ran.
+        let mut app = app_searching();
+
+        for query in ["p", "pa", "par"] {
+            let _ = app.update(Message::Repo(0, RepoMessage::SearchChanged(query.into())));
+            assert!(
+                !search_of(&app).running,
+                "typing {query:?} started a search rather than a timer"
+            );
+        }
+
+        assert_eq!(search_of(&app).query, "par");
+    }
+
+    #[test]
+    fn a_timer_the_user_typed_past_searches_for_nothing() {
+        // Every keystroke leaves a timer behind. All but the last describe a
+        // query nobody is asking for any more, and this is the arm that makes
+        // the difference between one walk and one per letter.
+        let mut app = app_searching();
+        let _ = app.update(Message::Repo(0, RepoMessage::SearchChanged("p".into())));
+        let _ = app.update(Message::Repo(0, RepoMessage::SearchChanged("par".into())));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SearchDebounceElapsed("p".into()),
+        ));
+        assert!(
+            !search_of(&app).running,
+            "a timer for an abandoned query started a walk"
+        );
+
+        // The one that still describes the box does run.
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::SearchDebounceElapsed("par".into()),
+        ));
+        assert!(
+            search_of(&app).running,
+            "the query actually in the box has to be searched for"
         );
     }
 

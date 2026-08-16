@@ -365,8 +365,10 @@ Everything between "works" and "someone who does not write Rust can install it".
 - Search: commits by message, author, hash — **landed**, on `Cmd+F`. One box searches every field,
   because people type a fragment and expect it found rather than classifying it first, and each hit
   says which field matched. The result reports whether the walk stopped at the limit: "these are the
-  first matches" and "these are the matches" are different answers. File search within a commit is
-  still to come
+  first matches" and "these are the matches" are different answers. Typing is **debounced**: a search
+  is a walk of the whole history, and a ten-letter word typed at speed was ordering ten of them. The
+  guard that stops a stale answer landing was already there and was doing its job — it just never
+  stopped the work. File search within a commit is still to come
 - Blame view. **Landed**, and it is the last `GitBackend` method that was returning
   `NotImplementedYet` — the trait declared its whole surface from M1 and is now entirely
   implemented. Rename detection had to be turned on explicitly: gitoxide leaves it off by default,
