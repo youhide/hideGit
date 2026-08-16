@@ -171,6 +171,14 @@ pub fn load<T: Default + serde::de::DeserializeOwned>(path: &Path) -> T {
 ///
 /// Failure is logged, never fatal: losing a window position is not worth
 /// refusing to quit over.
+///
+/// **Written to a temporary file and renamed over the target.** A plain write
+/// truncates first, so a process that dies between the truncation and the last
+/// byte leaves a half-file — and this is now written while the application runs
+/// rather than only as it exits, which is exactly when dying part-way through
+/// stops being hypothetical. `rename` within a directory is atomic on every
+/// platform hideGit targets, so a reader sees either the old file or the new
+/// one and never a partial one.
 pub fn save<T: Serialize>(path: &Path, value: &T) {
     let Ok(text) = toml::to_string_pretty(value) else {
         tracing::warn!(path = %path.display(), "could not serialise; not writing");
@@ -184,8 +192,18 @@ pub fn save<T: Serialize>(path: &Path, value: &T) {
         return;
     }
 
-    if let Err(e) = std::fs::write(path, text) {
-        tracing::warn!(path = %path.display(), error = %e, "could not write");
+    // Beside the target rather than in a temporary directory: `rename` is only
+    // atomic within a filesystem, and `/tmp` is routinely a different one.
+    let staging = path.with_extension("toml.new");
+    if let Err(e) = std::fs::write(&staging, text) {
+        tracing::warn!(path = %staging.display(), error = %e, "could not write");
+        return;
+    }
+
+    if let Err(e) = std::fs::rename(&staging, path) {
+        tracing::warn!(path = %path.display(), error = %e, "could not replace");
+        // Leaving the staging file behind would accumulate one per failure.
+        let _ = std::fs::remove_file(&staging);
     }
 }
 
@@ -249,6 +267,57 @@ mod tests {
         assert_eq!(
             config.theme.name, "hidegit-dark",
             "an absent section falls back to its default"
+        );
+    }
+
+    #[test]
+    fn a_write_leaves_no_staging_file_behind() {
+        // The rename is what makes the write atomic; a staging file still on
+        // disk afterwards would mean it did not happen.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+
+        save(&path, &State::default());
+
+        assert!(path.exists(), "the state file was written");
+        assert!(
+            !path.with_extension("toml.new").exists(),
+            "the staging file was renamed, not left behind"
+        );
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 1, "exactly one file, got {entries:?}");
+    }
+
+    #[test]
+    fn a_replaced_file_is_never_seen_half_written() {
+        // The property the rename buys: a reader either sees the whole old file
+        // or the whole new one. Checked by replacing a long file with a short
+        // one — a truncating write is exactly where a tail of the old content
+        // would survive.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+
+        let crowded = State {
+            recents: (0..10)
+                .map(|i| RecentRepository {
+                    path: PathBuf::from(format!("/a/very/long/path/number/{i}")),
+                })
+                .collect(),
+            ..State::default()
+        };
+        save(&path, &crowded);
+        assert_eq!(load::<State>(&path).recents.len(), 10);
+
+        save(&path, &State::default());
+
+        let after: State = load(&path);
+        assert!(
+            after.recents.is_empty(),
+            "the shorter file replaced the longer one whole, got {:?}",
+            after.recents
         );
     }
 
