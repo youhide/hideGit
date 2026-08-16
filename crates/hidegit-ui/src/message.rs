@@ -447,8 +447,13 @@ pub enum RepoMessage {
     /// `Cmd+F`: open the commit search.
     SearchRequested,
     SearchDismissed,
-    /// The query changed. Each change runs a new search.
+    /// The query changed. Starts a debounce rather than a search: searching is
+    /// a walk of the whole history, and a typed word is not a request for one
+    /// search per letter.
     SearchChanged(String),
+    /// A debounce timer finished. Carries the query it was started for, so a
+    /// timer the user has already typed past runs nothing.
+    SearchDebounceElapsed(String),
     /// Results for a query. Carries the query they answer, so a slow search for
     /// an older query cannot overwrite the results of a newer one.
     SearchFinished {
