@@ -212,6 +212,19 @@ fn a_window_that_covers_nothing_says_so() {
 }
 
 #[test]
+fn the_settings_panel_lists_a_muted_repository_that_is_not_open() {
+    // The case that decides the shape of the list: a muted entry which vanished
+    // when you closed its tab would be a setting you could not undo without
+    // editing the file.
+    let mut app = app_with(1);
+    app.app.alerts.muted = vec!["youhide/not-open".to_owned()];
+    let _ = app.update(Message::SettingsRequested);
+
+    shows(&app, "Muted repositories");
+    shows(&app, "youhide/not-open");
+}
+
+#[test]
 fn the_settings_panel_stops_claiming_it_saved_when_it_did_not() {
     // The toggle flips either way — the value lives in memory and applies at
     // once — so the footer is the only thing on screen that can tell a change

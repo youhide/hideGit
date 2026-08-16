@@ -357,8 +357,13 @@ Everything between "works" and "someone who does not write Rust can install it".
   the two ends of the window, picked from the twenty-four hours rather than typed, since a text field
   would have to decide what "25" means. They sit under the alerts they modify and go unavailable with
   them, and a window whose ends are equal says on the panel that it silences nothing, which is what
-  `QuietHours::covers` decides and what somebody would otherwise have to guess. Muted repositories
-  are still file-only.
+  `QuietHours::covers` decides and what somebody would otherwise have to guess. **Muting a repository
+  has landed** as a list rather than a text field — the key is `owner/name` as the forge spells it, and
+  a name typed by hand that does not match silences nothing while looking as though it does. The list
+  names every open repository with a GitHub remote plus anything already muted, which may well not be
+  open: an entry that vanished from the panel the moment you closed its tab would be a setting you
+  could not undo without editing the file. It is kept sorted, because it is written to a file people
+  read and diff.
 
   **The panel used to lie.** Writing in place means refusing to overwrite a file somebody is
   part-way through editing, and that refusal — along with an unreadable file, a config directory

@@ -284,6 +284,8 @@ pub enum Message {
     QuietHoursToggled,
     /// One end of the quiet-hours window was set to an hour.
     QuietHourChosen(QuietBound, u8),
+    /// A repository was muted or unmuted, keyed as `owner/name`.
+    RepositoryMuteToggled(String),
 
     // ---- the forge ----
     /// The client exists, and a stored session was restored if there was one.

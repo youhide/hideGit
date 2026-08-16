@@ -261,6 +261,23 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::RepositoryMuteToggled(repository) => {
+                let muted = &mut self.app.alerts.muted;
+                match muted.iter().position(|m| *m == repository) {
+                    Some(at) => {
+                        muted.remove(at);
+                    }
+                    // Kept sorted, because this list is written to a file people
+                    // read and edit, and an order that depends on the sequence
+                    // somebody clicked in is noise in a diff.
+                    None => {
+                        muted.push(repository);
+                        muted.sort();
+                    }
+                }
+                Task::none()
+            }
+
             Message::QuietHourChosen(bound, hour) => {
                 let quiet = &mut self.app.alerts.quiet_hours;
                 match bound {
@@ -4290,6 +4307,42 @@ mod tests {
         assert!(
             search_of(&app).running,
             "the newer search is still in flight"
+        );
+    }
+
+    #[test]
+    fn muting_a_repository_adds_it_and_muting_again_removes_it() {
+        // A checkbox, so the same message has to do both — and the list is what
+        // `AlertPrefs::allows` consults, so getting the toggle wrong silences
+        // the wrong repository rather than failing visibly.
+        let mut app = app_with(1);
+        assert!(app.app.alerts.muted.is_empty());
+
+        let _ = app.update(Message::RepositoryMuteToggled("youhide/noisy".to_owned()));
+        assert_eq!(app.app.alerts.muted, vec!["youhide/noisy".to_owned()]);
+
+        let _ = app.update(Message::RepositoryMuteToggled("youhide/noisy".to_owned()));
+        assert!(app.app.alerts.muted.is_empty(), "the same click unmutes");
+    }
+
+    #[test]
+    fn the_muted_list_is_kept_sorted() {
+        // It is written to a file people read and edit. An order that depended
+        // on the sequence somebody clicked in would show up as noise in a diff
+        // of a dotfiles repository.
+        let mut app = app_with(1);
+
+        for name in ["youhide/zebra", "youhide/apple", "youhide/mango"] {
+            let _ = app.update(Message::RepositoryMuteToggled(name.to_owned()));
+        }
+
+        assert_eq!(
+            app.app.alerts.muted,
+            vec![
+                "youhide/apple".to_owned(),
+                "youhide/mango".to_owned(),
+                "youhide/zebra".to_owned()
+            ]
         );
     }
 
