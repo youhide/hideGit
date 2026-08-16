@@ -45,18 +45,36 @@ const WINDOW_ICON: &[u8] = include_bytes!("../../../assets/generated/window-icon
 #[cfg(target_os = "linux")]
 const APPLICATION_ID: &str = "com.youhide.hidegit";
 
+/// How often collected window geometry is written out.
+///
+/// Long enough that dragging a window edge costs one write rather than one per
+/// frame; short enough that the most anyone loses to a kill is a few seconds of
+/// resizing. The recents list does not wait for this — it is written as it
+/// changes, because losing which repositories you had open is the part that
+/// would actually be noticed.
+const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// The application, plus the state only the binary is responsible for.
 struct Shell {
     ui: Hidegit,
     paths: Option<Paths>,
     config: Config,
     geometry: Geometry,
+    /// Window geometry has moved since it was last written.
+    ///
+    /// Resize events arrive per frame while a window is being dragged, so they
+    /// are collected here and flushed on a timer rather than writing a file for
+    /// each one. The recents list is not batched: it changes at most once per
+    /// repository opened, and it is the half worth not losing.
+    unsaved_geometry: bool,
 }
 
 #[derive(Debug, Clone)]
 enum ShellMessage {
     Ui(Message),
     Resized(Size),
+    /// The periodic write of anything that has been collected since the last.
+    Flush,
     CloseRequested,
 }
 
@@ -203,6 +221,7 @@ fn boot(
     (
         Shell {
             ui,
+            unsaved_geometry: false,
             paths,
             config,
             geometry,
@@ -220,6 +239,12 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             // while it runs, the file owns them between runs.
             let touched_settings =
                 matches!(message, Message::ThemeChosen(_) | Message::AlertToggled(_));
+            // Opening a repository is what changes the recents list, and it is
+            // the only thing that does. Written at once rather than at exit,
+            // because there are ordinary ways to quit that never reach an exit
+            // handler — Cmd+Q on macOS closes the window without ever emitting
+            // `CloseRequested`, and a kill or a panic reaches nothing at all.
+            let touched_recents = matches!(message, Message::RepositoryOpened(_));
             let task = shell.ui.update(message).map(ShellMessage::Ui);
             if touched_settings {
                 shell.config.theme.name = shell.ui.app.theme.name.clone();
@@ -246,12 +271,24 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                     }
                 };
             }
+
+            if touched_recents {
+                persist(shell);
+            }
             task
         }
 
         ShellMessage::Resized(size) => {
             shell.geometry.width = size.width;
             shell.geometry.height = size.height;
+            shell.unsaved_geometry = true;
+            Task::none()
+        }
+
+        ShellMessage::Flush => {
+            if shell.unsaved_geometry {
+                persist(shell);
+            }
             Task::none()
         }
 
@@ -264,7 +301,12 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
 
 /// Writes what should survive a restart. Never fatal: losing a window position
 /// is not worth refusing to quit over.
-fn persist(shell: &Shell) {
+///
+/// Called as things change rather than only on the way out. Quitting does not
+/// reliably run anything: on macOS, Cmd+Q closes the window without emitting
+/// `CloseRequested` at all, so an exit-only write loses the session for the
+/// most ordinary quit there is.
+fn persist(shell: &mut Shell) {
     let Some(paths) = &shell.paths else {
         return;
     };
@@ -285,6 +327,7 @@ fn persist(shell: &Shell) {
     };
 
     config::save(&paths.state, &state);
+    shell.unsaved_geometry = false;
 }
 
 fn view(shell: &Shell) -> iced::Element<'_, ShellMessage> {
@@ -295,6 +338,10 @@ fn subscription(shell: &Shell) -> Subscription<ShellMessage> {
     Subscription::batch([
         shell.ui.subscription().map(ShellMessage::Ui),
         window::resize_events().map(|(_, size)| ShellMessage::Resized(size)),
+        // The only timer in the application, and it exists because resize
+        // events arrive per frame: collecting them and writing once is the
+        // difference between one file write and one per frame of a drag.
+        iced::time::every(FLUSH_INTERVAL).map(|_| ShellMessage::Flush),
         window::close_requests().map(|_| ShellMessage::CloseRequested),
     ])
 }

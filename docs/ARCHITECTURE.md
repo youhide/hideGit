@@ -645,6 +645,18 @@ question about what hideGit does with your data — it does not have it.
 Every config value has a working default. A missing or partially corrupt config file produces
 defaults plus a warning, never a failure to start.
 
+**Nothing waits for the exit to be written.** `state.toml` used to be written from one place — the
+window-close handler — which quietly assumed quitting runs it. It does not: on macOS, `Cmd+Q` goes
+through `terminate:` and closes the window directly, so `WindowEvent::CloseRequested` is never emitted
+and the handler never runs. That is the ordinary way to quit a Mac application, not an edge case, and
+it silently discarded the session's recent repositories. A kill or a panic reaches even less.
+
+So the recents list is written when it changes — opening a repository is the only thing that changes
+it — and window geometry, which arrives per frame while a window is dragged, is collected and flushed
+on the application's one timer. Both go through a write that stages to a sibling file and `rename`s
+over the target, because a write that happens while the application runs is a write that can be
+interrupted part-way.
+
 ## Testing strategy
 
 | Layer | Approach |
