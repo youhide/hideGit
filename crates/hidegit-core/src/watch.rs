@@ -72,10 +72,19 @@ impl Watch {
         let git_dir = git_dir.to_path_buf();
 
         let mut debouncer = new_debouncer(DEBOUNCE, None, move |result: DebounceEventResult| {
-            let Ok(events) = result else {
-                // A watch error is not worth interrupting the user over: the
-                // worst case is a stale view they can refresh by acting.
-                return;
+            let events = match result {
+                Ok(events) => events,
+                // Not worth interrupting the user over: the worst case is a
+                // stale view they can refresh by acting. It is worth *logging*,
+                // though — this is the only signal that automatic refresh has
+                // stopped, and without it a repository that quietly went stale
+                // is undiagnosable. `Watch::start` failing already says so.
+                Err(errors) => {
+                    for error in errors {
+                        tracing::warn!(%error, "the filesystem watcher reported an error");
+                    }
+                    return;
+                }
             };
             if events
                 .iter()
