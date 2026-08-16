@@ -4192,6 +4192,128 @@ mod tests {
         );
     }
 
+    // ---- the conflict edit-and-save path ---------------------------------
+    //
+    // The resolver's parser is thoroughly covered in `hidegit-core`. The path
+    // from "the user typed in the result pane" to "the file is written and
+    // staged" was not covered anywhere: four of its messages had never been
+    // dispatched by a test.
+
+    fn resolver_of(app: &Hidegit) -> &crate::state::Resolver {
+        app.app.active_repo().unwrap().resolver.as_ref().unwrap()
+    }
+
+    #[test]
+    fn opening_the_editor_seeds_it_rather_than_starting_blank() {
+        // Editing starts from what the current choice would produce. A blank
+        // pane would make the common case — take one side, then fix a line —
+        // into retyping the whole hunk.
+        let mut app = app_resolving();
+        assert!(resolver_of(&app).editor.is_none());
+
+        let _ = app.update(Message::Repo(0, RepoMessage::ConflictEditToggled));
+
+        let editor = resolver_of(&app)
+            .editor
+            .as_ref()
+            .expect("toggling opens the editor");
+        assert!(
+            editor.text().contains("ours"),
+            "an undecided conflict seeds from our side, got {:?}",
+            editor.text()
+        );
+
+        // And toggling again closes it.
+        let _ = app.update(Message::Repo(0, RepoMessage::ConflictEditToggled));
+        assert!(resolver_of(&app).editor.is_none());
+    }
+
+    #[test]
+    fn moving_the_cursor_in_the_result_pane_does_not_resolve_anything() {
+        // The invariant worth guarding: a cursor move is not a decision.
+        // Treating it as one would mark a conflict resolved for clicking in the
+        // pane, and Continue would light up for a file nobody had decided.
+        use iced::widget::text_editor::{Action, Motion};
+
+        let mut app = app_resolving();
+        let _ = app.update(Message::Repo(0, RepoMessage::ConflictEditToggled));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictEdited(Action::Move(Motion::Right)),
+        ));
+
+        assert!(
+            !resolver_of(&app).is_resolved(),
+            "a cursor move decided a conflict"
+        );
+    }
+
+    #[test]
+    fn typing_in_the_result_pane_becomes_the_resolution() {
+        use iced::widget::text_editor::{Action, Edit};
+
+        let mut app = app_resolving();
+        let _ = app.update(Message::Repo(0, RepoMessage::ConflictEditToggled));
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictEdited(Action::Edit(Edit::Insert('!'))),
+        ));
+
+        assert!(
+            resolver_of(&app).is_resolved(),
+            "text the user typed is a decision"
+        );
+        assert!(
+            resolver_of(&app).rendered().contains('!'),
+            "and it is what gets written"
+        );
+    }
+
+    #[test]
+    fn an_undecided_conflict_cannot_be_marked_resolved() {
+        // Nothing is written until every region has been decided. Writing a
+        // file that still carries an undecided region would stage Git's own
+        // markers into the index.
+        let mut app = app_resolving();
+        assert!(!resolver_of(&app).is_resolved());
+
+        let _ = app.update(Message::Repo(0, RepoMessage::ConflictMarkedResolved));
+
+        assert!(
+            app.app.active_repo().unwrap().resolver.is_some(),
+            "the resolver stays open on a file nobody has finished"
+        );
+    }
+
+    #[test]
+    fn a_saved_conflict_closes_the_resolver_and_a_failed_one_keeps_it() {
+        let mut app = app_resolving();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictSaved(Box::new(Err(UiError {
+                summary: "permission denied".to_owned(),
+                details: String::new(),
+            }))),
+        ));
+        assert!(
+            app.app.active_repo().unwrap().resolver.is_some(),
+            "a write that failed must not look like it worked"
+        );
+        assert_eq!(app.app.toasts.len(), 1);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::ConflictSaved(Box::new(Ok(PathBuf::from("shared.txt")))),
+        ));
+        assert!(
+            app.app.active_repo().unwrap().resolver.is_none(),
+            "a staged file is no longer conflicted, so there is nothing to show"
+        );
+    }
+
     // ---- blame ---------------------------------------------------------
     //
     // Every blame message was unreachable from the test suite: the feature was
