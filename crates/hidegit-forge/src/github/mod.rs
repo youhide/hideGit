@@ -8,7 +8,7 @@
 mod query;
 mod translate;
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
 use octocrab::{GraphqlResponse, Octocrab};
@@ -172,15 +172,26 @@ impl GitHub {
     }
 
     fn adopt(&self, token: &StoredToken) {
-        *self.crab.write().expect("not poisoned") = build(&self.endpoint.api, Some(token));
+        *self.crab.write().unwrap_or_else(PoisonError::into_inner) =
+            build(&self.endpoint.api, Some(token));
     }
 
     fn adopt_none(&self) {
-        *self.crab.write().expect("not poisoned") = build(&self.endpoint.api, None);
+        *self.crab.write().unwrap_or_else(PoisonError::into_inner) =
+            build(&self.endpoint.api, None);
     }
 
+    /// The HTTP client, recovered if a panic poisoned the lock.
+    ///
+    /// This guards a client handle, not state anything can be half-way through.
+    /// Honouring a poison would mean one panicked request turns every later call
+    /// into a panic for the life of the process — sign-in included, so there
+    /// would be no way back short of a restart.
     fn crab(&self) -> Octocrab {
-        self.crab.read().expect("not poisoned").clone()
+        self.crab
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// `https://github.com`, or `https://<host>` for another instance.

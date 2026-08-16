@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use super::{GitBackend, gix_read};
 use crate::error::{GitError, classify_remote_failure};
@@ -52,15 +52,39 @@ pub struct HybridBackend {
 }
 
 impl HybridBackend {
+    /// Takes the walk cache, recovering it if a panic poisoned the lock.
+    ///
+    /// Both locks in this type guard a **cache**, and both are reached from
+    /// blocking tasks the UI spawns. Honouring a poison would mean one panicked
+    /// task turns every later read into a panic of its own, for the life of the
+    /// process — a repository that fails everything until the application is
+    /// restarted, which is a far worse outcome than whatever caused the first
+    /// panic. Recovery is safe here for the ordinary reason it usually is not:
+    /// this is safe Rust, so the map is structurally sound whatever happened to
+    /// the thread that held it, and the worst a recovered entry can be is
+    /// stale — which is precisely what [`GitBackend::invalidate`] already exists
+    /// to clear.
+    fn walks(&self) -> MutexGuard<'_, HashMap<RevSpec, Arc<Vec<gix_read::WalkEntry>>>> {
+        self.walks.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The gitoxide handle for reading, recovered from poisoning for the same
+    /// reason as [`Self::walks`].
+    fn repo_read(&self) -> RwLockReadGuard<'_, gix::ThreadSafeRepository> {
+        self.repo.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The gitoxide handle for replacement, recovered the same way.
+    fn repo_write(&self) -> RwLockWriteGuard<'_, gix::ThreadSafeRepository> {
+        self.repo.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Borrows a thread-local view of the repository.
     ///
     /// `gix::Repository` carries per-thread caches and is deliberately not
     /// `Sync`; the thread-safe handle hands out a local one per call.
     fn repo(&self) -> gix::Repository {
-        self.repo
-            .read()
-            .expect("the repository lock is never poisoned across a panic-free path")
-            .to_thread_local()
+        self.repo_read().to_thread_local()
     }
 
     /// Refuses to write while another Git process holds the index.
@@ -208,21 +232,13 @@ impl HybridBackend {
 
     /// Returns the memoised walk for `spec`, computing it if needed.
     fn walk(&self, spec: &RevSpec) -> Result<Arc<Vec<gix_read::WalkEntry>>, GitError> {
-        if let Some(cached) = self
-            .walks
-            .lock()
-            .expect("the walk cache mutex is never poisoned across a panic-free path")
-            .get(spec)
-        {
+        if let Some(cached) = self.walks().get(spec) {
             return Ok(Arc::clone(cached));
         }
 
         let entries = Arc::new(gix_read::walk(&self.repo(), spec)?);
 
-        self.walks
-            .lock()
-            .expect("the walk cache mutex is never poisoned across a panic-free path")
-            .insert(spec.clone(), Arc::clone(&entries));
+        self.walks().insert(spec.clone(), Arc::clone(&entries));
 
         Ok(entries)
     }
@@ -316,21 +332,14 @@ impl GitBackend for HybridBackend {
     }
 
     fn invalidate(&self) {
-        self.walks
-            .lock()
-            .expect("the walk cache mutex is never poisoned across a panic-free path")
-            .clear();
+        self.walks().clear();
 
         // Reopened, not just cleared. gitoxide caches `.git/config` from the
         // moment a repository is opened, so a rename or a remote change would
         // otherwise be invisible to every subsequent read.
         match gix_read::open(&self.workdir) {
             Ok(reopened) => {
-                *self
-                    .repo
-                    .write()
-                    .expect("the repository lock is never poisoned across a panic-free path") =
-                    reopened;
+                *self.repo_write() = reopened;
             }
             // Keeping the old handle is strictly better than having none: the
             // repository may be mid-operation, and a stale read beats a panic
@@ -1137,6 +1146,63 @@ fn parse_push(stderr: &str) -> PushOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The failure this guards against is not a crash.
+    ///
+    /// A blocking task that panics while holding one of the backend's cache
+    /// locks poisons it. With `lock().expect(…)`, every subsequent read would
+    /// then panic in turn — so one bad task becomes a repository tab that fails
+    /// everything it is asked for the life of the process, with no way back
+    /// short of restarting. Each panic is caught individually by the UI, which
+    /// is what makes it so quiet: the symptom is a toast on every click, not a
+    /// crash anyone would report.
+    ///
+    /// Needs a real repository, so it runs under `--all-features` — which is
+    /// what CI uses.
+    #[cfg(feature = "fixture")]
+    #[test]
+    fn a_panic_holding_a_cache_lock_does_not_break_the_backend_forever() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let repo = crate::fixture::fixture().commit("A").commit("B").build();
+        let backend = repo.backend();
+
+        assert_eq!(
+            backend.commit_count(&RevSpec::All).expect("a fresh read"),
+            2
+        );
+
+        // Dies while the guard is live, which is the only way a lock gets
+        // poisoned — a task that merely panics after releasing it is harmless.
+        let died = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = backend.walks();
+            panic!("a background task died holding the walk cache");
+        }));
+        assert!(died.is_err(), "the closure was supposed to panic");
+
+        assert_eq!(
+            backend
+                .commit_count(&RevSpec::All)
+                .expect("reads survive a panicked task"),
+            2
+        );
+        assert_eq!(
+            backend
+                .log(&RevSpec::All, LogPage::first(10))
+                .expect("reads survive a panicked task")
+                .len(),
+            2
+        );
+
+        // And the path that takes the write half of the repository lock.
+        backend.invalidate();
+        assert_eq!(
+            backend
+                .commit_count(&RevSpec::All)
+                .expect("invalidate survives it too"),
+            2
+        );
+    }
 
     #[test]
     fn a_fetch_summary_separates_what_moved_from_what_was_pruned() {
