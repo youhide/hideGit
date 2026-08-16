@@ -25,6 +25,11 @@ To test a change to the workflow without publishing, run it from the Actions tab
 (`workflow_dispatch`). The same archives get built and uploaded as workflow artifacts, and the
 publishing job is skipped.
 
+Releases are published as **pre-releases**, which has a consequence worth knowing: GitHub excludes
+pre-releases from "latest". `/releases/latest` redirects to the releases list rather than to a
+release, and the API endpoint behind it answers 404. That is why the README points at
+`/releases` — a link that would only start working at 1.0 is worse than one that always works.
+
 ## What ships
 
 | Platform | Archive | Contents |
