@@ -261,6 +261,14 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::RememberGeometryToggled => {
+                // Nothing in this crate acts on it; the shell reads it back out
+                // and decides what to write. Kept here because the panel that
+                // owns every other setting lives here too.
+                self.app.remember_geometry = !self.app.remember_geometry;
+                Task::none()
+            }
+
             Message::RepositoryMuteToggled(repository) => {
                 let muted = &mut self.app.alerts.muted;
                 match muted.iter().position(|m| *m == repository) {
@@ -4308,6 +4316,20 @@ mod tests {
             search_of(&app).running,
             "the newer search is still in flight"
         );
+    }
+
+    #[test]
+    fn the_geometry_switch_flips_both_ways() {
+        // The interface never acts on this — the shell reads it back out — so
+        // the flag is the whole behaviour on this side.
+        let mut app = app_with(1);
+        assert!(app.app.remember_geometry, "on by default");
+
+        let _ = app.update(Message::RememberGeometryToggled);
+        assert!(!app.app.remember_geometry);
+
+        let _ = app.update(Message::RememberGeometryToggled);
+        assert!(app.app.remember_geometry);
     }
 
     #[test]

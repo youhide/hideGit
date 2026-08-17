@@ -219,6 +219,10 @@ fn boot(
         ui.app.settings_error = Some(config::SaveError::NoConfigDirectory.to_string());
     }
 
+    // Set here rather than passed through `Hidegit::new`: the interface only
+    // shows this one, and the shell is what acts on it.
+    ui.app.remember_geometry = config.window.remember_geometry;
+
     (
         Shell {
             ui,
@@ -245,6 +249,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                     | Message::QuietHoursToggled
                     | Message::QuietHourChosen(..)
                     | Message::RepositoryMuteToggled(_)
+                    | Message::RememberGeometryToggled
             );
             // Opening a repository is what changes the recents list, and it is
             // the only thing that does. Written at once rather than at exit,
@@ -256,6 +261,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             if touched_settings {
                 shell.config.theme.name = shell.ui.app.theme.name.clone();
                 shell.config.alerts = shell.ui.app.alerts.clone();
+                shell.config.window.remember_geometry = shell.ui.app.remember_geometry;
 
                 // The outcome goes back to the panel, which otherwise says the
                 // change was saved whatever happened to the file.
@@ -265,6 +271,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                         &config::Settings {
                             theme: shell.config.theme.name.clone(),
                             alerts: shell.config.alerts.clone(),
+                            remember_geometry: shell.config.window.remember_geometry,
                         },
                     ),
                     None => Err(config::SaveError::NoConfigDirectory),
@@ -500,6 +507,65 @@ mod tests {
         let _ = update(&mut shell, ShellMessage::Flush);
 
         assert!(!shell.unsaved_geometry);
+    }
+
+    #[test]
+    fn turning_the_geometry_switch_off_stops_the_window_being_recorded() {
+        // The point of the setting. Everything else about it is plumbing: the
+        // switch is only worth having if `persist` writes the default rather
+        // than wherever the window happens to be.
+        let dir = tempfile::tempdir().unwrap();
+        let mut shell = shell();
+        shell.paths = Some(config::Paths {
+            config: dir.path().join("config.toml"),
+            state: dir.path().join("state.toml"),
+        });
+
+        let _ = update(
+            &mut shell,
+            ShellMessage::Moved(iced::Point::new(300.0, 200.0)),
+        );
+        let _ = update(&mut shell, ShellMessage::Flush);
+        let recorded: State = config::load(&dir.path().join("state.toml"));
+        assert_eq!(recorded.window.x, Some(300.0), "on, it is remembered");
+
+        let _ = update(
+            &mut shell,
+            ShellMessage::Ui(Message::RememberGeometryToggled),
+        );
+        let _ = update(
+            &mut shell,
+            ShellMessage::Moved(iced::Point::new(400.0, 250.0)),
+        );
+        let _ = update(&mut shell, ShellMessage::Flush);
+
+        let recorded: State = config::load(&dir.path().join("state.toml"));
+        assert_eq!(
+            recorded.window.x,
+            Geometry::default().x,
+            "off, the position is not written"
+        );
+    }
+
+    #[test]
+    fn the_geometry_switch_reaches_the_settings_file() {
+        // The interface holds it, the shell writes it: a toggle that flipped on
+        // screen and never reached `config.toml` would be back on at restart.
+        let dir = tempfile::tempdir().unwrap();
+        let mut shell = shell();
+        shell.paths = Some(config::Paths {
+            config: dir.path().join("config.toml"),
+            state: dir.path().join("state.toml"),
+        });
+
+        let _ = update(
+            &mut shell,
+            ShellMessage::Ui(Message::RememberGeometryToggled),
+        );
+
+        assert_eq!(shell.ui.app.settings_error, None, "it was written");
+        let reloaded: Config = config::load(&dir.path().join("config.toml"));
+        assert!(!reloaded.window.remember_geometry);
     }
 
     #[test]

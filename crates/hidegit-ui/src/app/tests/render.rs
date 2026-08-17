@@ -212,6 +212,15 @@ fn a_window_that_covers_nothing_says_so() {
 }
 
 #[test]
+fn the_settings_panel_offers_the_geometry_switch() {
+    let mut app = app_with(1);
+    let _ = app.update(Message::SettingsRequested);
+
+    shows(&app, "Window");
+    shows(&app, "Reopen at the last size and position");
+}
+
+#[test]
 fn the_settings_panel_lists_a_muted_repository_that_is_not_open() {
     // The case that decides the shape of the list: a muted entry which vanished
     // when you closed its tab would be a setting you could not undo without
