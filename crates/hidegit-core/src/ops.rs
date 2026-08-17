@@ -122,6 +122,22 @@ pub struct FetchOpts {
     pub all_remotes: bool,
 }
 
+/// What a new worktree checks out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeSpec {
+    /// A branch to create at the same moment, the `-b` in
+    /// `git worktree add -b`.
+    ///
+    /// `None` checks out `start` as it stands, which detaches when `start` is a
+    /// commit. It also means the checkout can be **refused**: a branch already
+    /// checked out in another worktree cannot be checked out again, and hideGit
+    /// does not paper over that — the refusal is the rule working.
+    pub new_branch: Option<String>,
+    /// Where the new checkout starts. [`StartPoint::Head`] is what
+    /// `git worktree add` uses when given nothing.
+    pub start: StartPoint,
+}
+
 /// How much a submodule update should do.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SubmoduleUpdate {
