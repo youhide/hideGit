@@ -569,6 +569,15 @@ pub enum FileDiffContent {
     Lfs {
         old: Option<LfsPointer>,
         new: Option<LfsPointer>,
+        /// Whether the object `new` names is in the local LFS store.
+        ///
+        /// `None` when there is nothing to ask about — a deletion, or a file
+        /// that moved *out* of LFS, where the content is now in Git itself.
+        ///
+        /// This is the difference between "this file is 40 MB" and "this file
+        /// is 40 MB and you do not have it", which is the state a clone leaves
+        /// every LFS object in until something fetches it.
+        fetched: Option<bool>,
     },
 }
 

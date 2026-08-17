@@ -1181,12 +1181,176 @@ fn a_diff_between_two_pointers_reports_the_sizes_rather_than_the_pointers() {
     let file = &diff.files[0];
 
     match &file.content {
-        FileDiffContent::Lfs { old, new } => {
+        FileDiffContent::Lfs { old, new, .. } => {
             assert_eq!(old.as_ref().expect("the old side is a pointer").size, 1024);
             assert_eq!(new.as_ref().expect("the new side is a pointer").size, 4096);
         }
         other => panic!("expected an LFS placeholder, got {other:?}"),
     }
+}
+
+/// The full 64-character oid [`lfs_pointer`] builds for a given character.
+fn lfs_oid(oid: char) -> String {
+    oid.to_string().repeat(64)
+}
+
+/// The fetch state and size of the new side of `path`'s diff.
+///
+/// Looked up by name rather than taken as `files[0]`: a real `git lfs track`
+/// commits `.gitattributes` alongside the file, and that sorts first.
+fn lfs_diff_content(diff: &hidegit_core::model::Diff, path: &str) -> (Option<bool>, u64) {
+    let file = diff
+        .files
+        .iter()
+        .find(|f| f.path == Path::new(path))
+        .unwrap_or_else(|| panic!("no {path} in the diff"));
+
+    match &file.content {
+        FileDiffContent::Lfs { new, fetched, .. } => (
+            *fetched,
+            new.as_ref().expect("the new side is a pointer").size,
+        ),
+        other => panic!("expected an LFS placeholder, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_lfs_object_that_was_never_fetched_says_so() {
+    // The state a clone leaves every LFS object in, and the one worth a
+    // sentence: the file on disk is the pointer text, which reads as
+    // corruption rather than as an absence.
+    let repo = fixture()
+        .edit("big.bin", &lfs_pointer('a', 4096), "add")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend
+        .diff(&DiffTarget::Commit(repo.id("add")))
+        .expect("a diff of a pointer");
+
+    assert_eq!(
+        lfs_diff_content(&diff, "big.bin"),
+        (Some(false), 4096),
+        "nothing put the object in the local store"
+    );
+}
+
+#[test]
+fn an_lfs_object_present_in_the_local_store_is_reported_as_fetched() {
+    let repo = fixture()
+        .edit("big.bin", &lfs_pointer('a', 4096), "add")
+        .with_lfs_object(&lfs_oid('a'), b"the real contents")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend
+        .diff(&DiffTarget::Commit(repo.id("add")))
+        .expect("a diff of a pointer");
+
+    assert_eq!(lfs_diff_content(&diff, "big.bin"), (Some(true), 4096));
+}
+
+#[test]
+fn a_file_leaving_lfs_has_no_fetch_state_to_report() {
+    // The content is in Git itself now, so "do you have it locally" is not a
+    // question with an answer. `None` rather than `false`, which would read as
+    // something missing.
+    let repo = fixture()
+        .edit("big.bin", &lfs_pointer('a', 8192), "track with lfs")
+        .edit("big.bin", "the real contents\n", "untrack")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend
+        .diff(&DiffTarget::Commit(repo.id("untrack")))
+        .expect("a diff of a file leaving LFS");
+
+    match &diff.files[0].content {
+        FileDiffContent::Lfs { new, fetched, .. } => {
+            assert_eq!(*new, None, "the new side is ordinary text");
+            assert_eq!(*fetched, None);
+        }
+        other => panic!("expected an LFS placeholder, got {other:?}"),
+    }
+}
+
+#[test]
+fn lfs_storage_moves_where_the_objects_are_looked_for() {
+    // `lfs.storage` is a real knob and a relative one is resolved against the
+    // `.git` directory — checked against git-lfs 3.7.1, not assumed.
+    let repo = fixture()
+        .edit("big.bin", &lfs_pointer('a', 4096), "add")
+        .config("lfs.storage", "mylfs")
+        .build();
+
+    // In the default place, which `lfs.storage` has just moved away from.
+    let oid = lfs_oid('a');
+    let stray = repo
+        .path()
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4]);
+    std::fs::create_dir_all(&stray).expect("a writable fixture");
+    std::fs::write(stray.join(&oid), b"wrong place").expect("a writable fixture");
+
+    let backend = repo.backend();
+    let diff = backend
+        .diff(&DiffTarget::Commit(repo.id("add")))
+        .expect("a diff of a pointer");
+
+    assert_eq!(
+        lfs_diff_content(&diff, "big.bin").0,
+        Some(false),
+        "the object is in .git/lfs, and lfs.storage says to look in .git/mylfs"
+    );
+}
+
+#[test]
+#[ignore = "needs git-lfs installed; run by hand to re-check the store layout"]
+fn a_real_git_lfs_store_has_the_layout_this_suite_builds_by_hand() {
+    // The one test that checks the assumption everything above rests on. The
+    // rest of the suite builds the store by hand so it needs no `git-lfs` on
+    // any of the three CI platforms; this one runs the real tool and asserts
+    // it puts the object where hideGit looks.
+    let repo = fixture().commit("A").build();
+    let path = repo.path();
+
+    repo.git(["lfs", "install", "--local"]);
+    repo.git(["lfs", "track", "*.bin"]);
+    std::fs::write(path.join("big.bin"), vec![7u8; 5000]).expect("a writable fixture");
+    repo.git(["add", "--all"]);
+    repo.git(["commit", "--message", "add big"]);
+
+    let oid = repo
+        .git(["cat-file", "-p", "HEAD:big.bin"])
+        .lines()
+        .find_map(|line| line.strip_prefix("oid sha256:").map(str::to_owned))
+        .expect("git-lfs wrote a pointer");
+
+    let expected = path
+        .join(".git/lfs/objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(&oid);
+    assert!(
+        expected.is_file(),
+        "git-lfs stores objects somewhere else now: {}",
+        expected.display()
+    );
+
+    // And hideGit reads that same store through the production path, rather
+    // than the two agreeing only about a directory name.
+    let head = hidegit_core::model::ObjectId::from_hex(&repo.git(["rev-parse", "HEAD"]))
+        .expect("git prints a full hash");
+    let diff = repo
+        .backend()
+        .diff(&DiffTarget::Commit(head))
+        .expect("a diff");
+    assert_eq!(
+        lfs_diff_content(&diff, "big.bin").0,
+        Some(true),
+        "git-lfs fetched the object on commit, so hideGit must see it"
+    );
 }
 
 #[test]
@@ -1204,7 +1368,7 @@ fn a_file_moving_into_lfs_says_so_rather_than_showing_the_pointer_replacing_it()
         .expect("a diff of a file becoming tracked");
 
     match &diff.files[0].content {
-        FileDiffContent::Lfs { old, new } => {
+        FileDiffContent::Lfs { old, new, .. } => {
             assert_eq!(*old, None, "the old side was ordinary text, not a pointer");
             assert_eq!(new.as_ref().expect("the new side is a pointer").size, 8192);
         }
@@ -1225,7 +1389,7 @@ fn a_file_leaving_lfs_says_so_too() {
         .expect("a diff of a file leaving LFS");
 
     match &diff.files[0].content {
-        FileDiffContent::Lfs { old, new } => {
+        FileDiffContent::Lfs { old, new, .. } => {
             assert_eq!(old.as_ref().expect("the old side was a pointer").size, 8192);
             assert_eq!(*new, None);
         }
