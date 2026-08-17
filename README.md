@@ -115,9 +115,11 @@ a certificate to pay for; [RELEASING.md](./docs/RELEASING.md) explains what chan
   still come from your distribution and always will. Bundling a graphics driver is how an AppImage
   ends up running only on the machine that built it.
 
-Every release carries a `SHA256SUMS.txt` to check a download against. There are no `.dmg`, `.msi` or
-Flatpak packages yet — an unsigned installer would add a step without removing the warning that
-justifies it.
+Every release carries a `SHA256SUMS.txt` to check a download against. There are no `.dmg` or `.msi`
+packages — an unsigned installer would add a step without removing the warning that justifies it —
+and no Flatpak, for a different reason: a sandbox cannot see the credential helpers, hooks and LFS
+setup that hideGit deliberately borrows from your own `git`. See
+[RELEASING.md](./docs/RELEASING.md#why-there-is-no-flatpak).
 
 ## Building from source
 

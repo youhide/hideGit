@@ -62,6 +62,43 @@ Three decisions in there are not obvious:
   opens, so it exercises the AppRun and the extraction path on a machine with no display — which
   `linuxdeploy` exiting 0 does not.
 
+## Why there is no Flatpak
+
+Not cost, and not effort: **a Flatpak sandbox takes away the thing ADR-0002 chose the architecture
+for.**
+
+Every write hideGit performs is `Command::new("git")` resolved from `PATH`
+(`crates/hidegit-core/src/process.rs`). Inside a Flatpak that resolves to the *runtime's* git, and
+[ADR-0002](./adr/0002-git-backend-hybrid.md) lists what the user's git brings that the runtime's does
+not:
+
+| What the user configured | Where it lives | Inside the sandbox |
+|---|---|---|
+| Credential helpers — `libsecret`, `manager`, `!gh auth git-credential` | host binaries named in `~/.gitconfig` | **absent**, and `GIT_TERMINAL_PROMPT=0` turns that into a failed push rather than a prompt |
+| Hooks — `pre-commit` running `npx`, `python3`, `husky` | host interpreters | **absent** |
+| `.gitattributes` filters, Git LFS | host binaries | **absent**; an LFS checkout produces pointer files |
+| SSH agent | `SSH_AUTH_SOCK`, already inherited | works, given `--socket=ssh-auth` |
+
+Three of those four are the exact list ADR-0002 gives as the reason writes go through the CLI at all:
+they "work exactly as the user has already configured them — inherited, not reimplemented". A Flatpak
+that quietly cannot push over HTTPS, cannot run a repository's hooks and turns LFS files into
+pointers is not a package worth shipping.
+
+There are three ways out, and choosing between them is a maintainer's decision rather than a
+packaging detail:
+
+1. **`--talk-name=org.freedesktop.Flatpak`, and run every `git` through `flatpak-spawn --host`.**
+   Restores all of it. The cost is that the sandbox then permits arbitrary host command execution —
+   a sandbox in name only — and `hidegit-core` has to know it is inside a Flatpak and spawn a
+   different program, which is an architectural change ADR-0002 would need to be superseded to make.
+2. **Ship against the runtime's git and accept the losses.** Cheapest to build, and it contradicts
+   the ADR without saying so to the person whose push just failed.
+3. **Do not ship a Flatpak.** The AppImage already covers "one file, nothing to install", and it has
+   none of these problems because it is not sandboxed.
+
+Until that is decided, option 3 is what happens by default, and this section exists so the next
+person to reach for `flatpak-builder` finds the reason rather than the gap.
+
 ## Why the archives are not signed, and what that looks like
 
 Signing costs money and an organisational identity, neither of which this project has yet. Rather
