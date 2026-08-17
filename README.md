@@ -22,6 +22,10 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 > it. Search every commit by summary, message, author or hash. Blame any file at any revision.
 > Dark and light themes, both designed against the same contrast rules rather than one inverted.
 >
+> Past 1.0's scope and already in: submodules and worktrees in the sidebar — with the actions each
+> allows, and none git would refuse — Git LFS files shown as sizes rather than pointers, with the
+> ones you have not fetched named as such, `--autosquash`, and a Brazilian Portuguese translation.
+>
 > Two caveats worth knowing before you rely on it. Pushing over SSH with a passphrase, or
 > over HTTPS with a credential helper, has not been verified — it should work, since hideGit hands
 > those operations to your own `git`, but every remote in the test suite is a local path. And on
@@ -30,6 +34,12 @@ A cross-platform desktop Git client written in Rust, with pull request alerts bu
 >
 > See [ROADMAP](./docs/ROADMAP.md) for what ships when, and
 > [ARCHITECTURE](./docs/ARCHITECTURE.md) for how it is built.
+
+<p align="center">
+  <img src="./docs/screenshots/graph.png"
+       alt="hideGit showing a repository's commit graph, with coloured lanes for each line of development, the selected commit's message and file list below it, and a syntax-highlighted diff on the right."
+       width="900">
+</p>
 
 ---
 
@@ -68,13 +78,49 @@ refused rather than being retried with `--force`.
 | 🟡 | Accessibility: focus ring, keyboard routes and contrast are done | [M6](./docs/ROADMAP.md#m6--polish--release) |
 | ⛔ | Screen-reader support — iced 0.14 has no accessibility surface to build on | [M6](./docs/ROADMAP.md#m6--polish--release) |
 | ⛔ | Signed installers — needs a paid certificate. Downloads are unsigned and say so | [M6](./docs/ROADMAP.md#m6--polish--release) |
-| ⬜ | Submodules, worktrees, LFS, PT-BR translation | [Post-1.0](./docs/ROADMAP.md#post-10) |
+| ✅ | Submodules: both commits when they disagree, plus update and init | [Post-1.0](./docs/ROADMAP.md#post-10) |
+| ✅ | Worktrees: what each checkout holds, add, remove and prune | [Post-1.0](./docs/ROADMAP.md#post-10) |
+| ✅ | Git LFS: sizes instead of pointers, and which objects are not fetched | [Post-1.0](./docs/ROADMAP.md#post-10) |
+| ✅ | `--autosquash`, a draggable rebase plan, and a Brazilian Portuguese translation | [Post-1.0](./docs/ROADMAP.md#post-10) |
 
 Legend: ⬜ planned · 🟡 in progress · ⛔ blocked on something outside this repository · ✅ shipped
 
 Nothing here is 🟡 by omission. The two ⛔ rows are not being worked on and will not be until the
 thing they wait for exists: a toolkit that can talk to a screen reader, and a certificate somebody
 has paid for.
+
+## A few more screens
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="./docs/screenshots/staging.png"
+           alt="The working directory, with staged, changed and untracked files listed separately, a diff showing one changed line, buttons to stage the file or just the hunk, and the commit message composer below.">
+      <p><strong>Stage by file, by hunk, or by line.</strong> Staged, changed and untracked
+      stay separate lists, and the diff carries its own <em>Stage file</em> and
+      <em>Stage hunk</em> buttons rather than hiding them in a menu.</p>
+    </td>
+    <td width="50%">
+      <img src="./docs/screenshots/light-theme.png"
+           alt="The same commit graph and diff in hideGit's light theme.">
+      <p><strong>The light theme is designed, not inverted.</strong> Both themes are checked
+      against the same contrast rules, including the syntax colours in a diff.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="./docs/screenshots/command-palette.png"
+           alt="The command palette open over the working directory, listing commands grouped under Repositories, Remotes, Working directory and History, each with its keyboard shortcut on the right.">
+      <p><strong>Everything is reachable from the keyboard.</strong> The palette shows each
+      command's shortcut, so it teaches the binding rather than replacing it.</p>
+    </td>
+    <td width="50%" valign="top">
+      <p><strong>Screenshots are of hideGit's own repository</strong>, on macOS. Nothing here is a
+      mockup: it is the release build opened on this repository, so the commits in the graph are the
+      ones in the log above.</p>
+    </td>
+  </tr>
+</table>
 
 ## Requirements
 
@@ -195,6 +241,7 @@ enough for Explorer, the taskbar and Alt-Tab to show it. There is nothing else t
 | [COMMIT_GRAPH](./docs/COMMIT_GRAPH.md) | Lane assignment algorithm and rendering |
 | [RELEASING](./docs/RELEASING.md) | How a release is cut, what ships, and why nothing is signed yet |
 | [ADRs](./docs/adr/README.md) | Why each major technical decision was made |
+| [screenshots](./docs/screenshots/README.md) | How the images above are taken, and how to retake them |
 
 ## Contributing
 
