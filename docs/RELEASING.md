@@ -36,6 +36,7 @@ release, and the API endpoint behind it answers 404. That is why the README poin
 |---|---|---|
 | macOS 11+ | `hidegit-<version>-macos-universal.zip` | `hideGit.app`, universal — one download for Intel and Apple Silicon |
 | Windows 10+ | `hidegit-<version>-windows-x86_64.zip` | `hidegit.exe`, statically linked against the MSVC runtime |
+| Linux, glibc 2.35+ | `hideGit-<version>-x86_64.AppImage` | one file: binary, `.desktop` entry and icons, run in place |
 | Linux, glibc 2.35+ | `hidegit-<version>-linux-x86_64.tar.gz` | binary, `install.sh`, `.desktop` entry, hicolor icons |
 
 Three decisions in there are not obvious:
@@ -45,7 +46,21 @@ Three decisions in there are not obvious:
 - **`+crt-static` on Windows.** Without it the executable needs a Visual C++ redistributable that a
   clean Windows install does not have, and the first thing a new user meets is a missing-DLL dialog.
 - **Linux builds on `ubuntu-22.04`, not `ubuntu-latest`.** A binary linked against a newer glibc will
-  not start on an older distribution; the reverse is fine. The runner picks the floor.
+  not start on an older distribution; the reverse is fine. The runner picks the floor, for the
+  AppImage as much as for the tarball.
+- **The AppImage bundles nothing, and that is not an oversight.** `linuxdeploy` copies what `ldd`
+  reports, and `ldd` on hideGit reports only glibc — every windowing and graphics library it uses is
+  reached through `dlopen` at runtime. Forcing them in would be worse than leaving them out:
+  libwayland, libGL and libvulkan have to match the host, and bundling them is the classic way to
+  produce an AppImage that starts on the machine that built it and nowhere else. What the format buys
+  here is one file with the desktop entry and icons inside it, not freedom from a distribution's
+  packages.
+- **No certificate is involved.** An AppImage is unsigned, exactly like the tarball beside it. This
+  repository used to claim in `packaging/linux/install.sh` that AppImage and Flatpak were waiting on
+  a signing certificate; that was wrong, and only the macOS and Windows installers ever were.
+- **The release job runs the AppImage before publishing it.** `--version` returns before any window
+  opens, so it exercises the AppRun and the extraction path on a machine with no display — which
+  `linuxdeploy` exiting 0 does not.
 
 ## Why the archives are not signed, and what that looks like
 

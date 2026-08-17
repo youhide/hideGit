@@ -1,9 +1,10 @@
 #!/bin/sh
 # Installs hideGit's binary, desktop entry and icons.
 #
-# Not a package. AppImage and Flatpak wait on a signing certificate; this is
-# what ships in the release tarball, and what a distribution packager would
-# otherwise hand-write.
+# Not a package. This is what ships in the release tarball, and what a
+# distribution packager would otherwise hand-write. The AppImage beside it
+# (appimage.sh) is the one-file alternative; neither needs a signing
+# certificate, and saying they did was wrong.
 #
 # From a release tarball, where the binary sits beside this script:
 #

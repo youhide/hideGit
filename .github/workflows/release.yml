@@ -172,6 +172,51 @@ jobs:
           cp LICENSE README.md "$stage/"
           tar -czf "dist/${stage}.tar.gz" "$stage"
 
+      # One file people download and run, with the libraries hideGit links
+      # against travelling inside it. Unsigned, exactly like the tarball — an
+      # AppImage never needed a certificate, which this repository claimed it
+      # did until now.
+      - name: AppImage
+        run: ./packaging/linux/appimage.sh
+
+      # Checked rather than trusted: `linuxdeploy` exits 0 on plenty of AppDirs
+      # that produce a launcher with no icon or a binary in the wrong place.
+      - name: Check what it packaged
+        run: |
+          set -eu
+          image=$(ls dist/hideGit-*-x86_64.AppImage)
+
+          # The strongest check available without a display: the AppImage runs.
+          # `--version` returns before any window is opened, so this exercises
+          # the AppRun, the mount-free extraction path and the interpreter, and
+          # it prints the version the archive claims to be.
+          version=$(APPIMAGE_EXTRACT_AND_RUN=1 "./$image" --version)
+          echo "$version"
+          case "$version" in
+            *"$VERSION"*) ;;
+            *) echo "the AppImage reports '$version', not $VERSION" >&2; exit 1 ;;
+          esac
+
+          cd "$(mktemp -d)"
+          "$OLDPWD/$image" --appimage-extract > /dev/null
+
+          test -x squashfs-root/usr/bin/hidegit
+          test -f squashfs-root/com.youhide.hidegit.desktop
+          test -f squashfs-root/usr/share/icons/hicolor/256x256/apps/com.youhide.hidegit.png
+          test -f squashfs-root/AppRun
+
+          # The libraries that must come from the host. Bundling any of these is
+          # how an AppImage ends up starting only on the machine that built it —
+          # and hideGit reaches all of them through `dlopen`, so `ldd` does not
+          # see them and `linuxdeploy` would not copy them anyway.
+          for forbidden in libGL.so libvulkan.so libc.so.6 libdrm.so libwayland; do
+            if ls squashfs-root/usr/lib/"$forbidden"* > /dev/null 2>&1; then
+              echo "$forbidden was bundled, and must not be" >&2
+              exit 1
+            fi
+          done
+          echo "AppImage contents check out"
+
       - uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64

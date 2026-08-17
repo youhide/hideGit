@@ -455,7 +455,13 @@ Everything between "works" and "someone who does not write Rust can install it".
   start hideGit says once that something went wrong and where the file is. A report nobody knows
   about is a file found by accident, years later
 - **Packaging:** signed and notarised `.dmg` (macOS), `.msi` (Windows), AppImage and Flatpak
-  (Linux). **The update check has landed**, and never installs anything: one unauthenticated `GET`
+  (Linux). **The AppImage has landed** — one file with the desktop entry and icons inside it, built
+  by `packaging/linux/appimage.sh`, run on the runner before it is published. It bundles nothing
+  else: every windowing and graphics library hideGit uses is reached through `dlopen`, so `ldd`
+  reports only glibc and forcing the rest in would produce a package that starts on the build
+  machine and nowhere else. **No certificate was ever involved**, contrary to what `install.sh`
+  claimed. Flatpak is separate work — a manifest, `flatpak-builder`, a runtime measured in gigabytes
+  and a Flathub submission — and is not done. **The update check has landed**, and never installs anything: one unauthenticated `GET`
   against the releases of `youhide/hideGit`, at most once a day, and a toast naming the version and
   linking to it.
 
