@@ -407,6 +407,7 @@ fn local_branch_row<'a>(
         is_head,
         repo.refs.locals.len(),
         head_name.as_deref(),
+        held_elsewhere(&repo.worktrees, &branch.name.full),
     );
 
     row![
@@ -456,24 +457,53 @@ fn divergence_label(divergence: Option<Divergence>) -> Option<String> {
 /// `head_name` is the branch `HEAD` is on, if it is on one. A detached `HEAD`
 /// has no branch to merge *into*, so those actions are absent rather than
 /// pointing at nothing.
+/// Whether another worktree has this branch checked out.
+///
+/// The rule worktrees impose on everything else: a branch checked out in one
+/// cannot be checked out in another, so this is what keeps the sheet from
+/// offering a checkout Git would refuse and a second worktree it would refuse
+/// as well.
+fn held_elsewhere(worktrees: &[Worktree], full: &str) -> bool {
+    worktrees.iter().any(|worktree| {
+        !worktree.is_current
+            && matches!(&worktree.head, Some(Head::Branch { name, .. }) if name.full == full)
+    })
+}
+
 fn branch_sheet(
     branch: &Branch,
     index: usize,
     is_head: bool,
     local_count: usize,
     head_name: Option<&str>,
+    held_elsewhere: bool,
 ) -> ActionSheet {
     let name = branch.name.short.clone();
     let mut sheet = ActionSheet::new(name.clone());
 
     // Checking out the branch you are already on does nothing, so it is not
-    // offered — an action that is a no-op is worse than an absent one.
-    if !is_head {
+    // offered — an action that is a no-op is worse than an absent one. Nor is
+    // one another worktree is holding: Git refuses that outright, and a control
+    // that always fails is worse than an absent one too.
+    if !is_head && !held_elsewhere {
         sheet = sheet.item(
             "Checkout",
             Message::Repo(
                 index,
                 RepoMessage::CheckoutRequested(CheckoutTarget::Branch(name.clone())),
+            ),
+        );
+
+        // Where a worktree is made from, because a worktree is made *out of* a
+        // branch. The `WORKTREES` heading would be the other candidate, and it
+        // is absent on exactly the repositories where somebody wants to make a
+        // second checkout — the same reason stashing is offered from the
+        // working-directory row rather than from a `STASHES` heading.
+        sheet = sheet.item(
+            "Check out in a new worktree…",
+            Message::Repo(
+                index,
+                RepoMessage::WorktreeDestinationRequested(name.clone()),
             ),
         );
     }
@@ -1188,6 +1218,76 @@ mod tests {
     }
 
     #[test]
+    fn the_worktree_being_looked_at_does_not_count_as_holding_a_branch_elsewhere() {
+        // It holds it, but it is not *elsewhere* — and treating it as such
+        // would strip the checkout action off every branch in the repository
+        // the moment a second worktree existed.
+        let mut here = linked("main");
+        here.is_current = true;
+        assert!(!held_elsewhere(&[here], "refs/heads/main"));
+    }
+
+    #[test]
+    fn another_worktree_on_the_branch_counts_and_a_different_one_does_not() {
+        let side = linked("side");
+        assert!(held_elsewhere(
+            std::slice::from_ref(&side),
+            "refs/heads/side"
+        ));
+        assert!(!held_elsewhere(&[side], "refs/heads/other"));
+    }
+
+    #[test]
+    fn a_branch_offers_a_new_worktree_where_it_offers_a_checkout() {
+        // A worktree is made *out of* a branch, so this is the row it belongs
+        // on — and the `WORKTREES` heading is absent on exactly the repository
+        // where somebody wants to make a second checkout.
+        let sheet = branch_sheet(
+            &branch("feat/graph", None),
+            0,
+            false,
+            2,
+            Some("main"),
+            false,
+        );
+
+        assert!(
+            sheet.items.iter().any(|item| matches!(
+                &item.message,
+                Message::Repo(0, RepoMessage::WorktreeDestinationRequested(name))
+                    if name == "feat/graph"
+            )),
+            "no way to make a worktree from the branch it would hold: {:?}",
+            sheet.items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_branch_another_worktree_holds_offers_neither_checkout_nor_a_second_one() {
+        // Git refuses both outright — a branch checked out in one worktree
+        // cannot be checked out in another — and a control that always fails is
+        // worse than an absent one.
+        let sheet = branch_sheet(&branch("feat/graph", None), 0, false, 2, Some("main"), true);
+
+        assert!(
+            !sheet.items.iter().any(|item| matches!(
+                &item.message,
+                Message::Repo(_, RepoMessage::CheckoutRequested(_))
+                    | Message::Repo(_, RepoMessage::WorktreeDestinationRequested(_))
+            )),
+            "offered something git would refuse: {:?}",
+            sheet.items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
+        assert!(
+            sheet
+                .items
+                .iter()
+                .any(|item| item.label.starts_with("Merge")),
+            "the actions that still work are still there"
+        );
+    }
+
+    #[test]
     fn the_main_worktree_offers_nothing_because_every_action_would_be_refused() {
         let mut main = linked("main");
         main.is_main = true;
@@ -1374,7 +1474,7 @@ mod tests {
         // "Merge" alone leaves the direction to be guessed, and guessing the
         // direction wrong is the classic way to ruin an afternoon.
         let other = branch("feature", None);
-        let sheet = branch_sheet(&other, 0, false, 2, Some("main"));
+        let sheet = branch_sheet(&other, 0, false, 2, Some("main"), false);
         let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
 
         assert!(
@@ -1391,7 +1491,7 @@ mod tests {
     fn the_current_branch_offers_neither_merge_nor_rebase() {
         // Both would be a no-op Git refuses.
         let head = branch("main", None);
-        let sheet = branch_sheet(&head, 0, true, 2, Some("main"));
+        let sheet = branch_sheet(&head, 0, true, 2, Some("main"), false);
         let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
 
         assert!(
@@ -1407,7 +1507,7 @@ mod tests {
     #[test]
     fn a_detached_head_has_no_branch_to_merge_into() {
         let other = branch("feature", None);
-        let sheet = branch_sheet(&other, 0, false, 2, None);
+        let sheet = branch_sheet(&other, 0, false, 2, None, false);
         let labels: Vec<&str> = sheet.items.iter().map(|i| i.label.as_str()).collect();
 
         assert!(
@@ -1426,7 +1526,7 @@ mod tests {
         // is something Git refuses outright. An action that cannot work is worse
         // than an absent one.
         let head = branch("main", Some("refs/remotes/origin/main"));
-        let sheet = branch_sheet(&head, 0, true, 2, Some("main"));
+        let sheet = branch_sheet(&head, 0, true, 2, Some("main"), false);
         let offered = labels(&sheet);
 
         assert!(!offered.contains(&"Checkout"), "already on it: {offered:?}");
@@ -1437,7 +1537,7 @@ mod tests {
     #[test]
     fn a_branch_that_is_not_checked_out_offers_everything() {
         let other = branch("feat/graph", None);
-        let sheet = branch_sheet(&other, 0, false, 2, Some("main"));
+        let sheet = branch_sheet(&other, 0, false, 2, Some("main"), false);
         let offered = labels(&sheet);
 
         assert!(offered.contains(&"Checkout"));
@@ -1450,7 +1550,7 @@ mod tests {
         // Git refuses to leave a repository with no branches, so the action is
         // not offered rather than offered and then refused.
         let only = branch("main", None);
-        let sheet = branch_sheet(&only, 0, false, 1, Some("main"));
+        let sheet = branch_sheet(&only, 0, false, 1, Some("main"), false);
         let offered = labels(&sheet);
 
         assert!(!offered.contains(&"Delete"), "got {offered:?}");
@@ -1459,7 +1559,7 @@ mod tests {
     #[test]
     fn a_deletion_is_marked_destructive_so_it_does_not_look_like_the_rest() {
         let other = branch("feat/graph", None);
-        let sheet = branch_sheet(&other, 0, false, 2, Some("main"));
+        let sheet = branch_sheet(&other, 0, false, 2, Some("main"), false);
 
         let delete = sheet
             .items

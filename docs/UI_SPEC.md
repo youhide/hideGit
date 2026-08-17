@@ -195,6 +195,18 @@ for the branch `HEAD` is on.
 Neither worktree rows nor submodule rows are selectable: another checkout, like another repository,
 is not a place in *this* history to jump to.
 
+**A worktree is made from the branch row, not from the `WORKTREES` heading.** A worktree is made
+*out of* a branch, and the heading is absent on exactly the repositories where somebody wants a
+second checkout — the same reason stashing is offered from the working-directory row rather than
+from a `STASHES` heading. The branch sheet's "Check out in a new worktree…" asks for a directory
+with the platform's own picker, then checks out into a folder named after the branch's last segment
+inside it: checking out straight into a directory chosen for other reasons is how a home folder
+acquires a `.git`, and `feat/graph` is not a directory name.
+
+**A branch another worktree holds offers neither a checkout nor a second worktree.** Git refuses both
+outright, and a control that always fails is worse than an absent one. The rest of that branch's
+actions — merge, rebase, rename, delete — are unaffected and stay.
+
 **A worktree row carries a `⋯` only where an action would work.** Three rows have none: the **main**
 worktree, which cannot be removed; the **current** one, because `git worktree remove` will not take
 the directory you are standing in; and a **locked** one, because locking it is how the user said

@@ -17,7 +17,7 @@ use hidegit_core::model::{
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, MergeOpts, Patch, ProgressSink,
     ProgressUpdate, PullOpts, PullOutcome, PushSpec, RebasePlan, ResetMode, SearchQuery,
-    SequenceControl, SequenceOutcome, StartPoint, StashOp, SubmoduleUpdate, TagSpec,
+    SequenceControl, SequenceOutcome, StartPoint, StashOp, SubmoduleUpdate, TagSpec, WorktreeSpec,
 };
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::watch::Change;
@@ -1817,6 +1817,47 @@ impl Hidegit {
                 let backend = Arc::clone(&repo.backend);
                 write_task(index, move || backend.remove_worktree(&path, force))
             }
+
+            // The platform's own picker rather than a second text field, for the
+            // reason cloning uses one: pointing at a directory beats typing a
+            // path, and the picker is the part of this the OS does better.
+            RepoMessage::WorktreeDestinationRequested(branch) => Task::perform(
+                async move {
+                    let picked = rfd::AsyncFileDialog::new()
+                        .set_title("Check out into…")
+                        .pick_folder()
+                        .await
+                        .map(|handle| handle.path().to_path_buf());
+                    (branch, picked)
+                },
+                move |(branch, picked)| {
+                    Message::Repo(
+                        index,
+                        RepoMessage::WorktreeDestinationPicked(branch, picked),
+                    )
+                },
+            ),
+
+            RepoMessage::WorktreeDestinationPicked(branch, Some(parent)) => {
+                // Into a folder named after the branch, inside the one that was
+                // picked — checking out straight into a directory chosen for
+                // other reasons is how a home folder acquires a `.git`. The
+                // last segment, because `feat/graph` is not a directory name.
+                let leaf = branch.rsplit('/').next().unwrap_or(&branch);
+                let into = parent.join(leaf);
+                let spec = WorktreeSpec {
+                    // The branch already exists — that is where this was
+                    // offered from — so nothing is being created here.
+                    new_branch: None,
+                    start: StartPoint::Ref(branch),
+                };
+
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.add_worktree(&into, &spec))
+            }
+
+            // A cancelled picker is not an event worth reporting.
+            RepoMessage::WorktreeDestinationPicked(_, None) => Task::none(),
 
             RepoMessage::WorktreePruneRequested => {
                 let backend = Arc::clone(&repo.backend);

@@ -483,6 +483,17 @@ pub enum RepoMessage {
         path: PathBuf,
         force: bool,
     },
+    /// Ask for a directory, then check `branch` out into a new worktree there.
+    ///
+    /// Offered from the branch row rather than from the `WORKTREES` heading,
+    /// the same way stashing is offered from the working-directory row: a
+    /// worktree is made *out of* a branch, and the section is absent on every
+    /// repository that has only one checkout — which is exactly the repository
+    /// where somebody wants to make a second.
+    WorktreeDestinationRequested(String),
+    /// The picker closed. `None` means it was cancelled, which is not an event
+    /// worth reporting.
+    WorktreeDestinationPicked(String, Option<PathBuf>),
     /// Clear registrations whose directory is gone.
     ///
     /// Offered from the stale row rather than from the heading, because that
