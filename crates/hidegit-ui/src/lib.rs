@@ -25,6 +25,7 @@ pub mod widget {
     pub mod diff;
     pub mod graph;
     pub mod overlay;
+    pub mod palette;
     pub mod plan;
     pub mod pr;
     pub mod resolver;

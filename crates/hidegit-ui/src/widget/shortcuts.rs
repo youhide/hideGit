@@ -27,6 +27,8 @@ pub enum Context {
     Screen,
     /// Bound only while the search panel has the keyboard.
     Search,
+    /// Bound only while the command palette has the keyboard.
+    Command,
     /// Bound only while a panel — settings, or this one — is up.
     Panel,
 }
@@ -84,6 +86,7 @@ pub const REFERENCE: &[Group] = &[
             ),
             Binding::one("Cmd+,", &["Cmd+,"], "Settings"),
             Binding::one("Cmd+/", &["Cmd+/"], "This list"),
+            Binding::one("Cmd+P", &["Cmd+P"], "Command palette"),
         ],
     },
     Group {
@@ -153,6 +156,16 @@ pub const REFERENCE: &[Group] = &[
             Binding::one("Enter", &["Enter"], "Go to the selected commit")
                 .in_context(Context::Search),
             Binding::one("Esc", &["Esc"], "Close the search").in_context(Context::Search),
+        ],
+    },
+    Group {
+        title: "While the command palette is up",
+        bindings: &[
+            Binding::one("↑ / ↓", &["Up", "Down"], "Move through the commands")
+                .in_context(Context::Command),
+            Binding::one("Enter", &["Enter"], "Run the selected command")
+                .in_context(Context::Command),
+            Binding::one("Esc", &["Esc"], "Close the palette").in_context(Context::Command),
         ],
     },
     Group {

@@ -336,8 +336,10 @@ Everything between "works" and "someone who does not write Rust can install it".
   `Cmd+Shift+Enter`, `Cmd+]` / `Cmd+[` and `Cmd+Shift+.` are bound, which closes the `Space` debt M2
   wrote down — focus turned out to be observable through a `find_focused` widget operation, which is
   not the signal M2 was reaching for. What is still missing is named in
-  [UI_SPEC](./UI_SPEC.md#keyboard-shortcuts) rather than left looking implemented: the command
-  palette and the `G` chords. **The shortcut reference has landed** on `Cmd+/`, as a table the
+  [UI_SPEC](./UI_SPEC.md#keyboard-shortcuts) rather than left looking implemented: the `G` chords.
+  **The command palette has landed** on `Cmd+P`, running the same messages the keyboard does rather
+  than a second implementation of each action, and printing each command's chord beside it — so it
+  teaches the shortcut instead of replacing it. **The shortcut reference has landed** on `Cmd+/`, as a table the
   binding function is tested against in both directions — a row for a binding that does not exist
   fails, and so does a binding added without a row, because a reference that drifts is worse than
   none. Writing it that way turned up three bindings nobody chose: `Cmd+↑` moved the selection,

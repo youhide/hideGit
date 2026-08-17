@@ -285,6 +285,16 @@ pub enum Message {
     /// One end of the quiet-hours window was set to an hour.
     QuietHourChosen(QuietBound, u8),
     /// A repository was muted or unmuted, keyed as `owner/name`.
+    /// The command palette was asked for.
+    PaletteRequested,
+    /// …and dismissed.
+    PaletteDismissed,
+    /// The palette's query changed.
+    PaletteQueryChanged(String),
+    /// The palette selection moved by this many rows.
+    PaletteStepped(i32),
+    /// The selected command was chosen.
+    PaletteAccepted,
     /// The keyboard shortcut reference was asked for.
     ShortcutsRequested,
     /// …and dismissed.

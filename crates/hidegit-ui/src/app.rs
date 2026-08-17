@@ -250,6 +250,63 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::PaletteRequested => {
+                self.app.palette = Some(crate::state::CommandPalette::default());
+                // Focused on open, for the reason the search is: a box you have
+                // to click into before typing costs a click every single time.
+                iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::focus(
+                        crate::state::COMMAND_FIELD_ID.into(),
+                    ),
+                )
+            }
+
+            Message::PaletteDismissed => {
+                self.app.palette = None;
+                Task::none()
+            }
+
+            Message::PaletteQueryChanged(query) => {
+                if let Some(palette) = &mut self.app.palette {
+                    palette.query = query;
+                    // Back to the top. The old index pointed into a list that
+                    // no longer exists, and keeping it would leave the
+                    // highlight on whatever happened to be in that position.
+                    palette.selected = 0;
+                }
+                Task::none()
+            }
+
+            Message::PaletteStepped(by) => {
+                if let Some(palette) = &mut self.app.palette {
+                    let count = widget::palette::matching(&palette.query, self.app.active).len();
+                    // Clamped rather than wrapped, like every other list here.
+                    palette.selected = palette
+                        .selected
+                        .saturating_add_signed(by as isize)
+                        .min(count.saturating_sub(1));
+                }
+                Task::none()
+            }
+
+            Message::PaletteAccepted => {
+                let Some(palette) = &self.app.palette else {
+                    return Task::none();
+                };
+                let chosen = widget::palette::matching(&palette.query, self.app.active)
+                    .get(palette.selected)
+                    .and_then(|command| (command.message)(self.app.active));
+
+                // Closed first, and whatever it chose dispatched as an ordinary
+                // message: the palette runs the same command the keyboard does,
+                // rather than a second implementation of it.
+                self.app.palette = None;
+                match chosen {
+                    Some(message) => Task::done(message),
+                    None => Task::none(),
+                }
+            }
+
             Message::ShortcutsRequested => {
                 self.app.shortcuts_open = true;
                 Task::none()
@@ -2899,6 +2956,15 @@ impl Hidegit {
             base
         };
 
+        let base = match &self.app.palette {
+            Some(palette) => iced::widget::stack![
+                base,
+                widget::palette::view(palette, self.app.active, &self.app.theme.palette)
+            ]
+            .into(),
+            None => base,
+        };
+
         // Above the settings panel, because it can be opened from in front of
         // it and the answer to "what was that key" should not be behind
         // anything.
@@ -2985,6 +3051,7 @@ impl Hidegit {
                 pane: self.app.active_repo().map(|repo| repo.focus),
                 settings_open: self.app.settings_open,
                 shortcuts_open: self.app.shortcuts_open,
+                palette_open: self.app.palette.is_some(),
                 searching: self
                     .app
                     .active
@@ -3099,6 +3166,8 @@ pub struct KeyContext {
     /// The shortcut reference is open, and owns the keyboard the way every
     /// other layer over the screen does.
     pub shortcuts_open: bool,
+    /// The command palette is open, and owns the keyboard the same way.
+    pub palette_open: bool,
     /// The repository whose search panel is open, if one is.
     pub searching: Option<usize>,
     /// How many tabs there are, so `Cmd+<n>` past the last does nothing.
@@ -3113,6 +3182,7 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         pane,
         settings_open: settings,
         shortcuts_open,
+        palette_open,
         searching,
         open_repos,
     } = cx;
@@ -3138,6 +3208,22 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
             // Enter is handled where the selection lives: the binding cannot
             // know which commit is under it.
             Key::Named(Named::Enter) => Message::Repo(index, RepoMessage::SearchStepped(0)),
+            _ => nothing,
+        };
+    }
+
+    // The palette owns the keyboard while it is up. The arrows and Enter drive
+    // the list; everything else unmodified goes to the box being typed into,
+    // which is the whole point of it.
+    if palette_open {
+        return match key {
+            _ if command => nothing,
+            Key::Named(Named::Escape) => Message::PaletteDismissed,
+            Key::Named(Named::ArrowDown) => Message::PaletteStepped(1),
+            Key::Named(Named::ArrowUp) => Message::PaletteStepped(-1),
+            // Enter arrives through the box's own submit as well; both land on
+            // the same message, so it does not matter which gets there first.
+            Key::Named(Named::Enter) => Message::PaletteAccepted,
             _ => nothing,
         };
     }
@@ -3183,15 +3269,7 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         Key::Named(Named::Backspace) if command => repo(RepoMessage::DiscardSelectedRequested),
         // Checked before the unshifted `o`, or `Cmd+Shift+O` would open a picker.
         Key::Character(c) if command && shift && c.eq_ignore_ascii_case("o") => {
-            Message::PromptRequested(Box::new(Prompt {
-                kind: PromptKind::Clone,
-                title: "Clone a repository".to_owned(),
-                confirm_label: "Choose a folder…".to_owned(),
-                fields: vec![crate::state::PromptField::new(
-                    "URL",
-                    "https://github.com/owner/repo.git",
-                )],
-            }))
+            widget::palette::clone_prompt()
         }
         Key::Character(c) if command && c.as_str() == "f" && !shift => {
             repo(RepoMessage::SearchRequested)
@@ -3214,6 +3292,10 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         // key has arrived, so `?` as the first character of a commit message
         // would open this instead of typing.
         Key::Character(c) if command && c.as_str() == "/" => Message::ShortcutsRequested,
+        // Checked after `Cmd+Shift+P`, which is Pull, so the palette never
+        // swallows it — match arms are tried in order and the unshifted one
+        // matches a shifted press too.
+        Key::Character(c) if command && !shift && c.as_str() == "p" => Message::PaletteRequested,
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
         Key::Character(c) if command && c.as_str() == "d" => repo(RepoMessage::DiffModeToggled),
 
@@ -5043,6 +5125,153 @@ mod tests {
         assert!(!app.app.settings_open);
     }
 
+    // ---- the command palette ---------------------------------------------
+
+    #[test]
+    fn the_palette_matches_a_fragment_of_a_title_in_any_case() {
+        use crate::widget::palette;
+
+        let titles = |query: &str| -> Vec<&str> {
+            palette::matching(query, Some(0))
+                .into_iter()
+                .map(|command| command.title)
+                .collect()
+        };
+
+        assert_eq!(titles("PUSH"), ["Push", "Commit and push"]);
+        // Substring, so "Search commits" is a match for "commit" — which is
+        // the behaviour wanted: somebody typing a word gets everything that
+        // word appears in, not only the rows that start with it.
+        assert_eq!(
+            titles("  commit  "),
+            ["Commit", "Commit and push", "Search commits"]
+        );
+        assert!(titles("").len() > 10, "an empty query offers everything");
+        assert!(titles("zzz").is_empty());
+    }
+
+    #[test]
+    fn a_command_with_no_repository_to_act_on_is_absent_rather_than_inert() {
+        // Offering a row that does nothing when pressed is worse than not
+        // offering it: it reads as the application being broken.
+        use crate::widget::palette;
+
+        let without = palette::matching("", None);
+        assert!(
+            without.iter().all(|command| command.title != "Push"),
+            "Push needs a repository"
+        );
+        assert!(
+            without.iter().any(|command| command.title == "Settings"),
+            "Settings does not"
+        );
+        assert!(
+            palette::matching("", Some(0))
+                .iter()
+                .any(|command| command.title == "Push")
+        );
+    }
+
+    #[test]
+    fn accepting_dispatches_the_command_the_keyboard_would_have() {
+        // The palette runs the same message the shortcut does rather than a
+        // second implementation of the action.
+        let mut app = app_with(1);
+        let _ = app.update(Message::PaletteRequested);
+        let _ = app.update(Message::PaletteQueryChanged("fetch".to_owned()));
+
+        let sent = tests::drive::update_and_drive(&mut app, Message::PaletteAccepted);
+
+        assert!(
+            matches!(
+                sent.first(),
+                Some(Message::Repo(0, RepoMessage::FetchRequested))
+            ),
+            "got {sent:?}"
+        );
+        assert!(app.app.palette.is_none(), "and it closed behind itself");
+    }
+
+    #[test]
+    fn accepting_nothing_closes_the_palette_without_running_anything() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::PaletteRequested);
+        let _ = app.update(Message::PaletteQueryChanged("zzz".to_owned()));
+
+        let sent = tests::drive::update_and_drive(&mut app, Message::PaletteAccepted);
+
+        assert!(sent.is_empty(), "got {sent:?}");
+        assert!(app.app.palette.is_none());
+    }
+
+    #[test]
+    fn the_palette_selection_is_clamped_and_reset_by_typing() {
+        let mut app = app_with(1);
+        let _ = app.update(Message::PaletteRequested);
+
+        let _ = app.update(Message::PaletteStepped(-1));
+        assert_eq!(
+            app.app.palette.as_ref().unwrap().selected,
+            0,
+            "clamped at the top rather than wrapping to the bottom"
+        );
+
+        for _ in 0..50 {
+            let _ = app.update(Message::PaletteStepped(1));
+        }
+        let last = crate::widget::palette::matching("", Some(0)).len() - 1;
+        assert_eq!(app.app.palette.as_ref().unwrap().selected, last);
+
+        // The old index pointed into a list that no longer exists; keeping it
+        // would leave the highlight on whatever happened to be in that slot.
+        let _ = app.update(Message::PaletteQueryChanged("p".to_owned()));
+        assert_eq!(app.app.palette.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn every_chord_the_palette_prints_is_one_the_reference_lists() {
+        // Two tables naming the same bindings. This is what stops the palette
+        // teaching a chord the keyboard does not have.
+        let listed: std::collections::BTreeSet<&str> = crate::widget::shortcuts::REFERENCE
+            .iter()
+            .flat_map(|group| group.bindings)
+            .flat_map(|binding| binding.chords)
+            .copied()
+            .collect();
+
+        for command in crate::widget::palette::COMMANDS {
+            if let Some(chord) = command.chord {
+                assert!(
+                    listed.contains(chord),
+                    "“{}” prints {chord}, which no binding has",
+                    command.title
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmd_p_opens_the_palette_and_cmd_shift_p_still_pulls() {
+        // The one collision worth checking: match arms are tried in order and
+        // the unshifted arm matches a shifted press too.
+        let p = keyboard::Key::Character("p".into());
+        let command = keyboard::Modifiers::COMMAND;
+        let command_shift = keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT;
+        let cx = KeyContext {
+            active: Some(0),
+            ..KeyContext::default()
+        };
+
+        assert!(matches!(
+            shortcut(&p, command, cx),
+            Message::PaletteRequested
+        ));
+        assert!(matches!(
+            shortcut(&p, command_shift, cx),
+            Message::Repo(0, RepoMessage::PullRequested)
+        ));
+    }
+
     // ---- the shortcut reference, and keeping it honest -------------------
 
     /// One chord as written in the reference, as a key and its modifiers.
@@ -5216,6 +5445,13 @@ mod tests {
             ..KeyContext::default()
         };
         assert_eq!(bound_in(searching), listed_in(Context::Search));
+
+        let palette = KeyContext {
+            active: Some(0),
+            palette_open: true,
+            ..KeyContext::default()
+        };
+        assert_eq!(bound_in(palette), listed_in(Context::Command));
 
         for panel in [
             KeyContext {
