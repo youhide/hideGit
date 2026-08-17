@@ -21,7 +21,7 @@ use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
     MergeOutcome, Patch, ProgressSink, ProgressUpdate, PullOpts, PullOutcome, PushOutcome,
     PushSpec, RebasePlan, ResetMode, SearchField, SearchHit, SearchQuery, SearchResults,
-    SequenceControl, SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
+    SequenceControl, SequenceOutcome, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec,
 };
 
 /// An error the fake should return instead of data.
@@ -69,25 +69,62 @@ pub enum WriteCall {
     StagePatch(Patch),
     Unstage(Vec<PathBuf>),
     Discard(Vec<PathBuf>),
-    Commit { message: String, opts: CommitOpts },
+    Commit {
+        message: String,
+        opts: CommitOpts,
+    },
     Checkout(CheckoutTarget),
-    CreateBranch { name: String, from: StartPoint },
-    RenameBranch { from: String, to: String },
-    DeleteBranch { name: String, force: bool },
+    CreateBranch {
+        name: String,
+        from: StartPoint,
+    },
+    RenameBranch {
+        from: String,
+        to: String,
+    },
+    DeleteBranch {
+        name: String,
+        force: bool,
+    },
     CreateTag(TagSpec),
     DeleteTag(String),
-    AddRemote { name: String, url: String },
-    SetRemoteUrl { name: String, url: String },
+    AddRemote {
+        name: String,
+        url: String,
+    },
+    SetRemoteUrl {
+        name: String,
+        url: String,
+    },
     RemoveRemote(String),
-    Fetch { remote: String, opts: FetchOpts },
+    Fetch {
+        remote: String,
+        opts: FetchOpts,
+    },
     Pull(PullOpts),
-    Push { remote: String, spec: PushSpec },
+    Push {
+        remote: String,
+        spec: PushSpec,
+    },
     Stash(StashOp),
-    Merge { from: String, opts: MergeOpts },
-    Rebase { onto: String, plan: RebasePlan },
+    UpdateSubmodules {
+        paths: Vec<PathBuf>,
+        opts: SubmoduleUpdate,
+    },
+    Merge {
+        from: String,
+        opts: MergeOpts,
+    },
+    Rebase {
+        onto: String,
+        plan: RebasePlan,
+    },
     CherryPick(Vec<ObjectId>),
     Revert(Vec<ObjectId>),
-    Reset { target: StartPoint, mode: ResetMode },
+    Reset {
+        target: StartPoint,
+        mode: ResetMode,
+    },
     ControlSequence(SequenceControl),
 }
 
@@ -545,6 +582,24 @@ impl GitBackend for FakeBackend {
         })?;
         self.replay_progress(progress, cancel)?;
         Ok(FetchOutcome::default())
+    }
+
+    fn update_submodules(
+        &self,
+        paths: &[&Path],
+        opts: SubmoduleUpdate,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<Vec<Submodule>, GitError> {
+        self.record(WriteCall::UpdateSubmodules {
+            paths: paths.iter().map(|p| p.to_path_buf()).collect(),
+            opts,
+        })?;
+        self.replay_progress(progress, cancel)?;
+        // Unchanged, deliberately: the fake does not simulate a checkout, and a
+        // caller that assumed an update always moves something should see that
+        // assumption fail here rather than in a real repository.
+        Ok(self.submodules.clone())
     }
 
     fn pull(
