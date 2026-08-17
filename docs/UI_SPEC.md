@@ -286,18 +286,23 @@ Each row carries its own actions: `+` to stage, `−` to unstage, `✕` to disca
 discards the open row. Discarding a *staged* change does nothing by keyboard — unstaging and then
 destroying is two decisions, and one key must not stand for both.
 
-**`Space` is not bound.** The spec's table lists it as stage/unstage, and it is deliberately absent
-until M6's keyboard-navigation work. iced 0.14 keeps text-input focus inside the widget: it is not
-**observable** from the application, and wrapping a field in a `mouse_area` to catch the click that
-grants focus swallows that click so the field never focuses at all. So a global key binding cannot
-know whether the commit message field is being typed into until its first keystroke has already been
-delivered — and `Space` is the one bare key whose leak would stage a file. `j`/`k` remain bound
-because their leak only moves a highlight.
+**`Space` asks about focus before it acts**, and the story of why is worth keeping.
 
-**Correcting what M2 recorded here:** focus is not observable, but it *is* settable, through a widget
-operation. That is what lets a prompt open with the cursor already in its first field, so the user
-does not have to click the thing they just asked for. It does not solve `Space` — knowing where focus
-*is* remains the missing half — but it is the reason a modal text input is workable at all.
+It was unbound through M2 and M5. iced 0.14 keeps text-input focus inside the widget, `on_input` is
+the only signal it offers, and wrapping a field in a `mouse_area` to catch the click that grants
+focus swallows that click so the field never focuses at all. A global binding therefore could not
+know the commit message field was being typed into until its first keystroke had already arrived —
+and `Space` is the one bare key whose leak would stage a file. `j`/`k` stayed bound because their
+leak only moves a highlight.
+
+The conclusion was wrong, and M6 found out how. Focus is not observable through `on_input`, but it
+*is* observable through a `find_focused` widget operation — a different mechanism, not a harder push
+on the same one. `Space` now runs that query and acts only when nothing holds focus.
+
+The operation **ignores widgets with no id**, which is why the composer's two fields carry
+`COMPOSER_FIELD_IDS`, and why the file filter above a commit's changed files carries one too.
+Without them the query answers "nothing focused" while a message is being typed, and the guard is
+worse than useless — it looks like it works.
 
 ## Commit composer
 
