@@ -501,6 +501,53 @@ pub(crate) fn worktrees(repo: &gix::Repository) -> Result<Vec<Worktree>, GitErro
     Ok(out)
 }
 
+/// Whether the object a pointer names is in the repository's local LFS store.
+///
+/// Verified against `git-lfs` 3.7.1 rather than assumed, because the whole
+/// value of the answer is that it is right: the store is
+/// `<storage>/objects/<oid[0..2]>/<oid[2..4]>/<oid>`, and `<storage>` is
+/// `lfs.storage` when it is set — resolved against the `.git` directory when
+/// relative, taken as-is when absolute — and `.git/lfs` when it is not.
+///
+/// Read from disk rather than by asking `git lfs`: the question is worth
+/// answering precisely when the tool is missing, since a repository whose
+/// objects were never fetched looks exactly like one whose files are corrupt.
+///
+/// A present *file* is taken as a present object. Verifying it would mean
+/// hashing every large file to render a diff header, which is the cost the
+/// pointer exists to avoid.
+fn lfs_object_present(repo: &gix::Repository, pointer: &LfsPointer) -> bool {
+    // The oid as it appears in the pointer is `sha256:<hex>`; the path uses the
+    // hex alone.
+    let Some(hex) = pointer.oid.rsplit(':').next() else {
+        return false;
+    };
+    if hex.len() < 4 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return false;
+    }
+
+    let git_dir = repo.common_dir();
+    let storage = repo
+        .config_snapshot()
+        .string("lfs.storage")
+        .map(gix::path::from_bstring)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                git_dir.join(path)
+            }
+        })
+        .unwrap_or_else(|| git_dir.join("lfs"));
+
+    storage
+        .join("objects")
+        .join(&hex[0..2])
+        .join(&hex[2..4])
+        .join(hex)
+        .is_file()
+}
+
 /// The submodules `.gitmodules` declares, in path order.
 ///
 /// Two commits per entry, and they are read from different places on purpose.
@@ -1347,6 +1394,7 @@ fn to_file_diff(
     };
 
     assemble(
+        repo,
         path,
         status,
         load_side(repo, old_id)?,
@@ -1357,6 +1405,7 @@ fn to_file_diff(
 /// Turns two loaded sides into a file's diff, or into the placeholder that
 /// stands in for one.
 fn assemble(
+    repo: &gix::Repository,
     path: PathBuf,
     status: ChangeStatus,
     old: Side,
@@ -1374,9 +1423,11 @@ fn assemble(
         (Side::Text(old), Side::Text(new))
             if LfsPointer::parse(old).is_some() || LfsPointer::parse(new).is_some() =>
         {
+            let new = LfsPointer::parse(new);
             FileDiffContent::Lfs {
                 old: LfsPointer::parse(old),
-                new: LfsPointer::parse(new),
+                fetched: new.as_ref().map(|p| lfs_object_present(repo, p)),
+                new,
             }
         }
         (Side::Text(old), Side::Text(new)) => FileDiffContent::Text {
@@ -1445,6 +1496,7 @@ fn worktree_diff(repo: &gix::Repository, half: Half) -> Result<Diff, GitError> {
         };
 
         files.push(assemble(
+            repo,
             change.path.clone(),
             change.status.clone(),
             old,

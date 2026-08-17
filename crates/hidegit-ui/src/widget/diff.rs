@@ -81,6 +81,20 @@ fn lfs_summary(old: Option<&LfsPointer>, new: Option<&LfsPointer>) -> String {
     }
 }
 
+/// What the local LFS store has, appended to the size.
+///
+/// Said only when the content is *missing*, which is the state worth a
+/// sentence: a clone leaves every LFS object in it until something fetches
+/// them, and the file on disk is then the pointer text — which reads as
+/// corruption rather than as an absence. Having the object is the expected
+/// case and gets no words.
+fn lfs_fetch_state(fetched: Option<bool>) -> &'static str {
+    match fetched {
+        Some(false) => ", not fetched — run `git lfs pull` to get the content",
+        _ => "",
+    }
+}
+
 pub fn view<'a>(
     diff: &'a Diff,
     file: usize,
@@ -108,11 +122,12 @@ pub fn view<'a>(
         // The size, not the pointer. Three lines of `oid sha256:…` are what
         // Git stores, not what changed — and "4.2 MB → 5.1 MB" is the most a
         // diff can honestly say about a file whose content it does not have.
-        FileDiffContent::Lfs { old, new } => empty(
+        FileDiffContent::Lfs { old, new, fetched } => empty(
             &format!(
-                "{} is stored with Git LFS — {}",
+                "{} is stored with Git LFS — {}{}",
                 file.path.display(),
-                lfs_summary(old.as_ref(), new.as_ref())
+                lfs_summary(old.as_ref(), new.as_ref()),
+                lfs_fetch_state(*fetched)
             ),
             palette,
         ),
@@ -699,6 +714,19 @@ mod tests {
         assert_eq!(
             lfs_summary(Some(&pointer("a", 8192)), None),
             "no longer tracked by LFS, was 8.0 KiB"
+        );
+    }
+
+    #[test]
+    fn only_a_missing_lfs_object_is_worth_a_sentence() {
+        // Having the content is the expected case. Saying "fetched" on every
+        // LFS file would make the one that matters harder to notice, not
+        // easier.
+        assert_eq!(lfs_fetch_state(Some(true)), "");
+        assert_eq!(lfs_fetch_state(None), "");
+        assert_eq!(
+            lfs_fetch_state(Some(false)),
+            ", not fetched — run `git lfs pull` to get the content"
         );
     }
 }

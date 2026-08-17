@@ -506,6 +506,41 @@ impl Fixture {
             .join(name)
     }
 
+    /// Puts an object into the repository's local Git LFS store.
+    ///
+    /// Built by hand rather than by running `git lfs`, for the reason the
+    /// pointers in these tests are: the layout is
+    /// `.git/lfs/objects/<oid[0..2]>/<oid[2..4]>/<oid>`, which is a directory
+    /// structure and not a tool. The suite therefore needs no `git-lfs` on any
+    /// of the three CI platforms, and still exercises the real thing.
+    ///
+    /// The layout was **verified against `git-lfs` 3.7.1** rather than assumed;
+    /// `a_real_git_lfs_store_has_the_layout_this_suite_builds_by_hand` is the
+    /// test that re-checks it on a machine that has the tool.
+    pub fn with_lfs_object(self, oid_hex: &str, contents: &[u8]) -> Self {
+        assert!(
+            oid_hex.len() >= 4 && oid_hex.bytes().all(|b| b.is_ascii_hexdigit()),
+            "an LFS oid is hex"
+        );
+
+        let dir = self
+            .dir
+            .path()
+            .join(".git/lfs/objects")
+            .join(&oid_hex[0..2])
+            .join(&oid_hex[2..4]);
+        std::fs::create_dir_all(&dir).expect("creating a fixture directory");
+        std::fs::write(dir.join(oid_hex), contents).expect("writing a fixture file");
+
+        self
+    }
+
+    /// Sets a repository-level config value, for the knobs a test is about.
+    pub fn config(self, key: &str, value: &str) -> Self {
+        self.git(["config", key, value]);
+        self
+    }
+
     /// Stashes whatever is in the working directory, with Git's own message.
     ///
     /// Needs something to stash: `git stash push` with a clean worktree succeeds
