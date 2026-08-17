@@ -472,8 +472,8 @@ and a new review thread both do notify.
 | `Tab` / `Shift+Tab` | Cycle panes: sidebar → graph → detail |
 | `Cmd+F` | Search commits — also a toolbar button, since a shortcut is how you use a thing you already know exists |
 | `Cmd+P` | Command palette. Substring match over the command titles, not fuzzy: a fuzzy match that puts "Discard the selected changes" under `push` because the letters appear in order is worse than no match, and the list is fifteen rows |
-| `G` then `W` | Go to working directory — **not built**; chords need a pending-key state nothing else wants yet |
-| `G` then `B` | Branch switcher — **not built**, same reason |
+| `G` then `W` | Go to the working directory |
+| `G` then `B` | Branch switcher — **not built**: the chord mechanism exists, the switcher it would open does not |
 | **Working directory** | |
 | `Space` | Stage / unstage the selected file |
 | `Cmd+Enter` | Commit |
@@ -495,6 +495,15 @@ binding depend on the keyboard.
 | **Conflicts** | |
 | `Cmd+]` / `Cmd+[` | Next / previous conflict |
 | `Cmd+Shift+.` | Continue operation |
+
+**Chords.** `G` on its own arms the next key and does nothing else. A binding function that maps one
+press to one message cannot remember the press before it, so the pending prefix is state: `G` returns
+a message that records it, and the key after resolves against it. Anything that does not complete a
+chord **cancels** rather than falling through to its ordinary binding — after `G`, a stray `J` must
+not step a hunk and leave the chord armed for the key after that. The prefix is cleared only by the
+key that completes or cancels it, never by an unrelated message, so a poll landing between `G` and
+`W` does not eat the chord. `G` is bare, so it is guarded by the same rule as `J` and `K`: typing
+"Go to sleep" into a commit message arms nothing.
 
 `Space` is the one binding that cannot be decided from the key alone. iced keeps text-input focus
 inside the widget, and the `editing` flag that guards every other bare key is only set once a

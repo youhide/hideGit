@@ -1178,6 +1178,12 @@ pub struct App {
     /// is nothing to hold and nothing to discard on close. Settings that only
     /// take effect on OK are settings people are afraid to explore.
     pub settings_open: bool,
+    /// A chord prefix waiting for the key that completes it.
+    ///
+    /// `G` on its own means nothing; `G` then `W` goes to the working
+    /// directory. Held here because a binding function that maps one press to
+    /// one message cannot remember the press before it.
+    pub chord: Option<char>,
     /// The command palette, if it is up.
     pub palette: Option<CommandPalette>,
     /// The keyboard shortcut reference is open.
@@ -1231,6 +1237,7 @@ impl Default for App {
             theme: Theme::default(),
             themes: Theme::built_in(),
             settings_open: false,
+            chord: None,
             palette: None,
             shortcuts_open: false,
             settings_error: None,

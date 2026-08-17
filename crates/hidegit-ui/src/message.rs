@@ -285,6 +285,13 @@ pub enum Message {
     /// One end of the quiet-hours window was set to an hour.
     QuietHourChosen(QuietBound, u8),
     /// A repository was muted or unmuted, keyed as `owner/name`.
+    /// A chord prefix was pressed, and the next key completes it.
+    ChordStarted(char),
+    /// The key after a chord prefix did not complete one.
+    ChordCancelled,
+    /// A chord completed. Clears the pending prefix and dispatches what it
+    /// meant, so the chord and the shortcut run the same message.
+    ChordResolved(Box<Message>),
     /// The command palette was asked for.
     PaletteRequested,
     /// …and dismissed.
