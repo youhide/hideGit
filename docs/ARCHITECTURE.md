@@ -153,6 +153,8 @@ pub trait GitBackend: Send + Sync + Debug {
     fn push(&self, remote: &str, spec: &PushSpec,
             p: &dyn ProgressSink, c: &CancelToken) -> Result<PushOutcome, GitError>;
     fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError>;
+    fn update_submodules(&self, paths: &[&Path], opts: SubmoduleUpdate,
+                         p: &dyn ProgressSink, c: &CancelToken) -> Result<Vec<Submodule>, GitError>;
     fn merge(&self, from: &str, opts: &MergeOpts) -> Result<MergeOutcome, GitError>; // M5
     fn rebase(&self, onto: &str, plan: &RebasePlan) -> Result<SequenceOutcome, GitError>;    // M5
     fn cherry_pick(&self, ids: &[ObjectId]) -> Result<SequenceOutcome, GitError>;    // M5

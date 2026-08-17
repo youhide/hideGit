@@ -122,6 +122,22 @@ pub struct FetchOpts {
     pub all_remotes: bool,
 }
 
+/// How much a submodule update should do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubmoduleUpdate {
+    /// Register submodules that have never been set up, and clone them.
+    ///
+    /// Not a convenience flag. Without it `git submodule update` **exits 0
+    /// having done nothing** for an uninitialised submodule, printing a hint
+    /// and no error — so a caller that ignores this would report success for an
+    /// operation that changed nothing at all. That is why
+    /// [`crate::GitBackend::update_submodules`] answers with the state
+    /// afterwards rather than with `()`.
+    pub init: bool,
+    /// Recurse into submodules that have submodules of their own.
+    pub recursive: bool,
+}
+
 /// What a fetch brought back.
 ///
 /// The names are as `git` printed them — usually short, like `origin/main` — so

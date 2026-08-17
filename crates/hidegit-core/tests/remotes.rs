@@ -9,12 +9,14 @@
 //! side where it matters, rather than against hideGit's own reader. A bug shared
 //! by the writer and the reader would otherwise pass.
 
+use std::path::Path;
+
 use hidegit_core::backend::GitBackend;
 use hidegit_core::fixture::{Repo, fixture};
-use hidegit_core::model::{DiffTarget, Divergence, Head, RevSpec};
+use hidegit_core::model::{DiffTarget, Divergence, Head, RevSpec, SubmoduleState};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, FetchOpts, ForceMode, NoProgress, ProgressSink, ProgressUpdate,
-    PullOpts, PullOutcome, PushSpec, StartPoint, StashOp, StashOutcome, TagSpec,
+    PullOpts, PullOutcome, PushSpec, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec,
 };
 use hidegit_core::{GitError, ObjectId};
 
@@ -1650,4 +1652,126 @@ fn creating_a_tag_refuses_while_the_index_is_locked() {
 
     assert!(matches!(error, GitError::IndexLocked(_)), "got {error:?}");
     assert!(lock.exists(), "the lock is reported, never deleted");
+}
+
+// ---- submodules ----------------------------------------------------------
+
+#[test]
+fn updating_a_submodule_that_was_deinitialised_checks_it_out_again() {
+    let repo = fixture()
+        .commit("A")
+        .with_submodule("vendor/lib")
+        .deinit_submodule("vendor/lib")
+        .build();
+    let backend = repo.backend();
+
+    let before = &backend.submodules().expect("readable")[0];
+    assert_eq!(before.state(), SubmoduleState::Uninitialised);
+
+    let after = backend
+        .update_submodules(
+            &[Path::new("vendor/lib")],
+            SubmoduleUpdate {
+                init: true,
+                recursive: false,
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("an update with --init sets up a submodule");
+
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].state(), SubmoduleState::Current);
+    // Against the filesystem rather than against hideGit's own reader: a
+    // checkout that reported success without producing a file would pass a test
+    // that only asked the reader.
+    assert!(
+        repo.path().join("vendor/lib/nested.txt").is_file(),
+        "the working tree is actually there"
+    );
+}
+
+#[test]
+fn updating_without_init_reports_a_submodule_that_did_not_move() {
+    // `git submodule update` exits 0 having done nothing for a submodule that
+    // was never set up. That is why the method answers with the state
+    // afterwards: a `Result<(), _>` would have called this a success.
+    let repo = fixture()
+        .commit("A")
+        .with_submodule("vendor/lib")
+        .deinit_submodule("vendor/lib")
+        .build();
+    let backend = repo.backend();
+
+    let after = backend
+        .update_submodules(
+            &[Path::new("vendor/lib")],
+            SubmoduleUpdate::default(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("git reports no error for this, which is the point");
+
+    assert_eq!(
+        after[0].state(),
+        SubmoduleState::Uninitialised,
+        "nothing was set up, and the answer says so rather than implying otherwise"
+    );
+    assert!(
+        !repo.path().join("vendor/lib/nested.txt").exists(),
+        "no checkout was made"
+    );
+}
+
+#[test]
+fn updating_a_submodule_that_moved_puts_it_back_on_the_recorded_commit() {
+    let repo = fixture()
+        .commit("A")
+        .with_submodule("vendor/lib")
+        .commit_in_submodule("vendor/lib", "Nested change")
+        .build();
+    let backend = repo.backend();
+
+    let before = &backend.submodules().expect("readable")[0];
+    assert_eq!(before.state(), SubmoduleState::Moved);
+    let recorded = before.recorded.expect("the gitlink is staged");
+
+    let after = backend
+        .update_submodules(
+            &[],
+            SubmoduleUpdate::default(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect("an empty path list means every submodule");
+
+    assert_eq!(after[0].state(), SubmoduleState::Current);
+    assert_eq!(
+        Repo::git_in(&repo.path().join("vendor/lib"), ["rev-parse", "HEAD"]),
+        recorded.to_hex(),
+        "real git agrees the nested checkout moved back"
+    );
+}
+
+#[test]
+fn updating_a_path_that_is_not_a_submodule_fails_with_gits_own_words() {
+    let repo = fixture().commit("A").with_submodule("vendor/lib").build();
+    let backend = repo.backend();
+
+    let error = backend
+        .update_submodules(
+            &[Path::new("not-a-submodule")],
+            SubmoduleUpdate {
+                init: true,
+                recursive: false,
+            },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .expect_err("a path that is not a submodule is not silently ignored");
+
+    assert!(
+        error.to_string().contains("not-a-submodule"),
+        "git's own message names the path, and it reaches the user: {error}"
+    );
 }

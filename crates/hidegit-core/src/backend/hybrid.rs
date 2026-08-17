@@ -21,7 +21,7 @@ use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FastForward, FetchOpts, FetchOutcome,
     ForceMode, MergeOpts, MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome,
     PushSpec, RebaseAction, RebasePlan, ResetMode, SearchQuery, SearchResults, SequenceControl,
-    SequenceOutcome, StartPoint, StashOp, StashOutcome, TagSpec,
+    SequenceOutcome, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec,
 };
 use crate::process::GitCommand;
 
@@ -770,6 +770,47 @@ impl GitBackend for HybridBackend {
                 Err(classify_remote_failure(remote, error))
             }
         }
+    }
+
+    fn update_submodules(
+        &self,
+        paths: &[&Path],
+        opts: SubmoduleUpdate,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<Vec<Submodule>, GitError> {
+        let mut command = GitCommand::new("submodule").args(["update", "--progress"]);
+        if opts.init {
+            command = command.arg("--init");
+        }
+        if opts.recursive {
+            command = command.arg("--recursive");
+        }
+
+        // `--` even with nothing after it, which `git submodule update` reads as
+        // "every submodule" — the same answer as omitting the separator, and
+        // uniform argument vectors are worth more than saving one element.
+        // Paths, not revisions, so it is `operands` rather than `revisions`.
+        command
+            .operands(paths)
+            .cwd(&self.workdir)
+            .takes_locks()
+            .run_streaming(progress, cancel)?;
+
+        // `--init` writes `submodule.<name>.url` into `.git/config`, and
+        // gitoxide answers from the snapshot it took when the repository was
+        // opened until the handle is replaced.
+        //
+        // No test fails when this line is removed, and that was checked rather
+        // than assumed. Everything the read-back below looks at is either the
+        // worktree `.gitmodules`, a filesystem stat, or a nested repository
+        // opened fresh — none of it comes from the cached config, so a stale
+        // snapshot is invisible *here*. It is not invisible to the next caller,
+        // and this is the rule that exists because the symptom is quiet.
+        self.invalidate();
+
+        // Read back, because success here does not mean anything happened.
+        gix_read::submodules(&self.repo())
     }
 
     fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError> {

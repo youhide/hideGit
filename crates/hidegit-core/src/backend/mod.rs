@@ -39,7 +39,7 @@ use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
     MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome, PushSpec, RebasePlan,
     ResetMode, SearchQuery, SearchResults, SequenceControl, SequenceOutcome, StartPoint, StashOp,
-    StashOutcome, TagSpec,
+    StashOutcome, SubmoduleUpdate, TagSpec,
 };
 
 /// Everything hideGit can ask of a repository.
@@ -219,6 +219,30 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     ) -> Result<PushOutcome, GitError>;
 
     fn stash(&self, op: &StashOp) -> Result<StashOutcome, GitError>;
+
+    /// Brings submodules to the commit the superproject records, cloning the
+    /// ones that were never set up when [`SubmoduleUpdate::init`] is set.
+    ///
+    /// An empty `paths` means every submodule, which is what a bare `--`
+    /// separator means to `git submodule update` itself.
+    ///
+    /// **Returns the state afterwards rather than `()`, read back.** This
+    /// command's failure mode is not an error: `git submodule update` without
+    /// `--init` exits 0 having done nothing for a submodule that was never set
+    /// up, and a caller with only a `Result<(), _>` would report that as a
+    /// success. Answering with the submodules as they now are lets the caller
+    /// see that nothing moved.
+    ///
+    /// Reports progress and can be cancelled, because in the general case this
+    /// clones: a fresh clone of a superproject has no submodule checkouts at
+    /// all, and bringing them in is a network operation.
+    fn update_submodules(
+        &self,
+        paths: &[&Path],
+        opts: SubmoduleUpdate,
+        progress: &dyn ProgressSink,
+        cancel: &CancelToken,
+    ) -> Result<Vec<Submodule>, GitError>;
 
     /// Merges `from` into the current branch.
     ///
