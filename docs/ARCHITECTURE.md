@@ -714,15 +714,27 @@ Stated plainly, because a reader should meet these here rather than discover the
    a missing credential fail fast rather than hang, and the failure is classified into `AuthError` —
    but that classification is only ever exercised against synthetic stderr. Real credentials stay a
    manual check on a developer's machine.
-5. **GitHub is the only forge, and no second one is planned.** The `Forge` trait still earns its
-   place — it is the seam that keeps `hidegit-core` free of any network dependency, and it is what
-   makes the UI's data model provider-neutral — but it is no longer a bet on a second provider
-   arriving. A trait designed against one implementation usually needs adjusting when a second
-   turns up, so anyone adding one should expect to revise it rather than to slot in underneath.
-   **GitHub Enterprise is not wired up either** — a
-   self-hosted instance puts REST on `/api/v3` and GraphQL on `/api/graphql`, and there is no
-   configuration surface to name a host from. `Endpoint` carries the three bases apart so adding it
-   is a change in one place.
+5. **GitHub is the only forge, and will be until 1.0.** That is
+   [ADR-0003](./adr/0003-forge-github-first.md)'s decision — GitHub only *before* 1.0, behind a
+   `Forge` trait from the start — not the end of the subject. A second provider is expected after
+   it, and `CONTRIBUTING` says how to start one early if somebody wants to.
+
+   The trait earns its place either way: it is the seam that keeps `hidegit-core` free of any
+   network dependency, and it is what makes the UI's data model provider-neutral, so a GitLab merge
+   request becomes a `PullRequest` translated at the boundary rather than a branch in the interface.
+   What it is *not* is a finished boundary. A trait designed against one implementation almost never
+   survives contact with the second unchanged, so anyone adding one should expect to revise it
+   rather than slot in underneath — which the ADR lists as an anticipated cost rather than a
+   surprise.
+
+   **GitHub Enterprise is not wired up either** — a self-hosted instance puts REST on `/api/v3` and
+   GraphQL on `/api/graphql`, which is a different layout rather than a different hostname, and
+   there is no configuration surface to name a host from. `Endpoint` carries the three bases apart
+   so adding it is a change in one place.
+
+   (This entry used to say "no second one is planned", which reversed the ADR it links to. Three
+   documents expect a second provider — the ADR, `CONTRIBUTING` and the provider-neutral data model
+   itself — and this was the one that had drifted.)
 6. **Pull request alerts have not been verified against a real account.** Every forge test mocks
    HTTP, which is what keeps the suite hermetic — and it means the milestone's own bar, a real
    review request producing a real notification, is a manual check. So is a full day of running
