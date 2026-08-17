@@ -71,10 +71,16 @@ struct Shell {
     /// The last panic report the user was told about, written back out so the
     /// notice does not repeat on every start.
     announced_panic: Option<String>,
+    /// The release the user was last told about, for the same reason.
+    announced_update: Option<String>,
+    /// When the update check last ran.
+    last_update_check: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
 enum ShellMessage {
+    /// The update check answered: a newer release, or nothing.
+    UpdateChecked(Option<hidegit_forge::update::Update>),
     Ui(Message),
     Resized(Size),
     Moved(iced::Point),
@@ -140,8 +146,14 @@ fn main() -> iced::Result {
     } else {
         Geometry::default()
     };
-    let recents: Vec<PathBuf> = state.recents.into_iter().map(|r| r.path).collect();
-    let announced = state.announced_panic;
+    let session = Session {
+        recents: state.recents.into_iter().map(|r| r.path).collect(),
+        geometry: geometry.clone(),
+        announced_panic: state.announced_panic,
+        unannounced_panic: unannounced,
+        announced_update: state.announced_update,
+        last_update_check: state.last_update_check,
+    };
 
     // `mut` is only used on Linux; see the cfg block below.
     #[allow(unused_mut)]
@@ -165,12 +177,9 @@ fn main() -> iced::Result {
         move || {
             boot(
                 initial.clone(),
-                recents.clone(),
                 paths.clone(),
                 config.clone(),
-                geometry.clone(),
-                announced.clone(),
-                unannounced.clone(),
+                session.clone(),
             )
         },
         update,
@@ -225,15 +234,44 @@ fn window_icon() -> Option<window::Icon> {
     }
 }
 
+/// The wall clock in seconds, for the once-a-day rule.
+fn now_seconds() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// What the last session left behind, read from `state.toml` before the window
+/// exists.
+///
+/// One value rather than six arguments: they are all the same thing — what was
+/// true when hideGit was last closed — and threading them separately made `boot`
+/// a list nobody could read.
+#[derive(Debug, Clone)]
+struct Session {
+    recents: Vec<PathBuf>,
+    geometry: Geometry,
+    /// The panic report the user was already told about.
+    announced_panic: Option<String>,
+    /// A newer one, which they have not been told about yet.
+    unannounced_panic: Option<String>,
+    announced_update: Option<String>,
+    last_update_check: Option<i64>,
+}
+
 fn boot(
     initial: Vec<PathBuf>,
-    recents: Vec<PathBuf>,
     paths: Option<Paths>,
     config: Config,
-    geometry: Geometry,
-    announced_panic: Option<String>,
-    unannounced_panic: Option<String>,
+    session: Session,
 ) -> (Shell, Task<ShellMessage>) {
+    let Session {
+        recents,
+        geometry,
+        announced_panic,
+        unannounced_panic,
+        announced_update,
+        last_update_check,
+    } = session;
+
     // Off disk once, here, rather than every time the panel is opened: a theme
     // is a file somebody wrote, not something that changes while hideGit runs.
     let custom = match &paths {
@@ -268,6 +306,7 @@ fn boot(
     // shows this one, and the shell is what acts on it.
     ui.app.remember_geometry = config.window.remember_geometry;
     ui.app.panic_reports = config.diagnostics.panic_reports;
+    ui.app.check_for_updates = config.diagnostics.check_for_updates;
 
     // Said once, on the start after it happened, and named so it can be found.
     // hideGit survives most panics, so this is deliberately not "hideGit
@@ -282,6 +321,36 @@ fn boot(
         });
     }
 
+    // At most once a day, and never when it is off. Off the UI thread like
+    // everything else that touches a network.
+    let check = if hidegit_forge::update::due(
+        config.diagnostics.check_for_updates,
+        last_update_check,
+        now_seconds(),
+    ) {
+        Task::perform(
+            async {
+                hidegit_forge::update::check(
+                    "https://api.github.com",
+                    hidegit_forge::update::REPOSITORY,
+                    env!("CARGO_PKG_VERSION"),
+                )
+                .await
+            },
+            |outcome| match outcome {
+                Ok(update) => ShellMessage::UpdateChecked(update),
+                Err(error) => {
+                    // Logged and forgotten. Nothing is wrong and there is
+                    // nothing anybody can do, so a toast would be noise.
+                    tracing::debug!(%error, "the update check found nothing out");
+                    ShellMessage::UpdateChecked(None)
+                }
+            },
+        )
+    } else {
+        Task::none()
+    };
+
     (
         Shell {
             ui,
@@ -289,11 +358,13 @@ fn boot(
             paths,
             config,
             geometry,
+            announced_update,
+            last_update_check,
             // The one just announced, or the one from before if there was
             // nothing new to say.
             announced_panic: unannounced_panic.or(announced_panic),
         },
-        task.map(ShellMessage::Ui),
+        Task::batch([task.map(ShellMessage::Ui), check]),
     )
 }
 
@@ -313,6 +384,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                     | Message::RepositoryMuteToggled(_)
                     | Message::RememberGeometryToggled
                     | Message::PanicReportsToggled
+                    | Message::UpdateCheckToggled
             );
             // Opening a repository is what changes the recents list, and it is
             // the only thing that does. Written at once rather than at exit,
@@ -326,6 +398,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                 shell.config.alerts = shell.ui.app.alerts.clone();
                 shell.config.window.remember_geometry = shell.ui.app.remember_geometry;
                 shell.config.diagnostics.panic_reports = shell.ui.app.panic_reports;
+                shell.config.diagnostics.check_for_updates = shell.ui.app.check_for_updates;
 
                 // The outcome goes back to the panel, which otherwise says the
                 // change was saved whatever happened to the file.
@@ -337,6 +410,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                             alerts: shell.config.alerts.clone(),
                             remember_geometry: shell.config.window.remember_geometry,
                             panic_reports: shell.config.diagnostics.panic_reports,
+                            check_for_updates: shell.config.diagnostics.check_for_updates,
                         },
                     ),
                     None => Err(config::SaveError::NoConfigDirectory),
@@ -368,6 +442,32 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             shell.geometry.x = Some(position.x);
             shell.geometry.y = Some(position.y);
             shell.unsaved_geometry = true;
+            Task::none()
+        }
+
+        ShellMessage::UpdateChecked(update) => {
+            // Recorded whatever the answer was, so a run that found nothing
+            // still counts as having asked today.
+            shell.last_update_check = Some(now_seconds());
+
+            if let Some(update) = update
+                && shell.announced_update.as_deref() != Some(update.tag.as_str())
+            {
+                shell.ui.app.toast(&hidegit_ui::message::UiError {
+                    summary: format!("hideGit {} is available", update.tag),
+                    details: format!(
+                        "You are running {}.\n\n{}\n\nNothing was downloaded and nothing \
+                         will be — hideGit does not install its own updates.",
+                        env!("CARGO_PKG_VERSION"),
+                        update.url
+                    ),
+                });
+                shell.announced_update = Some(update.tag);
+            }
+
+            // Written now rather than at exit: a check that ran and was then
+            // lost to a kill would run again on the next start.
+            persist(shell);
             Task::none()
         }
 
@@ -416,6 +516,8 @@ fn persist(shell: &mut Shell) {
             .map(|path| RecentRepository { path: path.clone() })
             .collect(),
         announced_panic: shell.announced_panic.clone(),
+        announced_update: shell.announced_update.clone(),
+        last_update_check: shell.last_update_check,
     };
 
     config::save(&paths.state, &state);
@@ -515,6 +617,11 @@ fn report_missing_git(error: &GitError) {
 mod tests {
     use super::*;
 
+    /// `update` under its own name: the module has a `State` field called
+    /// `update` in scope and reading `update(&mut shell, …)` twice over is
+    /// worse than one alias.
+    use super::update as update_shell;
+
     /// A shell with nowhere to write, which is all these need: what is under
     /// test is which events reach the geometry, not the file behind it.
     fn shell() -> Shell {
@@ -525,6 +632,8 @@ mod tests {
             geometry: Geometry::default(),
             unsaved_geometry: false,
             announced_panic: None,
+            announced_update: None,
+            last_update_check: None,
         }
     }
 
@@ -637,6 +746,67 @@ mod tests {
         assert_eq!(shell.ui.app.settings_error, None, "it was written");
         let reloaded: Config = config::load(&dir.path().join("config.toml"));
         assert!(!reloaded.window.remember_geometry);
+    }
+
+    #[test]
+    fn an_available_update_is_said_once_and_never_installed() {
+        let mut shell = shell();
+        let update = hidegit_forge::update::Update {
+            tag: "v9.9.9".to_owned(),
+            url: "https://example.invalid/9".to_owned(),
+        };
+
+        let _ = update_shell(
+            &mut shell,
+            ShellMessage::UpdateChecked(Some(update.clone())),
+        );
+
+        let toast = shell.ui.app.toasts.first().expect("it was said");
+        assert!(toast.summary.contains("v9.9.9"), "{:?}", toast.summary);
+        assert!(
+            toast.details.contains("does not install"),
+            "the one thing to be clear about: {:?}",
+            toast.details
+        );
+        assert_eq!(shell.announced_update.as_deref(), Some("v9.9.9"));
+
+        // The same release again says nothing. Repeating on every start until
+        // the update is installed teaches people to dismiss without reading.
+        shell.ui.app.toasts.clear();
+        let _ = update_shell(&mut shell, ShellMessage::UpdateChecked(Some(update)));
+        assert!(shell.ui.app.toasts.is_empty());
+    }
+
+    #[test]
+    fn a_check_that_found_nothing_still_counts_as_having_asked() {
+        // Otherwise a run with no update available asks again on every start,
+        // which is the once-a-day rule quietly not applying.
+        let mut shell = shell();
+        assert_eq!(shell.last_update_check, None);
+
+        let _ = update_shell(&mut shell, ShellMessage::UpdateChecked(None));
+
+        assert!(shell.last_update_check.is_some());
+        assert!(shell.ui.app.toasts.is_empty(), "nothing to say");
+    }
+
+    #[test]
+    fn when_the_check_last_ran_survives_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+
+        config::save(
+            &path,
+            &State {
+                announced_update: Some("v9.9.9".to_owned()),
+                last_update_check: Some(1_700_000_000),
+                ..State::default()
+            },
+        );
+
+        let loaded: State = config::load(&path);
+        assert_eq!(loaded.announced_update.as_deref(), Some("v9.9.9"));
+        assert_eq!(loaded.last_update_check, Some(1_700_000_000));
     }
 
     #[test]

@@ -466,6 +466,11 @@ fn the_settings_panel_offers_panic_reports_and_says_they_stay_here() {
         &app,
         "Saved on this machine. Nothing is ever sent anywhere.",
     );
+
+    // The one thing here that leaves the machine says exactly what it contacts
+    // and what it will not do.
+    shows(&app, "Check for a newer hideGit");
+    shows(&app, "Asks github.com once a day. Never installs anything.");
 }
 
 #[test]

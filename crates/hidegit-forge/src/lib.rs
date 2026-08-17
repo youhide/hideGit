@@ -19,6 +19,7 @@ pub mod poll;
 pub mod prefs;
 pub mod secret;
 pub mod token;
+pub mod update;
 
 pub use error::{DeviceFlowError, ForgeError};
 pub use github::{Endpoint, GitHub};

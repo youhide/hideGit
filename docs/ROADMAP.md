@@ -455,7 +455,22 @@ Everything between "works" and "someone who does not write Rust can install it".
   start hideGit says once that something went wrong and where the file is. A report nobody knows
   about is a file found by accident, years later
 - **Packaging:** signed and notarised `.dmg` (macOS), `.msi` (Windows), AppImage and Flatpak
-  (Linux); an update-available check that never auto-installs
+  (Linux). **The update check has landed**, and never installs anything: one unauthenticated `GET`
+  against the releases of `youhide/hideGit`, at most once a day, and a toast naming the version and
+  linking to it.
+
+  It **cannot** use `/releases/latest`. That route skips pre-releases and every hideGit release is
+  one — the binaries are unsigned, which is said plainly rather than hidden behind a stable-looking
+  tag — so with nothing but pre-releases it answers 404. That was checked against the live
+  repository, not assumed. The full list is read instead and the newest usable entry taken from it,
+  by version rather than by publication order: GitHub sorts by creation, so a patch to an older line
+  published after a newer release comes first.
+
+  On by default, unlike panic reports, and the reason is specific: hideGit ships unsigned archives
+  from GitHub Releases and no operating system will ever update them, so a build with a bug in it
+  has no other way of learning there is a fix. It is a read — nothing about the machine or what is
+  done with it is sent — which is the line the telemetry entry below draws, and it stays on the
+  right side of it. Switchable from the settings panel, which says what it contacts
 
   Landed early, because an application icon is not something to bolt on at the end: the icon
   itself in every platform format, the Windows executable resource, a macOS `.app`

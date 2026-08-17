@@ -94,15 +94,32 @@ impl Default for WindowConfig {
 }
 
 /// What hideGit records about its own failures.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DiagnosticsConfig {
+    /// Ask GitHub, at most once a day, whether there is a newer hideGit.
+    ///
+    /// On, unlike `panic_reports`, and for a reason specific to this project:
+    /// hideGit ships unsigned archives from GitHub Releases and no operating
+    /// system will ever update them, so a build with a bug in it has no other
+    /// way of learning there is a fix. It is a read — nothing about the machine
+    /// or what is done with it is sent — and it never installs anything.
+    pub check_for_updates: bool,
     /// Write a report to disk when hideGit panics.
     ///
     /// Off by default, and opt-in on purpose: nothing here is ever sent
     /// anywhere, but a file appearing on somebody's disk without being asked
     /// for is still a decision that is theirs to make.
     pub panic_reports: bool,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            check_for_updates: true,
+            panic_reports: false,
+        }
+    }
 }
 
 /// What hideGit records between runs.
@@ -116,6 +133,18 @@ pub struct State {
     pub window: Geometry,
     #[serde(rename = "recent")]
     pub recents: Vec<RecentRepository>,
+    /// The release hideGit last said was available, as its tag.
+    ///
+    /// Same reason as the panic report below: without it the notice repeats on
+    /// every start until the update is installed, which teaches people to
+    /// dismiss it without reading.
+    pub announced_update: Option<String>,
+    /// When the update check last ran, as a Unix timestamp.
+    ///
+    /// Held as a number rather than a date because it is only ever compared
+    /// against another instant, and a wrong-looking date in a hand-edited file
+    /// should not be able to break parsing.
+    pub last_update_check: Option<i64>,
     /// The last panic report hideGit told the user about.
     ///
     /// Without it the notice would either appear on every start until the file
@@ -371,6 +400,8 @@ mod tests {
                 path: PathBuf::from("/src/hideGit"),
             }],
             announced_panic: None,
+            announced_update: None,
+            last_update_check: None,
         };
         save(&path, &state);
 
@@ -435,6 +466,7 @@ pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), SaveError> 
 
     let diagnostics = doc["diagnostics"].or_insert(Item::Table(toml_edit::Table::new()));
     diagnostics["panic_reports"] = value(settings.panic_reports);
+    diagnostics["check_for_updates"] = value(settings.check_for_updates);
 
     let alerts = doc["alerts"].or_insert(Item::Table(toml_edit::Table::new()));
     alerts["enabled"] = value(settings.alerts.enabled);
@@ -509,6 +541,8 @@ pub struct Settings {
     pub remember_geometry: bool,
     /// Write a report to disk when hideGit panics.
     pub panic_reports: bool,
+    /// Ask GitHub, at most once a day, whether there is a newer hideGit.
+    pub check_for_updates: bool,
 }
 
 #[cfg(test)]
@@ -521,6 +555,7 @@ mod settings_tests {
             alerts: hidegit_forge::AlertPrefs::default(),
             remember_geometry: true,
             panic_reports: false,
+            check_for_updates: true,
         }
     }
 
@@ -631,6 +666,7 @@ mod settings_tests {
                 alerts,
                 remember_geometry: true,
                 panic_reports: false,
+                check_for_updates: true,
             },
         )
         .expect("a writable file saves");
@@ -670,6 +706,7 @@ mod settings_tests {
                 alerts,
                 remember_geometry: true,
                 panic_reports: false,
+                check_for_updates: true,
             },
         )
         .expect("a writable file saves");
@@ -704,6 +741,31 @@ mod settings_tests {
 
         let reloaded: Config = load(&path);
         assert!(reloaded.diagnostics.panic_reports);
+    }
+
+    #[test]
+    fn the_update_check_preference_survives_the_file() {
+        // It defaults on, so the only value worth round-tripping is off — and
+        // a switch that flips on screen and never reaches the file is a check
+        // that is back on at the next start.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert!(
+            Config::default().diagnostics.check_for_updates,
+            "on by default"
+        );
+
+        save_settings(
+            &path,
+            &Settings {
+                check_for_updates: false,
+                ..settings("hidegit-dark")
+            },
+        )
+        .unwrap();
+
+        let reloaded: Config = load(&path);
+        assert!(!reloaded.diagnostics.check_for_updates);
     }
 
     #[test]
@@ -747,6 +809,7 @@ mod settings_tests {
                 alerts,
                 remember_geometry: true,
                 panic_reports: false,
+                check_for_updates: true,
             },
         )
         .expect("a writable file saves");
@@ -774,6 +837,7 @@ mod settings_tests {
                 alerts: hidegit_forge::AlertPrefs::default(),
                 remember_geometry: true,
                 panic_reports: false,
+                check_for_updates: true,
             },
         )
         .expect("a writable file saves");
