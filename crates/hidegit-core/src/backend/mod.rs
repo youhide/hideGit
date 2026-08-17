@@ -33,7 +33,7 @@ use std::path::Path;
 use crate::error::GitError;
 use crate::model::{
     Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, ReflogEntry,
-    Refs, Remote, RepoState, RevSpec, StashEntry, Submodule, WorktreeStatus,
+    Refs, Remote, RepoState, RevSpec, StashEntry, Submodule, Worktree, WorktreeStatus,
 };
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
@@ -122,6 +122,18 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     /// [`GitBackend::refs`], which the filesystem watcher rereads on every
     /// file save.
     fn submodules(&self) -> Result<Vec<Submodule>, GitError>;
+
+    /// Every checkout of this repository, the main one first.
+    ///
+    /// Never empty for a repository with a working directory: the one hideGit
+    /// is looking at is a worktree, and a list that started empty would be
+    /// saying otherwise. A bare repository can legitimately have none.
+    ///
+    /// Costs a repository open per worktree, because `HEAD` is a property of
+    /// the checkout rather than of the registration — which is the whole point
+    /// of reading them, since a branch checked out in one worktree cannot be
+    /// checked out in another.
+    fn worktrees(&self) -> Result<Vec<Worktree>, GitError>;
 
     /// Ahead/behind for every local branch that has an upstream, keyed by the
     /// branch's full ref name.

@@ -17,7 +17,7 @@ use crate::model::{
     Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
     DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind,
     ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState, RevSpec, Signature,
-    StashEntry, Submodule, Tag, WorktreeStatus,
+    StashEntry, Submodule, Tag, Worktree, WorktreeStatus,
 };
 use crate::ops::{Blame, BlameLine, SearchField, SearchHit, SearchQuery, SearchResults};
 
@@ -359,6 +359,100 @@ pub(crate) fn stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, GitErro
             // borrowed kind a commit hands out.
             time: to_time(line.signature.time),
             branch,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Every checkout of this repository, the main one first.
+///
+/// gitoxide lists **linked** worktrees only — the main one is deliberately not
+/// counted as linked — so it is prepended here. `git worktree list` shows it
+/// first too, and leaving it out would make the list disagree with the command
+/// the user already knows.
+///
+/// A bare repository has no main worktree at all, which is not an error and not
+/// an empty entry: it simply has none, and may still have linked ones.
+///
+/// Costs a repository open per worktree, because `HEAD` is a property of the
+/// checkout rather than of the registration. That is the whole reason to read
+/// them: a branch checked out in one worktree cannot be checked out in another,
+/// and without `HEAD` that rule is invisible.
+pub(crate) fn worktrees(repo: &gix::Repository) -> Result<Vec<Worktree>, GitError> {
+    /// Whether two paths name the same directory.
+    ///
+    /// Not `==`. gitoxide builds a linked worktree's git directory out of
+    /// `common_dir`, which it leaves unnormalised, so the proxy for the
+    /// worktree hideGit is *standing in* comes back as
+    /// `…/worktrees/side/../../worktrees/side` while the repository itself
+    /// reports `…/worktrees/side`. Comparing the strings says they are
+    /// different checkouts, and the current one then never marks itself.
+    ///
+    /// Canonicalising touches the filesystem, which is why it falls back rather
+    /// than unwrapping: a git directory that cannot be resolved is not a reason
+    /// to fail listing the worktrees.
+    fn same_dir(a: &Path, b: &Path) -> bool {
+        match (a.canonicalize(), b.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == b,
+        }
+    }
+
+    let mut out = Vec::new();
+    let here = repo.git_dir();
+
+    // `main_repo` works from a linked worktree too, so this is the main one
+    // whichever checkout hideGit was opened from.
+    match repo.main_repo() {
+        Ok(main) => {
+            if let Some(workdir) = main.workdir() {
+                let path = workdir.to_path_buf();
+                out.push(Worktree {
+                    is_current: same_dir(main.git_dir(), here),
+                    head: head(&main).ok(),
+                    prunable: !path.is_dir(),
+                    path,
+                    is_main: true,
+                    // The main worktree cannot be locked. `git worktree lock`
+                    // refuses it, so `None` is the only honest answer.
+                    locked: None,
+                });
+            }
+        }
+        // Not fatal: the linked worktrees are still worth listing, and a
+        // repository whose main one cannot be opened is exactly the case where
+        // knowing what else exists helps.
+        Err(e) => tracing::warn!(error = %e, "the main worktree would not open"),
+    }
+
+    let linked = repo
+        .worktrees()
+        .map_err(|e| GitError::gix("listing worktrees", e))?;
+
+    for proxy in linked {
+        let git_dir = proxy.git_dir().to_path_buf();
+        let locked = proxy
+            .is_locked()
+            .then(|| proxy.lock_reason().unwrap_or_default().to_string());
+        let base = proxy.base().ok();
+
+        // The inaccessible variant on purpose: a registration whose directory
+        // was deleted is precisely the entry worth showing, because it is still
+        // holding a branch nothing can check out.
+        let head = proxy
+            .into_repo_with_possibly_inaccessible_worktree()
+            .ok()
+            .and_then(|repo| self::head(&repo).ok());
+
+        let path = base.unwrap_or_else(|| git_dir.clone());
+        out.push(Worktree {
+            is_current: same_dir(&git_dir, here),
+            prunable: !path.is_dir(),
+            path,
+            head,
+            is_main: false,
+            locked,
         });
     }
 

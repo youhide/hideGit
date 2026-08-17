@@ -1030,3 +1030,122 @@ fn submodules_come_back_in_path_order() {
         ".gitmodules order is the order they were added in, which is not an order to show"
     );
 }
+
+// ---- worktrees -----------------------------------------------------------
+
+#[test]
+fn a_repository_with_no_linked_worktrees_still_lists_the_one_it_is() {
+    // gitoxide counts linked worktrees only, so the main one has to be
+    // prepended. An empty list here would say this repository has no checkout,
+    // which is the opposite of true.
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+
+    let worktrees = backend.worktrees().expect("worktrees are readable");
+    assert_eq!(worktrees.len(), 1);
+    assert!(worktrees[0].is_main);
+    assert!(worktrees[0].is_current, "it is the one that was opened");
+    assert!(!worktrees[0].prunable);
+    assert_eq!(
+        worktrees[0].locked, None,
+        "the main worktree cannot be locked"
+    );
+    assert!(
+        matches!(&worktrees[0].head, Some(Head::Branch { name, .. }) if name.short == "main"),
+        "a worktree with no HEAD would be one nothing can say is holding a branch: {:?}",
+        worktrees[0].head
+    );
+}
+
+#[test]
+fn a_linked_worktree_is_listed_after_the_main_one_with_its_own_head() {
+    // The reason to read worktrees at all: a branch checked out in one cannot
+    // be checked out in another, and only HEAD makes that visible.
+    let repo = fixture().commit("A").with_worktree("side").build();
+    let backend = repo.backend();
+
+    let worktrees = backend.worktrees().expect("worktrees are readable");
+    assert_eq!(worktrees.len(), 2);
+    assert!(
+        worktrees[0].is_main,
+        "the main one comes first, as git lists it"
+    );
+
+    let linked = &worktrees[1];
+    assert!(!linked.is_main);
+    assert!(!linked.is_current, "hideGit was opened on the main one");
+    assert!(
+        matches!(&linked.head, Some(Head::Branch { name, .. }) if name.short == "side"),
+        "the linked worktree is on its own branch: {:?}",
+        linked.head
+    );
+}
+
+#[test]
+fn a_locked_worktree_carries_the_reason_it_was_locked_with() {
+    let repo = fixture()
+        .commit("A")
+        .with_worktree("side")
+        .lock_worktree("side", "on the external drive")
+        .build();
+    let backend = repo.backend();
+
+    let worktrees = backend.worktrees().expect("worktrees are readable");
+    assert_eq!(
+        worktrees[1].locked.as_deref(),
+        Some("on the external drive"),
+        "the reason is what makes a lock actionable rather than mysterious"
+    );
+}
+
+#[test]
+fn a_worktree_whose_directory_is_gone_is_listed_as_prunable_rather_than_dropped() {
+    // A stale registration still holds its branch, so hiding it would leave a
+    // refused checkout with no visible cause anywhere.
+    let repo = fixture()
+        .commit("A")
+        .with_worktree("side")
+        .orphan_worktree("side")
+        .build();
+    let backend = repo.backend();
+
+    let worktrees = backend.worktrees().expect("worktrees are readable");
+    assert_eq!(worktrees.len(), 2, "the registration did not go away");
+    assert!(worktrees[1].prunable);
+    assert!(
+        matches!(&worktrees[1].head, Some(Head::Branch { name, .. }) if name.short == "side"),
+        "the branch it is still holding is the whole reason to list it, so opening it \
+         strictly — and losing that — would defeat the point: {:?}",
+        worktrees[1].head
+    );
+
+    // Real git agrees, and calls it the same thing.
+    assert!(
+        repo.git(["worktree", "list"]).contains("prunable"),
+        "git itself calls this prunable"
+    );
+}
+
+#[test]
+fn opening_from_a_linked_worktree_still_lists_the_main_one_first() {
+    // The reason the main entry comes from `main_repo` rather than from the
+    // repository in hand: opened from a linked worktree, the repository in hand
+    // *is* the linked one, and the main worktree would otherwise vanish from a
+    // list that is supposed to show every checkout.
+    let repo = fixture().commit("A").with_worktree("side").build();
+    let backend =
+        HybridBackend::open(repo.worktree_path("side")).expect("a linked worktree is a repository");
+
+    let worktrees = backend.worktrees().expect("worktrees are readable");
+    assert_eq!(worktrees.len(), 2);
+    assert!(worktrees[0].is_main);
+    assert!(
+        !worktrees[0].is_current,
+        "the main worktree is not the one this was opened from"
+    );
+    assert!(
+        worktrees[1].is_current,
+        "the linked one is: {:?}",
+        worktrees[1].path
+    );
+}

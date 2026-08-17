@@ -49,6 +49,12 @@ pub struct Fixture {
     /// The repositories submodules were cloned from, by submodule path. Held
     /// so they outlive the checkout that points at them.
     submodules: HashMap<String, TempDir>,
+    /// The directories linked worktrees were checked out into, by name.
+    ///
+    /// Outside the repository rather than inside it, so a worktree does not
+    /// show up as an untracked directory in the status of the repository that
+    /// owns it.
+    worktrees: HashMap<String, TempDir>,
 }
 
 impl Fixture {
@@ -63,6 +69,7 @@ impl Fixture {
             clock: 1_577_836_800,
             remotes: HashMap::new(),
             submodules: HashMap::new(),
+            worktrees: HashMap::new(),
         };
 
         this.git(["init", "-b", "main"]);
@@ -439,6 +446,66 @@ impl Fixture {
         self
     }
 
+    /// Adds a linked worktree checked out on a new branch named after it.
+    ///
+    /// The directory sits outside the repository, so it does not appear as an
+    /// untracked directory in the owning repository's status — which it would
+    /// if it were nested, and which is a distraction in every test that is not
+    /// about that.
+    pub fn with_worktree(mut self, name: &str) -> Self {
+        let dir = TempDir::new().expect("a writable temporary directory");
+        let at = dir.path().join(name);
+
+        let result = GitCommand::new("worktree")
+            .args(["add", "-b", name])
+            .operands([at.as_os_str()])
+            .cwd(self.dir.path())
+            .takes_locks()
+            .env("GIT_EDITOR", "true")
+            .run();
+        if let Err(e) = result {
+            panic!("could not add a fixture worktree: {e}");
+        }
+
+        self.worktrees.insert(name.to_owned(), dir);
+        self
+    }
+
+    /// Locks a linked worktree, with a reason.
+    ///
+    /// A locked worktree refuses to be pruned or removed, which is what makes
+    /// keeping one on a drive that is not always plugged in safe.
+    pub fn lock_worktree(self, name: &str, reason: &str) -> Self {
+        let at = self.worktree_path(name);
+        self.git([
+            "worktree",
+            "lock",
+            "--reason",
+            reason,
+            &at.display().to_string(),
+        ]);
+        self
+    }
+
+    /// Deletes a worktree's directory behind Git's back, leaving the
+    /// registration in place.
+    ///
+    /// What a user produces by moving or deleting a checkout without
+    /// `git worktree remove`, and the state `git worktree prune` exists for.
+    pub fn orphan_worktree(self, name: &str) -> Self {
+        let at = self.worktree_path(name);
+        std::fs::remove_dir_all(&at).expect("removing a fixture worktree directory");
+        self
+    }
+
+    fn worktree_path(&self, name: &str) -> PathBuf {
+        self.worktrees
+            .get(name)
+            .unwrap_or_else(|| panic!("no fixture worktree named {name}"))
+            .path()
+            .join(name)
+    }
+
     /// Stashes whatever is in the working directory, with Git's own message.
     ///
     /// Needs something to stash: `git stash push` with a clean worktree succeeds
@@ -604,6 +671,12 @@ impl Fixture {
             .map(|(path, dir)| (path.clone(), dir.path().to_path_buf()))
             .collect();
 
+        let worktree_paths = self
+            .worktrees
+            .iter()
+            .map(|(name, dir)| (name.clone(), dir.path().join(name)))
+            .collect();
+
         Repo {
             path: self.dir.path().to_path_buf(),
             dir: self.dir,
@@ -612,6 +685,8 @@ impl Fixture {
             remote_dirs: self.remotes.into_values().collect(),
             submodule_sources,
             submodule_dirs: self.submodules.into_values().collect(),
+            worktree_paths,
+            worktree_dirs: self.worktrees.into_values().collect(),
         }
     }
 }
@@ -629,6 +704,9 @@ pub struct Repo {
     submodule_sources: HashMap<String, PathBuf>,
     #[expect(dead_code, reason = "held solely to keep the submodule sources alive")]
     submodule_dirs: Vec<TempDir>,
+    worktree_paths: HashMap<String, PathBuf>,
+    #[expect(dead_code, reason = "held solely to keep the worktrees alive")]
+    worktree_dirs: Vec<TempDir>,
 }
 
 impl Repo {
@@ -666,6 +744,13 @@ impl Repo {
         self.submodule_sources
             .get(path)
             .unwrap_or_else(|| panic!("no fixture submodule at {path}"))
+    }
+
+    /// Where a linked worktree was checked out.
+    pub fn worktree_path(&self, name: &str) -> &Path {
+        self.worktree_paths
+            .get(name)
+            .unwrap_or_else(|| panic!("no fixture worktree named {name}"))
     }
 
     /// Runs `git` in a repository and returns its trimmed stdout, for asserting

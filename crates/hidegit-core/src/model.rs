@@ -187,6 +187,47 @@ impl Remote {
     }
 }
 
+/// One checkout of this repository, as `git worktree list` shows it.
+///
+/// Worktrees exist to have two branches checked out at once, which is also
+/// where their one hard rule comes from: **a branch checked out in one worktree
+/// cannot be checked out in another**. That rule is why `head` is carried
+/// rather than only the path — without it, "why can I not switch to this
+/// branch" has no answer visible anywhere in the interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    /// The directory the checkout lives in.
+    pub path: PathBuf,
+    /// What `HEAD` is on there, or `None` when the checkout could not be read —
+    /// a directory that was deleted or moved without `git worktree remove`.
+    pub head: Option<Head>,
+    /// The worktree the repository was opened from.
+    ///
+    /// Not a property of the repository but of this session, and it is what
+    /// stops the interface offering to remove the directory the user is
+    /// standing in.
+    pub is_current: bool,
+    /// The main worktree, which is the one the repository was cloned into.
+    ///
+    /// It cannot be removed or locked, and it is absent entirely from a bare
+    /// repository — a bare repository can have linked worktrees and no main
+    /// one, which is why this is a flag rather than "the first entry".
+    pub is_main: bool,
+    /// The reason `git worktree lock` was given, `Some("")` when it was locked
+    /// without one.
+    ///
+    /// A locked worktree refuses to be pruned or removed, which is what makes
+    /// it safe to keep one on a drive that is not always plugged in.
+    pub locked: Option<String>,
+    /// The registration is still there and the directory is not.
+    ///
+    /// `git worktree prune` is what clears these. Listing them rather than
+    /// hiding them is deliberate: a stale registration still holds its branch,
+    /// so it is the answer to a checkout that is being refused for no visible
+    /// reason.
+    pub prunable: bool,
+}
+
 /// A submodule, as the superproject records it.
 ///
 /// A submodule is two facts that can disagree: the commit the superproject's
