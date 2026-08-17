@@ -151,6 +151,60 @@ pub fn clone_banner<'a>(
     .into()
 }
 
+/// What is being opened, and how far along it is.
+///
+/// Above the whole screen, like the clone banner and for the same reason: there
+/// is no repository to hang it off yet, and the window may be showing the
+/// welcome screen or a different repository entirely.
+///
+/// No bar and no Cancel. Nothing here knows how long counting a hundred
+/// thousand commits takes, and there is nothing to cancel — the read is already
+/// off the UI thread and stopping it would leave the tab half open.
+pub fn opening_banner<'a>(
+    opening: &'a [crate::state::Opening],
+    palette: &'a Palette,
+) -> Element<'a, Message> {
+    let accent = palette.accent;
+    let muted = palette.muted;
+
+    let mut rows = column![].spacing(2);
+    for open in opening {
+        rows = rows.push(
+            row![
+                text(open.phase.label())
+                    .size(12.0)
+                    .color(accent)
+                    .font(Font {
+                        weight: iced::font::Weight::Semibold,
+                        ..Font::DEFAULT
+                    }),
+                // Named, because two paths given on the command line open at
+                // once and "Counting commits…" twice says nothing about which.
+                text(
+                    open.path
+                        .file_name()
+                        .unwrap_or(open.path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned()
+                )
+                .size(12.0)
+                .color(muted),
+            ]
+            .spacing(10)
+            .align_y(Center),
+        );
+    }
+
+    container(rows)
+        .width(Fill)
+        .padding(Padding::from([6, 14]))
+        .style(move |_| container::Style {
+            background: Some(iced::Color { a: 0.12, ..accent }.into()),
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// The list of things that can be done to one item.
 fn action_sheet<'a>(sheet: &'a ActionSheet, palette: &'a Palette) -> Element<'a, Message> {
     let palette = *palette;
