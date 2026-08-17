@@ -392,6 +392,8 @@ pub enum RepoMessage {
     /// `Cmd+Backspace`: discard whatever row is selected. Confirms, like every
     /// other route to discarding does.
     DiscardSelectedRequested,
+    /// The file filter above a commit's file list changed.
+    FileFilterChanged(String),
     /// A click on a changed line in the staging view's diff, by hunk and line
     /// index. Toggles whether it is part of the next patch.
     LineToggled(usize, usize),

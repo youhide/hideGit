@@ -996,6 +996,7 @@ impl Hidegit {
             plan: None,
             blame: None,
             search: None,
+            file_filter: String::new(),
         });
         self.caches.insert(index, canvas::Cache::new());
         self.app.active = Some(index);
@@ -1207,6 +1208,9 @@ impl Hidegit {
         match message {
             RepoMessage::Selected(selection) => {
                 repo.selection = Some(selection.clone());
+                // A filter written against the last commit's files would hide
+                // most of this one's, with nothing on screen saying why.
+                repo.file_filter.clear();
                 cache.clear();
 
                 match selection {
@@ -1330,6 +1334,21 @@ impl Hidegit {
                 if let DetailPane::Commit { file: current, .. } = &mut repo.detail {
                     *current = file;
                 }
+                // Clicking a row means the next keystroke is a shortcut again,
+                // the way clicking the staging lists does. Without this, using
+                // the filter box leaves `J` and `K` typing into nothing for the
+                // rest of the session.
+                repo.draft.editing = false;
+                Task::none()
+            }
+
+            RepoMessage::FileFilterChanged(query) => {
+                repo.file_filter = query;
+                // `on_input` is the only focus signal iced 0.14 offers, which is
+                // the same compromise the commit composer makes: the first
+                // keystroke also reaches the bindings, and every one after it
+                // belongs to the box. See `composer` in `widget/staging.rs`.
+                repo.draft.editing = true;
                 Task::none()
             }
 
@@ -5245,6 +5264,89 @@ mod tests {
 
         let _ = app.update(Message::SettingsDismissed);
         assert!(!app.app.settings_open);
+    }
+
+    // ---- the file filter -------------------------------------------------
+
+    /// A commit touching four files, two of them under `src/`.
+    fn app_showing_a_commit() -> Hidegit {
+        use hidegit_core::model::{ChangeStatus, CommitDetail, DiffStats, FileChange};
+
+        let mut app = app_with(2);
+        let repo = app.app.repos.get_mut(0).unwrap();
+        let change = |path: &str| FileChange {
+            path: std::path::PathBuf::from(path),
+            status: ChangeStatus::Modified,
+        };
+
+        repo.detail = crate::state::DetailPane::Commit {
+            detail: Box::new(CommitDetail {
+                commit: repo.graph.commits[0].clone(),
+                changes: vec![
+                    change("README.md"),
+                    change("src/app.rs"),
+                    change("Cargo.toml"),
+                    change("src/theme.rs"),
+                ],
+                stats: DiffStats {
+                    files_changed: 4,
+                    insertions: 10,
+                    deletions: 2,
+                },
+            }),
+            diff: Box::new(hidegit_core::model::Diff::default()),
+            file: 0,
+        };
+        app
+    }
+
+    #[test]
+    fn typing_a_filter_records_it_and_takes_the_keyboard() {
+        // The second half matters as much as the first: without it, `j` in the
+        // filter box steps a hunk behind the pane.
+        let mut app = app_showing_a_commit();
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::FileFilterChanged("src/".to_owned()),
+        ));
+
+        assert_eq!(app.app.repos[0].file_filter, "src/");
+        assert!(app.app.repos[0].draft.editing, "the box has the keys");
+    }
+
+    #[test]
+    fn clicking_a_file_gives_the_keyboard_back() {
+        // Otherwise using the filter leaves `J` and `K` typing into nothing for
+        // the rest of the session.
+        let mut app = app_showing_a_commit();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::FileFilterChanged("src".to_owned()),
+        ));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::FileSelected(1)));
+
+        assert!(!app.app.repos[0].draft.editing);
+    }
+
+    #[test]
+    fn a_filter_does_not_survive_the_commit_it_was_written_for() {
+        // It would hide most of the next commit's files with nothing on screen
+        // saying why.
+        let mut app = app_showing_a_commit();
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::FileFilterChanged("theme".to_owned()),
+        ));
+
+        let id = app.app.repos[0].graph.commits[1].id;
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Selected(Selection::Commit(id)),
+        ));
+
+        assert!(app.app.repos[0].file_filter.is_empty());
     }
 
     // ---- remapped shortcuts ----------------------------------------------

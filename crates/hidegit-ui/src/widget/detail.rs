@@ -1,13 +1,13 @@
 //! The detail pane: commit metadata, message, changed files, and the diff.
 
-use hidegit_core::model::{CommitDetail, Diff, StashEntry};
-use iced::widget::{Space, button, column, container, row, scrollable, text};
+use hidegit_core::model::{CommitDetail, Diff, FileChange, StashEntry};
+use iced::widget::{Space, button, column, container, row, scrollable, text, text_input};
 use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
 use crate::format;
 use crate::message::{RepoMessage, UiError};
-use crate::state::{DetailPane, DiffMode, OpenRepo, Selection};
+use crate::state::{DetailPane, DiffMode, FILE_FILTER_ID, OpenRepo, Selection};
 use crate::theme::Palette;
 
 pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMessage> {
@@ -27,6 +27,7 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
                 detail,
                 diff,
                 *file,
+                &repo.file_filter,
                 repo.diff_mode,
                 stash,
                 repo.blame.as_ref(),
@@ -76,6 +77,7 @@ fn commit<'a>(
     detail: &'a CommitDetail,
     diff: &'a Diff,
     selected_file: usize,
+    filter: &'a str,
     mode: DiffMode,
     stash: Option<&'a StashEntry>,
     blame: Option<&'a crate::state::BlameView>,
@@ -202,8 +204,26 @@ fn commit<'a>(
         );
     }
 
+    // Filtered by path, keeping each row's own index: `FileSelected` addresses
+    // the commit's list, not the one on screen, and a filtered index would open
+    // whichever file happened to sit in that position.
+    let needle = filter.trim().to_lowercase();
+    let shown: Vec<(usize, &FileChange)> = detail
+        .changes
+        .iter()
+        .enumerate()
+        .filter(|(_, change)| {
+            needle.is_empty()
+                || change
+                    .path
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(&needle)
+        })
+        .collect();
+
     let mut files = column![].spacing(0);
-    for (i, change) in detail.changes.iter().enumerate() {
+    for (i, change) in shown.iter().copied() {
         let is_selected = i == selected_file;
         let palette_copy = *palette;
 
@@ -299,13 +319,48 @@ fn commit<'a>(
     }
 
     let border = palette.border;
-    let file_list = container(scrollable(files).height(Fill))
-        .width(Length::Fixed(280.0))
-        .height(Fill);
+
+    // Said rather than left as an empty column, which reads as a commit that
+    // touched nothing.
+    let listing: Element<'a, RepoMessage> = if shown.is_empty() {
+        container(
+            text("No file matches that.")
+                .size(11.0)
+                .color(palette.muted),
+        )
+        .padding(10)
+        .into()
+    } else {
+        scrollable(files).height(Fill).into()
+    };
+
+    let file_list = container(
+        column![
+            container(
+                text_input("Filter files…", filter)
+                    .id(FILE_FILTER_ID)
+                    .on_input(RepoMessage::FileFilterChanged)
+                    .size(11.0)
+                    .padding(Padding::from([4, 6]))
+            )
+            .padding(Padding::from([6, 8])),
+            listing,
+        ]
+        .height(Fill),
+    )
+    .width(Length::Fixed(280.0))
+    .height(Fill);
+
+    // While filtering, the count says how much of the commit is being hidden.
+    // "3 file(s)" over a commit that touched forty is a quiet lie.
+    let counted = if needle.is_empty() {
+        format!("{} file(s)", detail.stats.files_changed)
+    } else {
+        format!("{} of {} file(s)", shown.len(), detail.stats.files_changed)
+    };
 
     let stats = text(format!(
-        "{} file(s)   {}",
-        detail.stats.files_changed,
+        "{counted}   {}",
         format::diff_stat(detail.stats.insertions, detail.stats.deletions)
     ))
     .size(11.0)
