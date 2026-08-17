@@ -23,6 +23,8 @@ iced.workspace = true
 png = "0.18"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
+# Panic reports are named by the moment they happened.
+time.workspace = true
 thiserror.workspace = true
 toml = "0.9"
 tracing.workspace = true

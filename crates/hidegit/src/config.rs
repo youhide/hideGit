@@ -24,6 +24,9 @@ pub struct Paths {
     /// Theme files the user writes, one per file. Next to `config.toml`
     /// rather than beside the state, because it is theirs to edit.
     pub themes: PathBuf,
+    /// Panic reports. Beside the state rather than the config: hideGit writes
+    /// these, nobody edits them.
+    pub crashes: PathBuf,
 }
 
 impl Paths {
@@ -34,6 +37,7 @@ impl Paths {
             config: dirs.config_dir().join("config.toml"),
             state: dirs.data_dir().join("state.toml"),
             themes: dirs.config_dir().join("themes"),
+            crashes: dirs.data_dir().join("crashes"),
         })
     }
 }
@@ -49,6 +53,7 @@ pub struct Config {
     /// Defined in `hidegit-forge` rather than here, so there is one definition
     /// rather than a config copy and a UI copy that drift apart.
     pub alerts: hidegit_forge::AlertPrefs,
+    pub diagnostics: DiagnosticsConfig,
     /// `command = "chord"`, overriding the built-in bindings.
     ///
     /// Held as plain strings: which command names exist and what a chord may
@@ -88,6 +93,18 @@ impl Default for WindowConfig {
     }
 }
 
+/// What hideGit records about its own failures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DiagnosticsConfig {
+    /// Write a report to disk when hideGit panics.
+    ///
+    /// Off by default, and opt-in on purpose: nothing here is ever sent
+    /// anywhere, but a file appearing on somebody's disk without being asked
+    /// for is still a decision that is theirs to make.
+    pub panic_reports: bool,
+}
+
 /// What hideGit records between runs.
 ///
 /// Repositories are a list of tables rather than a list of strings so a
@@ -99,6 +116,13 @@ pub struct State {
     pub window: Geometry,
     #[serde(rename = "recent")]
     pub recents: Vec<RecentRepository>,
+    /// The last panic report hideGit told the user about.
+    ///
+    /// Without it the notice would either appear on every start until the file
+    /// was deleted by hand, or appear once and be lost if it was missed. The
+    /// filename is enough: they are named by the moment they happened, so a
+    /// newer one is a different one.
+    pub announced_panic: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,6 +370,7 @@ mod tests {
             recents: vec![RecentRepository {
                 path: PathBuf::from("/src/hideGit"),
             }],
+            announced_panic: None,
         };
         save(&path, &state);
 
@@ -407,6 +432,9 @@ pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), SaveError> 
 
     let window = doc["window"].or_insert(Item::Table(toml_edit::Table::new()));
     window["remember_geometry"] = value(settings.remember_geometry);
+
+    let diagnostics = doc["diagnostics"].or_insert(Item::Table(toml_edit::Table::new()));
+    diagnostics["panic_reports"] = value(settings.panic_reports);
 
     let alerts = doc["alerts"].or_insert(Item::Table(toml_edit::Table::new()));
     alerts["enabled"] = value(settings.alerts.enabled);
@@ -479,6 +507,8 @@ pub struct Settings {
     pub alerts: hidegit_forge::AlertPrefs,
     /// Reopen at the size and position the window was last closed at.
     pub remember_geometry: bool,
+    /// Write a report to disk when hideGit panics.
+    pub panic_reports: bool,
 }
 
 #[cfg(test)]
@@ -490,6 +520,7 @@ mod settings_tests {
             theme: theme.to_owned(),
             alerts: hidegit_forge::AlertPrefs::default(),
             remember_geometry: true,
+            panic_reports: false,
         }
     }
 
@@ -599,6 +630,7 @@ mod settings_tests {
                 theme: "hidegit-dark".to_owned(),
                 alerts,
                 remember_geometry: true,
+                panic_reports: false,
             },
         )
         .expect("a writable file saves");
@@ -637,6 +669,7 @@ mod settings_tests {
                 theme: "hidegit-dark".to_owned(),
                 alerts,
                 remember_geometry: true,
+                panic_reports: false,
             },
         )
         .expect("a writable file saves");
@@ -645,6 +678,32 @@ mod settings_tests {
         assert!(after.contains("# I go to bed late"), "{after}");
         assert!(after.contains(r#"note = "kept""#), "{after}");
         assert!(after.contains("from = 2"), "{after}");
+    }
+
+    #[test]
+    fn panic_reports_are_off_until_they_are_asked_for() {
+        // Opt-in on purpose. Nothing is ever sent anywhere, but a file
+        // appearing on somebody's disk unasked is still their decision.
+        assert!(!DiagnosticsConfig::default().panic_reports);
+        assert!(!Config::default().diagnostics.panic_reports);
+    }
+
+    #[test]
+    fn the_panic_report_preference_survives_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        save_settings(
+            &path,
+            &Settings {
+                panic_reports: true,
+                ..settings("hidegit-dark")
+            },
+        )
+        .unwrap();
+
+        let reloaded: Config = load(&path);
+        assert!(reloaded.diagnostics.panic_reports);
     }
 
     #[test]
@@ -687,6 +746,7 @@ mod settings_tests {
                 theme: "hidegit-dark".to_owned(),
                 alerts,
                 remember_geometry: true,
+                panic_reports: false,
             },
         )
         .expect("a writable file saves");
@@ -713,6 +773,7 @@ mod settings_tests {
                 theme: "hidegit-dark".to_owned(),
                 alerts: hidegit_forge::AlertPrefs::default(),
                 remember_geometry: true,
+                panic_reports: false,
             },
         )
         .expect("a writable file saves");

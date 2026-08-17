@@ -5,6 +5,7 @@
 //! system.
 
 mod config;
+mod crash;
 
 use std::path::PathBuf;
 
@@ -67,6 +68,9 @@ struct Shell {
     /// each one. The recents list is not batched: it changes at most once per
     /// repository opened, and it is the half worth not losing.
     unsaved_geometry: bool,
+    /// The last panic report the user was told about, written back out so the
+    /// notice does not repeat on every start.
+    announced_panic: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,12 +120,28 @@ fn main() -> iced::Result {
         .map(|p| config::load(&p.state))
         .unwrap_or_default();
 
+    // Installed before anything else that could fail. `None` when reports are
+    // off or when there is nowhere to write, and then a panic only reaches the
+    // log — which it did not do at all before this.
+    crash::install(
+        paths
+            .as_ref()
+            .map(|p| p.crashes.clone())
+            .filter(|_| config.diagnostics.panic_reports),
+    );
+
+    // A report nobody knows about is a file found by accident, years later.
+    let unannounced = paths
+        .as_ref()
+        .and_then(|p| crash::unannounced(&p.crashes, state.announced_panic.as_deref()));
+
     let geometry = if config.window.remember_geometry {
         state.window.sanitised()
     } else {
         Geometry::default()
     };
     let recents: Vec<PathBuf> = state.recents.into_iter().map(|r| r.path).collect();
+    let announced = state.announced_panic;
 
     // `mut` is only used on Linux; see the cfg block below.
     #[allow(unused_mut)]
@@ -149,6 +169,8 @@ fn main() -> iced::Result {
                 paths.clone(),
                 config.clone(),
                 geometry.clone(),
+                announced.clone(),
+                unannounced.clone(),
             )
         },
         update,
@@ -209,6 +231,8 @@ fn boot(
     paths: Option<Paths>,
     config: Config,
     geometry: Geometry,
+    announced_panic: Option<String>,
+    unannounced_panic: Option<String>,
 ) -> (Shell, Task<ShellMessage>) {
     // Off disk once, here, rather than every time the panel is opened: a theme
     // is a file somebody wrote, not something that changes while hideGit runs.
@@ -243,6 +267,20 @@ fn boot(
     // Set here rather than passed through `Hidegit::new`: the interface only
     // shows this one, and the shell is what acts on it.
     ui.app.remember_geometry = config.window.remember_geometry;
+    ui.app.panic_reports = config.diagnostics.panic_reports;
+
+    // Said once, on the start after it happened, and named so it can be found.
+    // hideGit survives most panics, so this is deliberately not "hideGit
+    // crashed" — the window may well have stayed open and shown a toast.
+    if let Some(path) = &unannounced_panic {
+        ui.app.toast(&hidegit_ui::message::UiError {
+            summary: "Something went wrong the last time hideGit ran".to_owned(),
+            details: format!(
+                "A report was written to:\n{path}\n\nIt is local — nothing was sent \
+                 anywhere. Read it before attaching it to an issue."
+            ),
+        });
+    }
 
     (
         Shell {
@@ -251,6 +289,9 @@ fn boot(
             paths,
             config,
             geometry,
+            // The one just announced, or the one from before if there was
+            // nothing new to say.
+            announced_panic: unannounced_panic.or(announced_panic),
         },
         task.map(ShellMessage::Ui),
     )
@@ -271,6 +312,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                     | Message::QuietHourChosen(..)
                     | Message::RepositoryMuteToggled(_)
                     | Message::RememberGeometryToggled
+                    | Message::PanicReportsToggled
             );
             // Opening a repository is what changes the recents list, and it is
             // the only thing that does. Written at once rather than at exit,
@@ -283,6 +325,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                 shell.config.theme.name = shell.ui.app.theme.name.clone();
                 shell.config.alerts = shell.ui.app.alerts.clone();
                 shell.config.window.remember_geometry = shell.ui.app.remember_geometry;
+                shell.config.diagnostics.panic_reports = shell.ui.app.panic_reports;
 
                 // The outcome goes back to the panel, which otherwise says the
                 // change was saved whatever happened to the file.
@@ -293,6 +336,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                             theme: shell.config.theme.name.clone(),
                             alerts: shell.config.alerts.clone(),
                             remember_geometry: shell.config.window.remember_geometry,
+                            panic_reports: shell.config.diagnostics.panic_reports,
                         },
                     ),
                     None => Err(config::SaveError::NoConfigDirectory),
@@ -371,6 +415,7 @@ fn persist(shell: &mut Shell) {
             .iter()
             .map(|path| RecentRepository { path: path.clone() })
             .collect(),
+        announced_panic: shell.announced_panic.clone(),
     };
 
     config::save(&paths.state, &state);
@@ -479,6 +524,7 @@ mod tests {
             config: Config::default(),
             geometry: Geometry::default(),
             unsaved_geometry: false,
+            announced_panic: None,
         }
     }
 
@@ -541,6 +587,7 @@ mod tests {
             config: dir.path().join("config.toml"),
             state: dir.path().join("state.toml"),
             themes: dir.path().join("themes"),
+            crashes: dir.path().join("crashes"),
         });
 
         let _ = update(
@@ -579,6 +626,7 @@ mod tests {
             config: dir.path().join("config.toml"),
             state: dir.path().join("state.toml"),
             themes: dir.path().join("themes"),
+            crashes: dir.path().join("crashes"),
         });
 
         let _ = update(
@@ -589,6 +637,46 @@ mod tests {
         assert_eq!(shell.ui.app.settings_error, None, "it was written");
         let reloaded: Config = config::load(&dir.path().join("config.toml"));
         assert!(!reloaded.window.remember_geometry);
+    }
+
+    #[test]
+    fn what_was_announced_survives_the_file() {
+        // It is written back with the geometry and the recents, so the notice
+        // is not repeated after a restart.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+
+        config::save(
+            &path,
+            &State {
+                announced_panic: Some("/data/crashes/panic-20260816-120000.txt".to_owned()),
+                ..State::default()
+            },
+        );
+
+        let loaded: State = config::load(&path);
+        assert_eq!(
+            loaded.announced_panic.as_deref(),
+            Some("/data/crashes/panic-20260816-120000.txt")
+        );
+    }
+
+    #[test]
+    fn toggling_panic_reports_reaches_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shell = shell();
+        shell.paths = Some(config::Paths {
+            config: dir.path().join("config.toml"),
+            state: dir.path().join("state.toml"),
+            themes: dir.path().join("themes"),
+            crashes: dir.path().join("crashes"),
+        });
+
+        let _ = update(&mut shell, ShellMessage::Ui(Message::PanicReportsToggled));
+
+        assert_eq!(shell.ui.app.settings_error, None, "it was written");
+        let reloaded: Config = config::load(&dir.path().join("config.toml"));
+        assert!(reloaded.diagnostics.panic_reports);
     }
 
     #[test]

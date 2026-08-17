@@ -446,6 +446,11 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::PanicReportsToggled => {
+                self.app.panic_reports = !self.app.panic_reports;
+                Task::none()
+            }
+
             Message::RememberGeometryToggled => {
                 // Nothing in this crate acts on it; the shell reads it back out
                 // and decides what to write. Kept here because the panel that

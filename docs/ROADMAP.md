@@ -442,7 +442,18 @@ Everything between "works" and "someone who does not write Rust can install it".
 
   Still to do: a focus ring that is visible on every focusable widget, and an audit that every
   action has a keyboard route
-- Crash reporting that is local and opt-in
+- Crash reporting that is local and opt-in. **Landed**, and named **panic reports** rather than
+  crash reports on purpose: every `gix` read and every `git` subprocess runs on a blocking task, and
+  a panic there is caught by its join handle — the window survives it and shows a toast. A report on
+  disk means *something went wrong*, not *hideGit died*, and calling it a crash would have people
+  looking for a window that closed when nothing did.
+
+  Off until switched on, from the settings panel. Nothing is ever sent anywhere — that is the
+  telemetry stance below, not a promise to revisit — but a file appearing on somebody's disk unasked
+  is still their decision. The panic hook is installed either way, so a panic always reaches the log;
+  before this it reached nothing at all. Ten reports are kept, oldest first out, and on the next
+  start hideGit says once that something went wrong and where the file is. A report nobody knows
+  about is a file found by accident, years later
 - **Packaging:** signed and notarised `.dmg` (macOS), `.msi` (Windows), AppImage and Flatpak
   (Linux); an update-available check that never auto-installs
 

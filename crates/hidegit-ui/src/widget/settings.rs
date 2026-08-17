@@ -106,6 +106,23 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     );
 
     sections = sections.push(Space::new().height(14));
+    sections = sections.push(section("Diagnostics", palette));
+    sections = sections.push(
+        checkbox(app.panic_reports)
+            .label("Write a report when something goes wrong")
+            .size(15.0)
+            .text_size(13.0)
+            .on_toggle(|_| Message::PanicReportsToggled),
+    );
+    sections = sections.push(
+        // Both halves said, because both are otherwise reasonable to assume the
+        // other way round.
+        text("Saved on this machine. Nothing is ever sent anywhere.")
+            .size(11.0)
+            .color(palette.muted),
+    );
+
+    sections = sections.push(Space::new().height(14));
     sections = sections.push(section("Pull request alerts", palette));
 
     let enabled = app.alerts.enabled;

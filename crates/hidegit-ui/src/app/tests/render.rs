@@ -454,6 +454,21 @@ fn the_settings_panel_lists_a_custom_theme_by_its_file_name() {
 }
 
 #[test]
+fn the_settings_panel_offers_panic_reports_and_says_they_stay_here() {
+    // Both halves said, because both are otherwise reasonable to assume the
+    // other way round: that nothing is recorded, or that something is sent.
+    let mut app = app_with(1);
+    let _ = app.update(Message::SettingsRequested);
+
+    shows(&app, "Diagnostics");
+    shows(&app, "Write a report when something goes wrong");
+    shows(
+        &app,
+        "Saved on this machine. Nothing is ever sent anywhere.",
+    );
+}
+
+#[test]
 fn the_settings_panel_offers_the_geometry_switch() {
     let mut app = app_with(1);
     let _ = app.update(Message::SettingsRequested);

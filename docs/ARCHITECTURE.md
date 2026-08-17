@@ -196,6 +196,16 @@ is safe Rust so neither can be left structurally invalid, and the worst a recove
 stale — which is what `invalidate` already exists to clear. The GitHub client handle in
 `hidegit-forge` is recovered the same way and for the same reason.
 
+**A panic is written down.** `crash::install` sets a panic hook at startup that logs every panic and,
+when `diagnostics.panic_reports` is on, writes a report to the data directory: version, platform,
+message, location, backtrace. Nothing is sent anywhere and nothing names a repository, a branch or a
+remote — a panic *message* can still carry a path if something formatted one into it, which the file
+says rather than leaves to be assumed. The hook chains to the previous one, so `RUST_BACKTRACE` keeps
+working.
+
+They are called panic reports, not crash reports, because of the paragraph above: the UI catches
+panics on blocking tasks and carries on. A report is evidence of a bug, not of a dead process.
+
 **Topological order is computed by hideGit, not by gitoxide.** `gix` offers breadth-first and
 date-ordered traversal but not `--topo-order`, so the date-ordered walk is corrected afterwards by
 Kahn's algorithm with commit date as the tiebreak. Date order alone is not sufficient: clock skew

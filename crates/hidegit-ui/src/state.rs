@@ -1295,6 +1295,11 @@ pub struct App {
     pub focused: bool,
     /// Which alerts to send, and when not to.
     pub alerts: AlertPrefs,
+    /// Write a report to disk when hideGit panics.
+    ///
+    /// Held here for the same reason as the geometry switch: the panel shows it,
+    /// the shell acts on it. Nothing in this crate reads it.
+    pub panic_reports: bool,
     /// Reopen at the size and position the window was last closed at.
     ///
     /// Held here only so the settings panel can show and change it. The window
@@ -1333,6 +1338,7 @@ impl Default for App {
             focused: true,
             alerts: AlertPrefs::default(),
             remember_geometry: true,
+            panic_reports: false,
             next_toast_id: 0,
         }
     }
