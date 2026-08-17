@@ -239,7 +239,19 @@ Strategies:
 5. **Cache the geometry, not the pixels.** `GraphLayout` for the current window is retained;
    redraws that do not move the viewport reuse it.
 
-Benchmarks live in CI from M6 so a regression fails a build rather than being reported by a user.
+**Benchmarks run in CI, and what they gate is a ratio rather than a time.** `--quick` on every pull
+request, the full suite on `main` and once a week, with the results kept as an artifact.
+
+Timings are deliberately **not** gated. A shared runner is two to three times slower on a bad minute
+than on a good one, so failing a pull request because a benchmark took 40% longer would mean failing
+pull requests at random — and a gate that trips on noise is one people learn to re-run until it
+passes. Every number in the table above is measured on a known machine and stays that way.
+
+What survives a slow runner is the *gap between two benchmarks in the same run*, because the machine
+divides out. `cargo run -p xtask -- bench-check` reads the medians of `visible_window_at_row_50000`
+and `visible_window_at_row_50000_without_checkpoints` and fails if checkpoints are less than **50×**
+faster. Measured at 395× when that gate was written, so it fails when checkpoints stop working rather
+than when a runner has an afternoon.
 
 ## Testing
 

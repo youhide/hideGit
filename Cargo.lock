@@ -7985,6 +7985,7 @@ dependencies = [
  "icns",
  "ico",
  "image",
+ "tempfile",
 ]
 
 [[package]]

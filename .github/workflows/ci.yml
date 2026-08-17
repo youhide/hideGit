@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The benchmarks are the only job worth running on a timer: nothing about
+  # them depends on a change having been pushed.
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,3 +70,51 @@ jobs:
         # xtask from ordinary builds — and dev tooling still has to lint.
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
+
+  # Benchmarks, on Linux only: the numbers are not compared between platforms
+  # and running the 100,000-commit fixture three times over buys nothing.
+  #
+  # **Timings are not gated and cannot be.** A shared runner is two to three
+  # times slower on a bad minute, so failing a pull request on a 40% regression
+  # would mean failing pull requests at random. What is gated is a *ratio* —
+  # two benchmarks from the same run on the same machine, which divides the
+  # machine out. See `xtask/src/bench.rs`.
+  bench:
+    name: benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The fixture is a hundred thousand commits built with `git fast-import`,
+      # which will not run without an identity.
+      - name: Configure git identity for fixture repositories
+        run: |
+          git config --global user.name "hideGit CI"
+          git config --global user.email "ci@hidegit.invalid"
+          git config --global init.defaultBranch main
+
+      # `--quick` on a pull request, which is about half a minute of measurement
+      # rather than five, and enough for a ratio two orders of magnitude wide.
+      # The full run happens on main and on the weekly schedule.
+      - name: Run the benchmarks
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            cargo bench -p hidegit-core --bench graph -- --quick
+          else
+            cargo bench -p hidegit-core --bench graph
+          fi
+
+      - name: Check what they measured
+        run: cargo run -p xtask -- bench-check
+
+      # Kept because the numbers in docs/COMMIT_GRAPH.md are measured on a known
+      # machine, and a run from a runner is the only way to see the trend
+      # between the times somebody re-measures by hand.
+      - name: Keep the results
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.run_id }}
+          path: target/criterion
+          retention-days: 30

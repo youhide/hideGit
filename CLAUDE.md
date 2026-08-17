@@ -127,7 +127,9 @@ and say so. Leave it unset to test anything touching sign-in.
 
 Clippy warnings are errors. `cargo bench -p hidegit-core` times the graph layout against a
 100,000-commit repository; the numbers to beat are in
-[COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance).
+[COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance). `cargo run -p xtask -- bench-check` reads what
+that run left behind and fails if checkpoints have stopped paying for themselves — CI runs both, and
+gates the ratio rather than the times, because a shared runner's absolute numbers mean nothing.
 
 ## Conventions
 

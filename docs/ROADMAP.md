@@ -493,7 +493,12 @@ Everything between "works" and "someone who does not write Rust can install it".
   What remains here is signing, notarisation, and the installers themselves — and they belong in the
   same piece of work, since an unsigned `.dmg` adds a step for the user without removing the warning
   it would have been justified by.
-- Benchmarks in CI so a performance regression fails a build rather than being noticed by a user
+- Benchmarks in CI so a performance regression fails a build rather than being noticed by a user.
+  **Landed**, and what it gates is a *ratio*, not a time: `--quick` on every pull request and the
+  full suite on `main` and weekly, with `xtask bench-check` failing if laying out a visible window
+  with checkpoints is less than 50× faster than without them. Absolute times cannot be gated on a
+  shared runner — two to three times slower on a bad minute — and a gate that trips on noise is one
+  people learn to re-run until it passes
 
 **Done when:** a person who has never installed Rust can download an installer for their platform,
 open a repository, commit, push, and receive a PR notification — and nothing on that path requires
