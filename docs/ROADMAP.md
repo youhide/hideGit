@@ -460,8 +460,16 @@ Everything between "works" and "someone who does not write Rust can install it".
   else: every windowing and graphics library hideGit uses is reached through `dlopen`, so `ldd`
   reports only glibc and forcing the rest in would produce a package that starts on the build
   machine and nowhere else. **No certificate was ever involved**, contrary to what `install.sh`
-  claimed. Flatpak is separate work — a manifest, `flatpak-builder`, a runtime measured in gigabytes
-  and a Flathub submission — and is not done. **The update check has landed**, and never installs anything: one unauthenticated `GET`
+  claimed.
+
+  **Flatpak is blocked on a decision, not on effort.** Every write hideGit performs is
+  `Command::new("git")` from `PATH`, and inside a sandbox that is the runtime's git — so credential
+  helpers, hooks and Git LFS, three of the four things [ADR-0002](./adr/0002-git-backend-hybrid.md)
+  chose the hybrid backend to inherit rather than reimplement, are simply absent. The escape is
+  `flatpak-spawn --host`, which restores them and makes the sandbox a formality, and which
+  `hidegit-core` would have to be taught — an architectural change that needs a superseding ADR
+  rather than a manifest. [RELEASING](./RELEASING.md#why-there-is-no-flatpak) lays out the three
+  options and what each costs. **The update check has landed**, and never installs anything: one unauthenticated `GET`
   against the releases of `youhide/hideGit`, at most once a day, and a toast naming the version and
   linking to it.
 
