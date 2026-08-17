@@ -1114,6 +1114,7 @@ impl Hidegit {
             stashes: opened.stashes,
             remotes: opened.remotes,
             submodules: opened.submodules,
+            worktrees: opened.worktrees,
             divergence: HashMap::new(),
             pending: None,
             graph,
@@ -2968,6 +2969,7 @@ impl Hidegit {
                 repo.prs.repo = forge::detect(&refreshed.remotes);
                 repo.remotes = refreshed.remotes;
                 repo.submodules = refreshed.submodules;
+                repo.worktrees = refreshed.worktrees;
 
                 // Restored by commit id rather than row index: a new commit at
                 // HEAD shifts every row down, and a refresh must not silently
@@ -3786,6 +3788,7 @@ fn open_repository(
     let stashes = backend.stashes()?;
     let remotes = backend.remotes()?;
     let submodules = backend.submodules()?;
+    let worktrees = backend.worktrees()?;
 
     say(OpenPhase::Counting);
     let total = backend.commit_count(&RevSpec::All)?;
@@ -3803,6 +3806,7 @@ fn open_repository(
         stashes,
         remotes,
         submodules,
+        worktrees,
         total,
         first_page,
     })
@@ -3993,6 +3997,12 @@ fn reread(backend: &dyn GitBackend) -> Result<Refreshed, GitError> {
         // knowing where the nested checkouts actually are — and a submodule
         // that moved has to stop looking current the moment it does.
         submodules: backend.submodules()?,
+        // One directory listing when there are none, which is every repository
+        // nobody has run `git worktree add` in. It is on this path rather than
+        // its own because a worktree added from another terminal holds a branch
+        // this one can no longer check out, and a stale list makes that
+        // refusal look like a bug.
+        worktrees: backend.worktrees()?,
         total: backend.commit_count(&RevSpec::All)?,
         first_page: backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?,
     })
@@ -4078,6 +4088,7 @@ mod tests {
             stashes: Vec::new(),
             remotes: Vec::new(),
             submodules: Vec::new(),
+            worktrees: Vec::new(),
             total: count,
             first_page: history,
         }
@@ -4409,6 +4420,7 @@ mod tests {
             stashes: Vec::new(),
             remotes: Vec::new(),
             submodules: Vec::new(),
+            worktrees: Vec::new(),
             total: survivors.len(),
             first_page: survivors,
         };
@@ -4446,6 +4458,7 @@ mod tests {
             stashes: Vec::new(),
             remotes: Vec::new(),
             submodules: Vec::new(),
+            worktrees: Vec::new(),
             // More history exists than arrived, so the graph is still loading.
             total: 5_000,
             first_page: commits(2),
@@ -7450,6 +7463,7 @@ mod tests {
                 stashes: Vec::new(),
                 remotes: Vec::new(),
                 submodules: Vec::new(),
+                worktrees: Vec::new(),
                 total: 100,
                 first_page: commits(100),
             }))),
@@ -7497,6 +7511,7 @@ mod tests {
                 stashes: Vec::new(),
                 remotes: Vec::new(),
                 submodules: Vec::new(),
+                worktrees: Vec::new(),
                 total: 101,
                 first_page: grown,
             }))),
@@ -8555,6 +8570,7 @@ mod tests {
                 stashes: vec![stash_entry(0, "fresh")],
                 remotes: Vec::new(),
                 submodules: Vec::new(),
+                worktrees: Vec::new(),
                 total: 1,
                 first_page: commits(1),
             }))),
@@ -8563,6 +8579,49 @@ mod tests {
         let stashes = &app.app.repos[0].stashes;
         assert_eq!(stashes.len(), 1);
         assert_eq!(stashes[0].message, "fresh");
+    }
+
+    #[test]
+    fn a_refresh_replaces_the_worktree_list_too() {
+        // `git worktree add` in another terminal holds a branch this checkout
+        // can no longer switch to, and a stale list makes that refusal look
+        // like a bug in hideGit.
+        let mut app = app_with(1);
+        assert_eq!(
+            app.app.repos[0].worktrees.len(),
+            0,
+            "the fixture starts bare"
+        );
+
+        let added = hidegit_core::model::Worktree {
+            path: PathBuf::from("/elsewhere/side"),
+            head: None,
+            is_current: false,
+            is_main: false,
+            locked: None,
+            prunable: false,
+        };
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(Refreshed {
+                head: opened(1).head,
+                refs: Refs::default(),
+                state: RepoState::Clean,
+                status: WorktreeStatus::default(),
+                stashes: Vec::new(),
+                remotes: Vec::new(),
+                submodules: Vec::new(),
+                worktrees: vec![added],
+                total: 1,
+                first_page: commits(1),
+            }))),
+        ));
+
+        assert_eq!(
+            app.app.repos[0].worktrees.len(),
+            1,
+            "the refresh brought the worktree that appeared while hideGit was open"
+        );
     }
 
     #[test]
@@ -8595,6 +8654,7 @@ mod tests {
                 stashes: Vec::new(),
                 remotes: Vec::new(),
                 submodules: vec![moved],
+                worktrees: Vec::new(),
                 total: 1,
                 first_page: commits(1),
             }))),

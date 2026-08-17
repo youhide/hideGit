@@ -10,7 +10,7 @@
 //! and a `⋯` that opens the action sheet for everything that does not fit.
 
 use hidegit_core::model::{
-    Branch, Divergence, Head, Remote, StashEntry, Submodule, SubmoduleState, Tag,
+    Branch, Divergence, Head, Remote, StashEntry, Submodule, SubmoduleState, Tag, Worktree,
 };
 use hidegit_core::ops::{CheckoutTarget, StartPoint, StashOp};
 use iced::widget::{Space, button, column, container, row, scrollable, text, tooltip};
@@ -111,6 +111,23 @@ pub fn view<'a>(
         ));
         for entry in &repo.stashes {
             sections = sections.push(stash_row(repo, entry, index, palette));
+        }
+    }
+
+    // Only when there is more than one, and that is not the STASHES rule with a
+    // different number. Every repository has a worktree — the one being looked
+    // at — so a section listing exactly it would be a heading over a line the
+    // whole window already says. A *second* checkout is the fact worth showing.
+    if repo.worktrees.len() > 1 {
+        sections = sections.push(Space::new().height(8));
+        sections = sections.push(section_heading(
+            "WORKTREES",
+            repo.worktrees.len(),
+            None,
+            palette,
+        ));
+        for worktree in &repo.worktrees {
+            sections = sections.push(worktree_row(worktree, palette));
         }
     }
 
@@ -798,6 +815,94 @@ fn submodule_row<'a>(
     ]
     .align_y(Center)
     .into()
+}
+
+/// A worktree: where the checkout is, and what it has checked out there.
+///
+/// The branch is the load-bearing half. A branch checked out in one worktree
+/// cannot be checked out in another, so this row is the answer to a refused
+/// checkout — including for a worktree whose directory is gone, which still
+/// holds its branch until somebody prunes it.
+///
+/// Not a button, and not selectable: another checkout is not a place in this
+/// repository's history to jump to. The actions arrive with the operations that
+/// would run them.
+fn worktree_row<'a>(worktree: &Worktree, palette: &Palette) -> Element<'a, Message> {
+    let palette = *palette;
+
+    // `▸` for the checkout being looked at, matching the local-branch row's
+    // marker for the branch `HEAD` is on: both mean "this is the one you are
+    // standing in".
+    let marker = text(if worktree.is_current { "▸" } else { " " })
+        .size(ITEM_SIZE)
+        .color(palette.accent);
+
+    // The directory name rather than the whole path, which does not fit in
+    // 230px and whose useful end is the last component anyway. The full path is
+    // in the tooltip.
+    let name = worktree
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| worktree.path.display().to_string());
+
+    let (state, colour) = if worktree.prunable {
+        // Said plainly rather than by dimming it: the directory is gone and the
+        // registration is not, which is a thing to act on, not a shade.
+        ("gone".to_owned(), palette.muted)
+    } else if worktree.locked.is_some() {
+        ("locked".to_owned(), palette.muted)
+    } else {
+        (worktree_head(worktree), palette.muted)
+    };
+
+    let label = row![
+        marker,
+        text(name).size(ITEM_SIZE).color(if worktree.is_current {
+            palette.text
+        } else {
+            palette.muted
+        }),
+        Space::new().width(Fill),
+        text(state).size(HEADING_SIZE).color(colour),
+    ]
+    .spacing(6)
+    .align_y(Center);
+
+    let mut tip = worktree.path.display().to_string();
+    if let Some(reason) = &worktree.locked {
+        // An empty reason is what `git worktree lock` records when it was given
+        // none, and saying "locked" twice is better than a dangling colon.
+        tip = if reason.is_empty() {
+            format!("{tip} — locked")
+        } else {
+            format!("{tip} — locked: {reason}")
+        };
+    }
+    if worktree.prunable {
+        tip = format!("{tip} — the directory is gone; `git worktree prune` clears it");
+    }
+
+    hinted(
+        container(label)
+            .width(Fill)
+            .padding(Padding::from([3, 12]))
+            .into(),
+        tip,
+        palette,
+    )
+}
+
+/// What a worktree has checked out, in the vocabulary Git uses for it.
+fn worktree_head(worktree: &Worktree) -> String {
+    match &worktree.head {
+        Some(Head::Branch { name, .. }) => name.short.clone(),
+        // Git's own word. `git worktree list` prints `(detached HEAD)`, and
+        // inventing a synonym would teach something unusable elsewhere.
+        Some(Head::Detached { target }) => format!("detached at {}", target.short(7)),
+        Some(Head::Unborn { name }) => format!("{} (unborn)", name.short),
+        None => "unreadable".to_owned(),
+    }
 }
 
 /// What a submodule row offers, or `None` when it has nothing to offer.

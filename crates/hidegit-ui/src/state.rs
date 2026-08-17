@@ -13,7 +13,7 @@ use hidegit_core::conflict::{ConflictFile, ConflictRegion, Resolution};
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
 use hidegit_core::model::{
     Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
-    Submodule, WorktreeStatus,
+    Submodule, Worktree, WorktreeStatus,
 };
 use hidegit_core::ops::{
     BlameLine, CancelToken, ProgressUpdate, RebaseAction, RebasePlan, RebaseStep, SearchResults,
@@ -702,6 +702,12 @@ pub struct OpenRepo {
     /// repository — which is why the sidebar shows the section only when there
     /// is one, the way it treats stashes.
     pub submodules: Vec<Submodule>,
+    /// Every checkout of this repository, the main one first.
+    ///
+    /// Never empty for a repository with a working directory: the one hideGit
+    /// is looking at is a worktree. Read on the same path as `remotes`, because
+    /// `git worktree add` in another terminal has to show up.
+    pub worktrees: Vec<Worktree>,
     /// Ahead/behind per local branch, keyed by full ref name.
     ///
     /// Loaded by its own task rather than as part of a refresh: it costs a commit
