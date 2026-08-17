@@ -250,6 +250,16 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::ShortcutsRequested => {
+                self.app.shortcuts_open = true;
+                Task::none()
+            }
+
+            Message::ShortcutsDismissed => {
+                self.app.shortcuts_open = false;
+                Task::none()
+            }
+
             Message::ThemeChosen(name) => {
                 // Applied immediately: a theme you have to restart to see is a
                 // theme you cannot choose between.
@@ -2889,6 +2899,15 @@ impl Hidegit {
             base
         };
 
+        // Above the settings panel, because it can be opened from in front of
+        // it and the answer to "what was that key" should not be behind
+        // anything.
+        let base = if self.app.shortcuts_open {
+            iced::widget::stack![base, widget::shortcuts::view(&self.app.theme.palette)].into()
+        } else {
+            base
+        };
+
         widget::overlay::wrap(
             base,
             widget::overlay::Layers {
@@ -2965,6 +2984,7 @@ impl Hidegit {
                     .is_some_and(|repo| repo.draft.editing),
                 pane: self.app.active_repo().map(|repo| repo.focus),
                 settings_open: self.app.settings_open,
+                shortcuts_open: self.app.shortcuts_open,
                 searching: self
                     .app
                     .active
@@ -3076,6 +3096,9 @@ pub struct KeyContext {
     /// Which pane has focus, for `Tab`.
     pub pane: Option<Pane>,
     pub settings_open: bool,
+    /// The shortcut reference is open, and owns the keyboard the way every
+    /// other layer over the screen does.
+    pub shortcuts_open: bool,
     /// The repository whose search panel is open, if one is.
     pub searching: Option<usize>,
     /// How many tabs there are, so `Cmd+<n>` past the last does nothing.
@@ -3089,6 +3112,7 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         editing,
         pane,
         settings_open: settings,
+        shortcuts_open,
         searching,
         open_repos,
     } = cx;
@@ -3101,6 +3125,12 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
     // to the box being typed into; the arrows and Enter drive the list, which
     // is the whole point of it being a keyboard-first panel.
     if let Some(index) = searching {
+        // Modified keys do nothing either. A panel that owns the keyboard owns
+        // all of it — otherwise `Cmd+Esc` closed the search and `Cmd+Enter`
+        // jumped to a commit, neither of which anyone asked for.
+        if command {
+            return nothing;
+        }
         return match key {
             Key::Named(Named::Escape) => Message::Repo(index, RepoMessage::SearchDismissed),
             Key::Named(Named::ArrowDown) => Message::Repo(index, RepoMessage::SearchStepped(1)),
@@ -3112,12 +3142,21 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         };
     }
 
+    // Checked before the settings panel, because it can be opened from in front
+    // of it: with both up, Escape closes the one on top.
+    if shortcuts_open {
+        return match key {
+            Key::Named(Named::Escape) if !command => Message::ShortcutsDismissed,
+            _ => nothing,
+        };
+    }
+
     // The settings panel owns the keyboard while it is up, the way every other
     // layer over the screen does. Without this, `j` steps through hunks behind
     // it and `Space` stages a file nobody can see.
     if settings {
         return match key {
-            Key::Named(Named::Escape) => Message::SettingsDismissed,
+            Key::Named(Named::Escape) if !command => Message::SettingsDismissed,
             _ => nothing,
         };
     }
@@ -3170,6 +3209,11 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
             }
         }
         Key::Character(c) if command && c.as_str() == "," => Message::SettingsRequested,
+        // Modified deliberately. The bare `?` that terminal tools use would run
+        // into the same hazard `Space` did: `editing` only turns true once a
+        // key has arrived, so `?` as the first character of a commit message
+        // would open this instead of typing.
+        Key::Character(c) if command && c.as_str() == "/" => Message::ShortcutsRequested,
         Key::Character(c) if command && c.as_str() == "o" => Message::OpenDialogRequested,
         Key::Character(c) if command && c.as_str() == "d" => repo(RepoMessage::DiffModeToggled),
 
@@ -3207,10 +3251,15 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         Key::Character(c) if c.eq_ignore_ascii_case("k") && !command => {
             repo(RepoMessage::HunkStepped(-1))
         }
-        Key::Named(Named::ArrowDown) => repo(RepoMessage::SelectionMoved(1)),
-        Key::Named(Named::ArrowUp) => repo(RepoMessage::SelectionMoved(-1)),
-        Key::Named(Named::PageDown) => repo(RepoMessage::SelectionMoved(20)),
-        Key::Named(Named::PageUp) => repo(RepoMessage::SelectionMoved(-20)),
+        // Unmodified, as `UI_SPEC` writes them. Without the guard `Cmd+↑` moved
+        // the selection and `Cmd+Tab` cycled panes — bindings nobody chose,
+        // found by the test that checks the shortcut reference against what the
+        // keyboard actually does. On macOS `Cmd+↑` and `Cmd+Tab` mean something
+        // else entirely.
+        Key::Named(Named::ArrowDown) if !command => repo(RepoMessage::SelectionMoved(1)),
+        Key::Named(Named::ArrowUp) if !command => repo(RepoMessage::SelectionMoved(-1)),
+        Key::Named(Named::PageDown) if !command => repo(RepoMessage::SelectionMoved(20)),
+        Key::Named(Named::PageUp) if !command => repo(RepoMessage::SelectionMoved(-20)),
         // Conflict navigation. Bracket keys carry the command modifier so they
         // still work while the result pane is being typed into, which is
         // exactly when moving to the next conflict is wanted.
@@ -3222,7 +3271,7 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
             RepoMessage::SequenceControlRequested(SequenceControl::Continue),
         ),
 
-        Key::Named(Named::Tab) => match pane {
+        Key::Named(Named::Tab) if !command => match pane {
             Some(current) => repo(RepoMessage::FocusCycled(if shift {
                 current.previous()
             } else {
@@ -4992,6 +5041,260 @@ mod tests {
 
         let _ = app.update(Message::SettingsDismissed);
         assert!(!app.app.settings_open);
+    }
+
+    // ---- the shortcut reference, and keeping it honest -------------------
+
+    /// One chord as written in the reference, as a key and its modifiers.
+    fn parse_chord(chord: &str) -> (keyboard::Key, keyboard::Modifiers) {
+        use keyboard::key::{Key, Named};
+
+        let mut modifiers = keyboard::Modifiers::default();
+        let mut key = None;
+
+        for part in chord.split('+') {
+            match part {
+                "Cmd" => modifiers |= keyboard::Modifiers::COMMAND,
+                "Shift" => modifiers |= keyboard::Modifiers::SHIFT,
+                "Enter" => key = Some(Key::Named(Named::Enter)),
+                "Esc" => key = Some(Key::Named(Named::Escape)),
+                "Space" => key = Some(Key::Named(Named::Space)),
+                "Tab" => key = Some(Key::Named(Named::Tab)),
+                "Backspace" => key = Some(Key::Named(Named::Backspace)),
+                "Up" => key = Some(Key::Named(Named::ArrowUp)),
+                "Down" => key = Some(Key::Named(Named::ArrowDown)),
+                "PageUp" => key = Some(Key::Named(Named::PageUp)),
+                "PageDown" => key = Some(Key::Named(Named::PageDown)),
+                one => {
+                    assert_eq!(one.chars().count(), 1, "unparsed chord part “{one}”");
+                    key = Some(Key::Character(one.to_lowercase().into()));
+                }
+            }
+        }
+
+        (key.expect("a chord names a key"), modifiers)
+    }
+
+    /// A chord written back out in one form, so two spellings of the same
+    /// binding compare equal.
+    ///
+    /// Shift is dropped when the unshifted press does the same thing: `Shift+J`
+    /// and `J` are one binding, because with Shift held the character iced
+    /// reports is the shifted one on most layouts. `Cmd+Shift+U` keeps it,
+    /// because `Cmd+U` is not bound to that.
+    fn canonical(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext) -> String {
+        use keyboard::key::{Key, Named};
+
+        let mut modifiers = modifiers;
+        if modifiers.shift() {
+            let unshifted = modifiers - keyboard::Modifiers::SHIFT;
+            if format!("{:?}", shortcut(key, unshifted, cx))
+                == format!("{:?}", shortcut(key, modifiers, cx))
+            {
+                modifiers = unshifted;
+            }
+        }
+
+        let name = match key {
+            Key::Character(c) => c.to_uppercase(),
+            Key::Named(Named::Enter) => "Enter".to_owned(),
+            Key::Named(Named::Escape) => "Esc".to_owned(),
+            Key::Named(Named::Space) => "Space".to_owned(),
+            Key::Named(Named::Tab) => "Tab".to_owned(),
+            Key::Named(Named::Backspace) => "Backspace".to_owned(),
+            Key::Named(Named::ArrowUp) => "Up".to_owned(),
+            Key::Named(Named::ArrowDown) => "Down".to_owned(),
+            Key::Named(Named::PageUp) => "PageUp".to_owned(),
+            Key::Named(Named::PageDown) => "PageDown".to_owned(),
+            other => format!("{other:?}"),
+        };
+
+        let mut out = String::new();
+        if modifiers.command() {
+            out.push_str("Cmd+");
+        }
+        if modifiers.shift() {
+            out.push_str("Shift+");
+        }
+        out.push_str(&name);
+        out
+    }
+
+    /// Every chord worth trying: the keys a keyboard has, against the modifier
+    /// combinations hideGit binds.
+    fn every_candidate_chord() -> Vec<(keyboard::Key, keyboard::Modifiers)> {
+        use keyboard::key::{Key, Named};
+
+        let named = [
+            Named::Enter,
+            Named::Escape,
+            Named::Space,
+            Named::Tab,
+            Named::Backspace,
+            Named::Delete,
+            Named::ArrowUp,
+            Named::ArrowDown,
+            Named::ArrowLeft,
+            Named::ArrowRight,
+            Named::PageUp,
+            Named::PageDown,
+            Named::Home,
+            Named::End,
+        ];
+        let characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                          0123456789,./;'[]\\-=`<>?:\"{}|_+)(*&^%$#@!~";
+        let combinations = [
+            keyboard::Modifiers::default(),
+            keyboard::Modifiers::SHIFT,
+            keyboard::Modifiers::COMMAND,
+            keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT,
+        ];
+
+        let mut chords = Vec::new();
+        for modifiers in combinations {
+            for name in named {
+                chords.push((Key::Named(name), modifiers));
+            }
+            for c in characters.chars() {
+                chords.push((Key::Character(c.to_string().into()), modifiers));
+            }
+        }
+        chords
+    }
+
+    /// What the keyboard actually does in a context, as canonical chords.
+    fn bound_in(cx: KeyContext) -> std::collections::BTreeSet<String> {
+        every_candidate_chord()
+            .into_iter()
+            .filter(|(key, modifiers)| {
+                !matches!(shortcut(key, *modifiers, cx), Message::ToastDismissed(id) if id == u64::MAX)
+            })
+            .map(|(key, modifiers)| canonical(&key, modifiers, cx))
+            .collect()
+    }
+
+    /// What the reference claims about a context, as canonical chords.
+    fn listed_in(context: crate::widget::shortcuts::Context) -> std::collections::BTreeSet<String> {
+        let cx = KeyContext {
+            active: Some(0),
+            pane: Some(crate::state::Pane::Graph),
+            open_repos: 9,
+            ..KeyContext::default()
+        };
+
+        crate::widget::shortcuts::REFERENCE
+            .iter()
+            .flat_map(|group| group.bindings)
+            .filter(|binding| binding.context == context)
+            .flat_map(|binding| binding.chords)
+            .map(|chord| {
+                let (key, modifiers) = parse_chord(chord);
+                canonical(&key, modifiers, cx)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_reference_and_the_keyboard_agree_in_both_directions() {
+        // The whole reason the reference is a table rather than prose. A row
+        // for a binding that does not exist fails here, and so does a binding
+        // added without a row — a reference that quietly drifts is worse than
+        // none, because it is believed.
+        use crate::widget::shortcuts::Context;
+
+        let screen = KeyContext {
+            active: Some(0),
+            pane: Some(crate::state::Pane::Graph),
+            open_repos: 9,
+            ..KeyContext::default()
+        };
+        assert_eq!(bound_in(screen), listed_in(Context::Screen));
+
+        let searching = KeyContext {
+            active: Some(0),
+            searching: Some(0),
+            ..KeyContext::default()
+        };
+        assert_eq!(bound_in(searching), listed_in(Context::Search));
+
+        for panel in [
+            KeyContext {
+                active: Some(0),
+                settings_open: true,
+                ..KeyContext::default()
+            },
+            KeyContext {
+                active: Some(0),
+                shortcuts_open: true,
+                ..KeyContext::default()
+            },
+        ] {
+            assert_eq!(bound_in(panel), listed_in(Context::Panel));
+        }
+    }
+
+    #[test]
+    fn a_row_that_stands_for_one_chord_prints_that_chord() {
+        // The two fields can only differ where a row deliberately covers
+        // several presses — the nine tab keys, or the two characters a layout
+        // reports for the same physical key.
+        for binding in crate::widget::shortcuts::REFERENCE
+            .iter()
+            .flat_map(|group| group.bindings)
+        {
+            if binding.chords.len() == 1 {
+                assert_eq!(
+                    binding.shown, binding.chords[0],
+                    "“{}” prints one thing and means another",
+                    binding.what
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cmd_slash_opens_the_reference_and_escape_closes_it() {
+        let mut app = app_with(1);
+        let slash = keyboard::Key::Character("/".into());
+
+        assert!(matches!(
+            shortcut(
+                &slash,
+                keyboard::Modifiers::COMMAND,
+                KeyContext {
+                    active: Some(0),
+                    ..KeyContext::default()
+                }
+            ),
+            Message::ShortcutsRequested
+        ));
+
+        let _ = app.update(Message::ShortcutsRequested);
+        assert!(app.app.shortcuts_open);
+
+        let _ = app.update(Message::ShortcutsDismissed);
+        assert!(!app.app.shortcuts_open);
+    }
+
+    #[test]
+    fn the_reference_is_closed_before_the_settings_panel_behind_it() {
+        // It can be opened from in front of settings, so Escape has to close
+        // the one on top or the panel underneath disappears first.
+        let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+
+        assert!(matches!(
+            shortcut(
+                &escape,
+                keyboard::Modifiers::default(),
+                KeyContext {
+                    active: Some(0),
+                    settings_open: true,
+                    shortcuts_open: true,
+                    ..KeyContext::default()
+                }
+            ),
+            Message::ShortcutsDismissed
+        ));
     }
 
     #[test]
