@@ -733,8 +733,8 @@ Stated plainly, because a reader should meet these here rather than discover the
    [ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md) exists to avoid.
 8. **iced 0.14 is pre-1.0.** The final experimental release before 1.0, so a breaking upgrade is
    expected. Isolating iced types to `hidegit-ui` keeps that blast radius to one crate.
-9. **Opening a very large repository takes about a second.** Ordering 100,000 commits
-   topologically measures at 1.01s, and it happens before the first screen appears. Scrolling is
-   fast once open — laying out a visible window costs 52µs — but the initial pass is real, and
-   nothing yet shows progress during it. Numbers and method in
-   [COMMIT_GRAPH.md](./COMMIT_GRAPH.md#performance).
+9. **Opening a very large repository takes over a second.** Ordering 100,000 commits topologically
+   measures at 1.19s, and it happens before the first screen can be drawn. Scrolling is fast once
+   open — laying out a visible window costs 52µs — but the initial pass is real. It is no longer
+   silent: opening reports five named steps, and "Counting commits…" is this one. Numbers and method
+   in [COMMIT_GRAPH.md](./COMMIT_GRAPH.md#performance).

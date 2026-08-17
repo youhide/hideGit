@@ -70,8 +70,8 @@ nested path. Both are fixed; the regression test uses a nested path deliberately
 **Done when:** you can open any local repository, scroll its full history, click any commit and
 read its diff — and a 100,000-commit repository scrolls without visible stutter, measured, not
 assumed. Laying out a visible window at row 50,000 measures at **52µs** against a 16.6ms frame
-budget; opening a repository that size costs **1.01s** for the topological ordering pass, which is
-the number to attack next.
+budget; opening a repository that size costs **1.19s** for the topological ordering pass, which is
+the number to attack next. Said on screen while it happens, since M6 — see the opening banner.
 
 ---
 
@@ -90,6 +90,10 @@ The commit loop. After this, hideGit is useful for real work on a single branch.
 - Filesystem watcher driving automatic status refresh, debounced
 - Conflicted-file detection and `RepoState` awareness (actions disabled mid-operation)
 
+**Done when:** you can stage one hunk of a two-hunk file, commit it, and `git diff` still shows the
+other — with the file list updating on its own when something changes the working directory from
+outside the application.
+
 **Status: complete.** You can make a complete commit — including staging only part of a file —
 without leaving the app, and the file list updates on its own when a file changes outside it.
 Verified against real repositories rather than only in tests: staging one hunk of a two-hunk file
@@ -103,12 +107,17 @@ write appended a second copy of the repository and threw away the user's scroll 
 rereads in place, restoring the viewport by commit id. Left alone, the watcher would have made
 that unbearable.
 
-**`Space` is not bound to stage/unstage**, despite the shortcut table. iced 0.14 keeps text-input
-focus inside the widget — not observable, not settable — and wrapping a field in a `mouse_area` to
-catch the click that grants focus swallows that click, so the field never focuses at all. A global
-binding therefore cannot know the commit message field is being typed into until its first
-keystroke has already arrived, and `Space` is the one bare key whose leak would stage a file. It
-waits for M6's keyboard-navigation work. `j`/`k` stay bound because their leak moves a highlight.
+**`Space` was not bound to stage/unstage**, despite the shortcut table, and M2 recorded why: iced
+0.14 keeps text-input focus inside the widget — not observable through `on_input`, not settable —
+and wrapping a field in a `mouse_area` to catch the click that grants focus swallows that click, so
+the field never focuses at all. A global binding therefore could not know the commit message field
+was being typed into until its first keystroke had already arrived, and `Space` is the one bare key
+whose leak would stage a file. `j`/`k` stayed bound because their leak only moves a highlight.
+
+**It is bound now**, and M2's reasoning was right about the signal and wrong about the conclusion.
+Focus turned out to be observable after all — not through `on_input`, but through a `find_focused`
+widget operation, which `Space` now runs before it acts. The composer's fields carry ids for exactly
+that query, because the operation ignores widgets without one. See M6.
 
 ---
 
