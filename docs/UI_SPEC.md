@@ -217,6 +217,23 @@ The reordering itself is Git's. `--autosquash` rewrites the todo list before the
 runs, so hideGit hands Git the flag and accepts the todo unedited rather than computing the ordering
 itself; the result is identical to what the same user gets in a terminal.
 
+**Plan rows are dragged to reorder**, alongside the one-step move buttons, which stay: moving a
+commit from the bottom of a twenty-commit plan is nineteen clicks otherwise. Pressing a row *arms* a
+drag rather than performing one — a press that never leaves its row is a click, and it has already
+selected the row it landed on. The list rearranges as the pointer crosses each row rather than on
+release, so the list under the cursor is the preview of where the row will land.
+
+A move is **remove-and-insert, not a swap**. Those are the same thing only for adjacent rows:
+dragging the last commit to the top by swapping would send the first commit to the bottom, reordering
+a row nobody touched — and for a rebase plan that is a different history. The selection follows the
+row being dragged, because the row under the cursor is the one still being thought about.
+
+**Dragging a commit from the graph into the plan is not possible, and this is not it.** The plan
+editor is a modal scrim over the whole screen — that is what makes it abandonable, since nothing has
+run — so the graph is covered while it is open. Making the graph a drag *source* for the plan means
+deciding they can be on screen at once, which is a layout decision rather than an implementation
+detail, and it is not made here.
+
 **A worktree row carries a `⋯` only where an action would work.** Three rows have none: the **main**
 worktree, which cannot be removed; the **current** one, because `git worktree remove` will not take
 the directory you are standing in; and a **locked** one, because locking it is how the user said

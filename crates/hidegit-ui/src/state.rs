@@ -863,6 +863,12 @@ pub struct RebaseEditor {
     pub steps: Vec<PlannedStep>,
     /// Which row the keyboard and the move buttons act on.
     pub selected: usize,
+    /// The row a drag started on, while one is in progress.
+    ///
+    /// Held here rather than in the widget because the drop lands on a
+    /// *different* row than the press did, so no single row can know both ends
+    /// of the gesture.
+    pub dragging: Option<usize>,
 }
 
 /// One commit in the plan, with what to do to it.
@@ -884,7 +890,27 @@ impl RebaseEditor {
                 })
                 .collect(),
             selected: 0,
+            dragging: None,
         }
+    }
+
+    /// Moves the step at `from` so that it sits at `to`.
+    ///
+    /// Remove-and-insert, not a swap. A swap is only the same thing for
+    /// adjacent rows: dragging the last commit to the top by swapping would
+    /// send the first commit to the bottom, reordering a row nobody touched.
+    /// Everything between the two ends shifts by one instead, which is what
+    /// dragging a row looks like.
+    ///
+    /// The selection follows the step rather than the position, because the
+    /// row the user is holding is the one they are still thinking about.
+    pub fn move_step(&mut self, from: usize, to: usize) {
+        if from >= self.steps.len() || to >= self.steps.len() || from == to {
+            return;
+        }
+        let step = self.steps.remove(from);
+        self.steps.insert(to, step);
+        self.selected = to;
     }
 
     /// Moves the selected step by `delta`, carrying the selection with it.

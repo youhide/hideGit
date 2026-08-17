@@ -620,6 +620,16 @@ pub enum RepoMessage {
     },
     /// Opens the interactive plan editor for a rebase onto this ref. Nothing
     /// runs until the plan is started.
+    /// A drag began on this plan row.
+    ///
+    /// Arming, not moving: the row is only reordered when the pointer is
+    /// released somewhere else, so pressing a row and letting go without moving
+    /// selects it and changes nothing.
+    PlanRowDragStarted(usize),
+    /// The pointer entered this plan row while a drag was in progress.
+    PlanRowDraggedOver(usize),
+    /// The pointer was released, ending any drag in progress.
+    PlanRowDropped,
     RebasePlanRequested(String),
     /// The commits the rebase would replay, oldest first.
     RebasePlanLoaded(Box<Result<(String, Vec<Commit>), UiError>>),

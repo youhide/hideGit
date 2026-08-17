@@ -2506,6 +2506,37 @@ impl Hidegit {
                 Task::none()
             }
 
+            RepoMessage::PlanRowDragStarted(at) => {
+                if let Some(plan) = &mut repo.plan {
+                    // Armed, not moved. A press that never leaves its row is a
+                    // click, and it has already selected the row it landed on.
+                    plan.dragging = Some(at);
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanRowDraggedOver(at) => {
+                if let Some(plan) = &mut repo.plan
+                    && let Some(from) = plan.dragging
+                {
+                    // Reordered as the pointer crosses each row rather than on
+                    // release: the list under the cursor is the preview, and a
+                    // drag that only rearranged at the end would give no sign
+                    // of where the row is about to land. The drag follows the
+                    // step, so the next row it crosses moves it again.
+                    plan.move_step(from, at);
+                    plan.dragging = Some(at);
+                }
+                Task::none()
+            }
+
+            RepoMessage::PlanRowDropped => {
+                if let Some(plan) = &mut repo.plan {
+                    plan.dragging = None;
+                }
+                Task::none()
+            }
+
             RepoMessage::PlanRowMoved(delta) => {
                 if let Some(plan) = &mut repo.plan {
                     plan.move_selected(delta);
@@ -4679,6 +4710,113 @@ mod tests {
 
     fn plan_of(app: &Hidegit) -> &crate::state::RebaseEditor {
         app.app.active_repo().unwrap().plan.as_ref().unwrap()
+    }
+
+    /// The summaries in plan order, which is what a reorder is about.
+    fn plan_order(app: &Hidegit) -> Vec<String> {
+        plan_of(app)
+            .steps
+            .iter()
+            .map(|s| s.commit.summary.clone())
+            .collect()
+    }
+
+    #[test]
+    fn dragging_a_row_across_the_list_moves_only_that_row() {
+        // Remove-and-insert, not a swap. Swapping the ends would send the first
+        // commit to the bottom — reordering a row nobody touched — and for a
+        // rebase plan that is a different history.
+        let mut app = app_planning();
+        let before = plan_order(&app);
+        assert_eq!(before.len(), 3);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDragStarted(2)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDraggedOver(0)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDropped));
+
+        assert_eq!(
+            plan_order(&app),
+            vec![before[2].clone(), before[0].clone(), before[1].clone()],
+            "the dragged row landed at the top and the other two shifted down"
+        );
+    }
+
+    #[test]
+    fn a_press_that_never_leaves_its_row_reorders_nothing() {
+        // Pressing arms a drag; it does not perform one. Otherwise every click
+        // on a row would be a reorder waiting for a twitch.
+        let mut app = app_planning();
+        let before = plan_order(&app);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDragStarted(2)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDropped));
+
+        assert_eq!(plan_order(&app), before);
+    }
+
+    #[test]
+    fn crossing_a_row_without_a_drag_in_progress_changes_nothing() {
+        // `on_enter` fires whenever the pointer crosses a row, drag or no drag.
+        // Acting on it unconditionally would reorder the plan on hover.
+        let mut app = app_planning();
+        let before = plan_order(&app);
+        // A row other than the selected one, or a reorder "from the selection"
+        // would be a no-op and this would pass against a broken guard.
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowSelected(0)));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDraggedOver(2)));
+
+        assert_eq!(plan_order(&app), before);
+    }
+
+    #[test]
+    fn the_selection_follows_the_row_being_dragged() {
+        // The row under the cursor is the one still being thought about, so the
+        // move buttons and the keyboard must act on it rather than on wherever
+        // the selection happened to be.
+        let mut app = app_planning();
+        // Away from both ends of the drag, so the assertion below is about the
+        // selection *moving* rather than about where it already was.
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowSelected(1)));
+        assert_eq!(plan_of(&app).selected, 1);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDragStarted(2)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDraggedOver(0)));
+
+        assert_eq!(plan_of(&app).selected, 0);
+    }
+
+    #[test]
+    fn a_drag_that_crosses_several_rows_keeps_following_the_pointer() {
+        // The drag is re-armed at each crossing, so the row keeps moving with
+        // the cursor instead of stopping after the first one.
+        let mut app = app_planning();
+        let before = plan_order(&app);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDragStarted(0)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDraggedOver(1)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDraggedOver(2)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDropped));
+
+        assert_eq!(
+            plan_order(&app),
+            vec![before[1].clone(), before[2].clone(), before[0].clone()],
+            "the row travelled the whole way rather than stopping at the first crossing"
+        );
+    }
+
+    #[test]
+    fn releasing_ends_the_drag_so_the_next_hover_does_not_reorder() {
+        let mut app = app_planning();
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDragStarted(0)));
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDropped));
+        let after_release = plan_order(&app);
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PlanRowDraggedOver(2)));
+
+        assert_eq!(plan_order(&app), after_release);
+        assert_eq!(plan_of(&app).dragging, None);
     }
 
     #[test]
