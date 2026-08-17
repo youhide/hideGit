@@ -30,9 +30,9 @@ use crate::message::{
     StatusLoad, UiError,
 };
 use crate::state::{
-    ActionSheet, App, CHECKPOINT_INTERVAL, Confirmation, DetailPane, Draft, GraphView, OpenRepo,
-    Operation, PAGE_SIZE, PROMPT_FIELD_IDS, Pane, PrPanel, PrState, Prompt, PromptField,
-    PromptKind, ROW_HEIGHT, RebaseEditor, Resolver, Screen, Section, Selection,
+    ActionSheet, App, Confirmation, DetailPane, Draft, GraphView, OpenRepo, Operation, PAGE_SIZE,
+    PROMPT_FIELD_IDS, Pane, PrPanel, PrState, Prompt, PromptField, PromptKind, ROW_HEIGHT,
+    RebaseEditor, Resolver, Screen, Section, Selection,
 };
 use crate::widget::tabs::tab_for_digit;
 use crate::{alerts, forge, screen, watcher, widget};
@@ -1224,7 +1224,7 @@ impl Hidegit {
         Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || {
-                    Checkpoints::build(&commits, CHECKPOINT_INTERVAL)
+                    Checkpoints::build(&commits, hidegit_core::graph::CHECKPOINT_INTERVAL)
                 })
                 .await
                 .ok()
