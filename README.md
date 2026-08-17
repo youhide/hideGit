@@ -96,7 +96,7 @@ Download the archive for your platform from
 |---|---|
 | macOS 11+, Intel and Apple Silicon | `hidegit-<version>-macos-universal.zip` |
 | Windows 10+ | `hidegit-<version>-windows-x86_64.zip` |
-| Linux, glibc 2.35 or newer | `hidegit-<version>-linux-x86_64.tar.gz` |
+| Linux, glibc 2.35 or newer | `hideGit-<version>-x86_64.AppImage`, or `hidegit-<version>-linux-x86_64.tar.gz` |
 
 **These builds are not signed with a developer certificate**, so macOS and Windows each ask once
 whether you meant to run it. That is the trade for shipping downloads now rather than when there is
@@ -107,12 +107,17 @@ a certificate to pay for; [RELEASING.md](./docs/RELEASING.md) explains what chan
   Control-click → Open stopped working as a bypass in macOS 15.
 - **Windows** — unzip and run `hidegit.exe`. SmartScreen says "Windows protected your PC"; choose
   **More info** → **Run anyway**.
-- **Linux** — unpack and run `./hidegit`, or `PREFIX=~/.local ./install.sh` to get a launcher entry
-  and icons along with the binary.
+- **Linux** — `chmod +x` the AppImage and run it; nothing to unpack and nothing to install. Or take
+  the tarball, run `./hidegit`, and `PREFIX=~/.local ./install.sh` for a launcher entry and icons.
 
-Every release carries a `SHA256SUMS.txt` to check a download against. There are no `.dmg`, `.msi`,
-AppImage or Flatpak packages yet — an unsigned installer would add a step without removing the
-warning that justifies it.
+  The AppImage is one file with the desktop entry and icons inside it, not a way to avoid installing
+  anything: hideGit reaches Wayland, X11, Vulkan and OpenGL through `dlopen` at runtime, so those
+  still come from your distribution and always will. Bundling a graphics driver is how an AppImage
+  ends up running only on the machine that built it.
+
+Every release carries a `SHA256SUMS.txt` to check a download against. There are no `.dmg`, `.msi` or
+Flatpak packages yet — an unsigned installer would add a step without removing the warning that
+justifies it.
 
 ## Building from source
 
