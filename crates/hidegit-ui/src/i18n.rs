@@ -26,6 +26,15 @@ use std::path::Path;
 /// language, so an installation with no files at all still has every string.
 const ENGLISH: &str = include_str!("../locales/en.toml");
 
+/// The translations hideGit ships, by the tag their file is named for.
+///
+/// Compiled in for the same reason English is: a translation that only existed
+/// as a file the user had to find and copy would not be a translation hideGit
+/// *has*. A file of the same name in the user's own `locales` directory still
+/// wins — theirs is a correction or a work in progress, and being overruled by
+/// the binary is the one thing that would make writing one pointless.
+const BUNDLED: &[(&str, &str)] = &[("pt-BR", include_str!("../locales/pt-BR.toml"))];
+
 /// The language a catalogue is written in, as its file is named.
 pub const DEFAULT_LOCALE: &str = "en";
 
@@ -59,6 +68,26 @@ impl Default for Catalogue {
 }
 
 impl Catalogue {
+    /// The catalogue for `locale` using only what is compiled in.
+    ///
+    /// For an installation with nowhere to keep a config directory. Before a
+    /// translation shipped this could only ever have been English, so the
+    /// caller used [`Catalogue::default`] and ignored the language entirely;
+    /// with one compiled in, that would show a Brazilian user English for the
+    /// want of a directory they never asked for.
+    pub fn for_locale(locale: &str) -> Self {
+        // No guard for English: it is the source rather than a translation, so
+        // it is never in `BUNDLED` and asking for it finds nothing to replace
+        // the default with. `load` needs one because a `locales/en.toml` on
+        // disk would otherwise overrule the built-in copy.
+        let mut catalogue = Self::default();
+        if let Some(strings) = bundled(locale).and_then(|text| parse(text).ok()) {
+            catalogue.locale = locale.to_owned();
+            catalogue.strings = strings;
+        }
+        catalogue
+    }
+
     /// Loads `locale` from `dir`, falling back to English for anything it does
     /// not have — or for everything, if it has nothing usable.
     ///
@@ -73,9 +102,12 @@ impl Catalogue {
         let path = dir.join(format!("{locale}.toml"));
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
-            // Not a problem worth reporting: asking for a language nobody has
-            // written is answered by English, which is what happens.
-            Err(_) => return catalogue,
+            Err(_) => match bundled(locale) {
+                Some(text) => text.to_owned(),
+                // Not a problem worth reporting: asking for a language nobody
+                // has written is answered by English, which is what happens.
+                None => return catalogue,
+            },
         };
 
         match parse(&text) {
@@ -197,6 +229,14 @@ pub fn from_environment() -> String {
 }
 
 /// `pt_BR.UTF-8` → `pt-BR`. `None` for the values that mean "no locale".
+/// The translation hideGit ships for `locale`, if it ships one.
+fn bundled(locale: &str) -> Option<&'static str> {
+    BUNDLED
+        .iter()
+        .find(|(tag, _)| *tag == locale)
+        .map(|(_, text)| *text)
+}
+
 fn language_tag(value: &str) -> Option<String> {
     let bare = value.split(['.', '@']).next().unwrap_or_default();
     if bare.is_empty() || bare == "C" || bare == "POSIX" {
@@ -216,6 +256,102 @@ mod tests {
             std::fs::write(dir.path().join(name), body).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn every_bundled_translation_parses_and_covers_every_english_key() {
+        // A shipped translation with a hole in it would show the user a mixture
+        // of two languages, and they have no file to fix. A contributor's own
+        // file may be half-finished; this one may not.
+        let english = parse(ENGLISH).expect("English parses");
+
+        for (tag, text) in BUNDLED {
+            let strings = parse(text).unwrap_or_else(|e| panic!("{tag} is not valid TOML: {e}"));
+
+            let missing: Vec<_> = english
+                .keys()
+                .filter(|key| !strings.contains_key(*key))
+                .collect();
+            assert!(missing.is_empty(), "{tag} is missing {missing:?}");
+
+            let extra: Vec<_> = strings
+                .keys()
+                .filter(|key| !english.contains_key(*key))
+                .collect();
+            assert!(
+                extra.is_empty(),
+                "{tag} has keys English does not, which are dead: {extra:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bundled_translation_is_used_with_no_files_on_disk_at_all() {
+        // The point of compiling it in. A translation that only existed as a
+        // file the user had to find and copy would not be one hideGit has.
+        let empty = tempfile::tempdir().unwrap();
+        let catalogue = Catalogue::load(empty.path(), "pt-BR");
+
+        assert_eq!(catalogue.locale, "pt-BR");
+        assert_eq!(catalogue.get("settings.title"), "Configurações");
+        assert!(
+            catalogue.problems.is_empty(),
+            "a complete translation reports nothing: {:?}",
+            catalogue.problems
+        );
+    }
+
+    #[test]
+    fn a_file_on_disk_overrules_the_bundled_translation() {
+        // Theirs is a correction or a work in progress. Being overruled by the
+        // binary is the one thing that would make writing one pointless.
+        let dir = catalogue_dir(&[("pt-BR.toml", r#""settings.title" = "Ajustes""#)]);
+        let catalogue = Catalogue::load(dir.path(), "pt-BR");
+
+        assert_eq!(catalogue.get("settings.title"), "Ajustes");
+    }
+
+    #[test]
+    fn a_file_called_en_toml_does_not_overrule_the_built_in_english() {
+        // English is the fallback for every other language, so it has to be the
+        // complete one. A half-written `en.toml` in the config directory
+        // replacing it would leave keys with nothing behind them at all.
+        let dir = catalogue_dir(&[("en.toml", r#""settings.title" = "Preferences""#)]);
+        let catalogue = Catalogue::load(dir.path(), "en");
+
+        assert_eq!(catalogue.get("settings.title"), "Settings");
+        assert_eq!(
+            catalogue.get("settings.done"),
+            "Done",
+            "and nothing is lost"
+        );
+    }
+
+    #[test]
+    fn an_installation_with_no_config_directory_still_gets_a_shipped_translation() {
+        // It has nowhere to put a `locales` directory, which is no reason to
+        // show it a language it did not ask for.
+        assert_eq!(
+            Catalogue::for_locale("pt-BR").get("settings.title"),
+            "Configurações"
+        );
+        assert_eq!(
+            Catalogue::for_locale("fr").get("settings.title"),
+            "Settings"
+        );
+        assert_eq!(Catalogue::for_locale("en").locale, DEFAULT_LOCALE);
+    }
+
+    #[test]
+    fn a_language_hidegit_does_not_ship_still_falls_back_to_english() {
+        let empty = tempfile::tempdir().unwrap();
+        let catalogue = Catalogue::load(empty.path(), "fr");
+
+        assert_eq!(catalogue.get("settings.title"), "Settings");
+        assert!(
+            catalogue.problems.is_empty(),
+            "asking for a language nobody has written is not a problem to report"
+        );
     }
 
     #[test]

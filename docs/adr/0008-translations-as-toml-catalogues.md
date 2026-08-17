@@ -33,6 +33,11 @@ Three facts about hideGit narrow the problem considerably:
   It is the only place a user-facing string is written; the code carries keys.
 - A translation is the same file with the values replaced, dropped in a `locales` directory beside
   `config.toml` as `pt-BR.toml`. The same shape as `themes/`, in the same place, found the same way.
+- **A translation the project maintains is compiled in as well**, for the reason English is: one that
+  existed only as a file the user had to find and copy would not be a translation hideGit *has*. A
+  file of the same name in the user's own `locales` directory still wins, because being overruled by
+  the binary would make writing one pointless — so the order is user file, then bundled, then
+  English. A bundled translation must cover every key; a user's own may be half-finished.
 - A key missing from a translation falls back to English and is **reported**, exactly as a theme
   file that will not parse is. A half-finished translation shows English where it is unfinished
   rather than a key or an empty label.

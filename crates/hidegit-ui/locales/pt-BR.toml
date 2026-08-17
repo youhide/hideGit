@@ -1,0 +1,51 @@
+# O texto da hideGit, em português do Brasil.
+#
+# Traduzido do arquivo ao lado, `en.toml`, que é a fonte: o código carrega as
+# chaves, estes arquivos carregam as frases. Uma chave que não estiver aqui
+# aparece em inglês, e a hideGit diz quantas faltam.
+#
+# Veja docs/adr/0008-translations-as-toml-catalogues.md.
+#
+# **O vocabulário do Git fica em inglês.** `commit`, `stash`, `rebase`, `pull
+# request`, `remote` — quem aprende uma palavra aqui precisa conseguir usá-la no
+# terminal e na documentação do próprio Git, e traduzi-las ensinaria um
+# vocabulário que não serve em lugar nenhum. Nomes de arquivos que o usuário vê
+# — `config.toml` — também ficam, porque são o nome real do arquivo em disco.
+#
+# O que nunca entra aqui: a saída do próprio Git, que chega ao usuário
+# literalmente de propósito, e qualquer coisa que veio de um repositório —
+# nomes de branch, caminhos, URLs de remote, mensagens de commit.
+
+# ---- O painel de configurações --------------------------------------------
+
+"settings.title" = "Configurações"
+"settings.done" = "Concluído"
+
+"settings.saved" = "Salvo no config.toml conforme você altera."
+"settings.not-saved" = "Não salvo — "
+
+"settings.section.appearance" = "Aparência"
+"settings.section.window" = "Janela"
+"settings.section.diagnostics" = "Diagnóstico"
+"settings.section.alerts" = "Avisos de pull request"
+"settings.section.muted" = "Repositórios silenciados"
+
+"settings.window.remember" = "Reabrir no último tamanho e posição"
+"settings.window.remember.off" = "Desligado, a hideGit abre no tamanho padrão, centralizada."
+
+"settings.diagnostics.reports" = "Gravar um relatório quando algo der errado"
+"settings.diagnostics.reports.note" = "Salvo nesta máquina. Nada é enviado para lugar nenhum."
+"settings.diagnostics.updates" = "Procurar uma hideGit mais nova"
+"settings.diagnostics.updates.note" = "Consulta o github.com uma vez por dia. Nunca instala nada."
+
+"settings.quiet.title" = "Horário de silêncio"
+"settings.quiet.from" = "das"
+"settings.quiet.to" = "às"
+"settings.quiet.empty" = "Um intervalo que começa e termina na mesma hora não silencia nada."
+
+"settings.muted.none" = "Os repositórios aparecem aqui assim que um estiver aberto com um remote do GitHub, ou for silenciado no config.toml."
+
+# ---- Temas -----------------------------------------------------------------
+
+"theme.dark" = "Escuro"
+"theme.light" = "Claro"
