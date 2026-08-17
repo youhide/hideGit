@@ -151,6 +151,7 @@ pub struct FakeBackend {
     stashes: Vec<StashEntry>,
     submodules: Vec<Submodule>,
     worktrees: Vec<Worktree>,
+    uses_lfs: bool,
     divergence: HashMap<String, Divergence>,
     failure: Option<Failure>,
     /// Applied to writes only, so a test can have reads succeed and the write
@@ -193,6 +194,7 @@ impl Default for FakeBackend {
             stashes: Vec::new(),
             submodules: Vec::new(),
             worktrees: Vec::new(),
+            uses_lfs: false,
             divergence: HashMap::new(),
             failure: None,
             write_failure: None,
@@ -274,6 +276,11 @@ impl FakeBackend {
 
     pub fn with_worktrees(mut self, worktrees: Vec<Worktree>) -> Self {
         self.worktrees = worktrees;
+        self
+    }
+
+    pub fn using_lfs(mut self) -> Self {
+        self.uses_lfs = true;
         self
     }
 
@@ -490,6 +497,11 @@ impl GitBackend for FakeBackend {
     fn worktrees(&self) -> Result<Vec<Worktree>, GitError> {
         self.check()?;
         Ok(self.worktrees.clone())
+    }
+
+    fn uses_lfs(&self) -> Result<bool, GitError> {
+        self.check()?;
+        Ok(self.uses_lfs)
     }
 
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError> {

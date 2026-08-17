@@ -331,6 +331,11 @@ impl GitBackend for HybridBackend {
         gix_read::worktrees(&self.repo())
     }
 
+    fn uses_lfs(&self) -> Result<bool, GitError> {
+        Ok(gix_read::declares_lfs(&self.workdir.join(".gitattributes"))
+            || gix_read::declares_lfs(&self.git_dir.join("info").join("attributes")))
+    }
+
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError> {
         gix_read::divergence(&self.repo())
     }

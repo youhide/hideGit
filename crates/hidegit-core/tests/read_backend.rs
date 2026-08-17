@@ -1261,3 +1261,81 @@ fn a_file_that_only_talks_about_lfs_still_gets_an_ordinary_diff() {
         diff.files[0].content
     );
 }
+
+#[test]
+fn a_repository_with_no_gitattributes_tracks_nothing_with_lfs() {
+    let repo = fixture().commit("A").build();
+
+    assert!(
+        !repo
+            .backend()
+            .uses_lfs()
+            .expect("no attributes is not an error"),
+        "most repositories have no .gitattributes at all"
+    );
+}
+
+#[test]
+fn a_gitattributes_that_hands_a_pattern_to_lfs_says_so() {
+    // The line `git lfs track "*.bin"` writes, verbatim. Written by hand for
+    // the reason the pointers are: what hideGit reads is the file, and the
+    // suite needs no `git-lfs` on any platform to say so.
+    let repo = fixture()
+        .edit(
+            ".gitattributes",
+            "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+            "track",
+        )
+        .build();
+
+    assert!(repo.backend().uses_lfs().expect("readable"));
+}
+
+#[test]
+fn diff_and_merge_attributes_alone_do_not_make_a_repository_lfs() {
+    // `filter=lfs` is what routes a file through the clean and smudge filters.
+    // The other two are written alongside it and neither is what makes a file
+    // stored as a pointer, so neither is what this question is about.
+    let repo = fixture()
+        .edit(".gitattributes", "*.bin diff=lfs merge=lfs\n", "track")
+        .build();
+
+    assert!(!repo.backend().uses_lfs().expect("readable"));
+}
+
+#[test]
+fn a_comment_mentioning_the_filter_is_not_a_rule_that_sets_it() {
+    let repo = fixture()
+        .edit(
+            ".gitattributes",
+            "# we removed the *.bin filter=lfs rule in 2024\n*.txt text\n",
+            "explain",
+        )
+        .build();
+
+    assert!(!repo.backend().uses_lfs().expect("readable"));
+}
+
+#[test]
+fn a_pattern_named_after_the_filter_is_not_a_rule_either() {
+    // `filter=lfs` in the *pattern* column is a filename, not an attribute.
+    // Scanning the whole line rather than the attributes would call it one.
+    let repo = fixture()
+        .edit(".gitattributes", "filter=lfs text\n", "odd name")
+        .build();
+
+    assert!(!repo.backend().uses_lfs().expect("readable"));
+}
+
+#[test]
+fn the_repositorys_own_info_attributes_counts_too() {
+    // `.git/info/attributes` is the private, uncommitted half of the same
+    // mechanism, and a user who put their LFS rules there has an LFS
+    // repository just as much.
+    let repo = fixture().commit("A").build();
+    let info = repo.path().join(".git").join("info");
+    std::fs::create_dir_all(&info).expect("a writable git dir");
+    std::fs::write(info.join("attributes"), "*.psd filter=lfs -text\n").expect("writable");
+
+    assert!(repo.backend().uses_lfs().expect("readable"));
+}

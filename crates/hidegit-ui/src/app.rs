@@ -1105,6 +1105,19 @@ impl Hidegit {
         // Read before the remotes move into the repository.
         let forge_repo = forge::detect(&opened.remotes);
 
+        // Said on the way in, because the symptom arrives before any question
+        // does: an LFS repository checked out without the tool has pointer
+        // files where its content should be, which reads as corruption. Naming
+        // what is missing is the whole fix.
+        if opened.needs_lfs {
+            self.app.toast(&UiError {
+                summary: "This repository uses Git LFS, and git-lfs is not installed".to_owned(),
+                details: "Large files are checked out as pointer text rather than as their \
+                          contents. Installing git-lfs and running `git lfs pull` replaces them."
+                    .to_owned(),
+            });
+        }
+
         self.app.remember(opened.path.clone());
         self.app.repos.push(OpenRepo {
             path: opened.path,
@@ -3880,6 +3893,10 @@ fn open_repository(
     let remotes = backend.remotes()?;
     let submodules = backend.submodules()?;
     let worktrees = backend.worktrees()?;
+    // Both halves at open and never again. Installing `git-lfs` while a
+    // repository is on screen is not a thing that happens, and a toast that
+    // came back on every file save would be worse than what it reports.
+    let needs_lfs = backend.uses_lfs()? && !hidegit_core::process::lfs_available();
 
     say(OpenPhase::Counting);
     let total = backend.commit_count(&RevSpec::All)?;
@@ -3898,6 +3915,7 @@ fn open_repository(
         remotes,
         submodules,
         worktrees,
+        needs_lfs,
         total,
         first_page,
     })
@@ -4180,6 +4198,7 @@ mod tests {
             remotes: Vec::new(),
             submodules: Vec::new(),
             worktrees: Vec::new(),
+            needs_lfs: false,
             total: count,
             first_page: history,
         }
@@ -8670,6 +8689,39 @@ mod tests {
         let stashes = &app.app.repos[0].stashes;
         assert_eq!(stashes.len(), 1);
         assert_eq!(stashes[0].message, "fresh");
+    }
+
+    #[test]
+    fn opening_a_repository_that_needs_git_lfs_says_which_tool_is_missing() {
+        // The symptom arrives before the question does: pointer text where the
+        // content should be reads as corruption, and naming what is missing is
+        // the whole fix.
+        let mut app = Hidegit::default();
+        let mut opened = opened(1);
+        opened.needs_lfs = true;
+
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+
+        let toast = app.app.toasts.last().expect("it does not open in silence");
+        assert!(
+            toast.summary.contains("git-lfs"),
+            "it names the tool rather than describing the symptom: {}",
+            toast.summary
+        );
+        assert!(
+            toast.details.contains("git lfs pull"),
+            "and says what to run once it is installed: {}",
+            toast.details
+        );
+    }
+
+    #[test]
+    fn a_repository_that_does_not_need_git_lfs_opens_in_silence() {
+        // Every repository that has no `.gitattributes`, and every one whose
+        // user already has the tool.
+        let app = app_with(1);
+
+        assert!(app.app.toasts.is_empty());
     }
 
     #[test]

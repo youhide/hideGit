@@ -365,6 +365,32 @@ pub(crate) fn stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, GitErro
     Ok(out)
 }
 
+/// Whether an attributes file hands anything to Git LFS.
+///
+/// Looks for `filter=lfs`, which is the attribute that actually routes a file
+/// through the clean and smudge filters — `diff=lfs` and `merge=lfs` are
+/// written alongside it by `git lfs track`, but neither is what makes a file
+/// stored as a pointer, and a repository could set them without LFS being
+/// involved at all.
+///
+/// A missing file is not an error: most repositories have no `.gitattributes`,
+/// and a repository with none tracks nothing with LFS.
+pub(crate) fn declares_lfs(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+
+    text.lines()
+        .map(str::trim)
+        // A comment mentioning the attribute is not a rule that sets it.
+        .filter(|line| !line.starts_with('#'))
+        .any(|line| {
+            line.split_whitespace()
+                .skip(1)
+                .any(|attribute| attribute == "filter=lfs")
+        })
+}
+
 /// Every checkout of this repository, the main one first.
 ///
 /// gitoxide lists **linked** worktrees only — the main one is deliberately not

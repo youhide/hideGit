@@ -128,6 +128,7 @@ pub trait GitBackend: Send + Sync + Debug {
     fn stashes(&self) -> Result<Vec<StashEntry>, GitError>;
     fn submodules(&self) -> Result<Vec<Submodule>, GitError>;
     fn worktrees(&self) -> Result<Vec<Worktree>, GitError>;
+    fn uses_lfs(&self) -> Result<bool, GitError>;
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError>;
     fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;
     fn invalidate(&self);
