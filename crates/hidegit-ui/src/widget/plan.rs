@@ -12,7 +12,7 @@
 //! both orders look plausible.
 
 use hidegit_core::ops::RebaseAction;
-use iced::widget::{Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, text};
 use iced::{Center, Fill, Font, Length};
 
 use crate::Element;
@@ -160,6 +160,7 @@ fn steps<'a>(editor: &'a RebaseEditor, palette: &'a Palette) -> Element<'a, Repo
             .enumerate()
             .map(|(at, step)| {
                 let selected = at == editor.selected;
+                let dragged = editor.dragging == Some(at);
                 let dropped = matches!(step.action, RebaseAction::Drop);
 
                 // A dropped commit stays in the list, struck through by being
@@ -187,11 +188,21 @@ fn steps<'a>(editor: &'a RebaseEditor, palette: &'a Palette) -> Element<'a, Repo
                 .spacing(8)
                 .align_y(Center);
 
-                button(container(body).padding([5, 10]))
+                let row = button(container(body).padding([5, 10]))
                     .width(Fill)
                     .padding(0)
-                    .style(move |_, status| row_style(selected, status, palette))
-                    .on_press(RepoMessage::PlanRowSelected(at))
+                    .style(move |_, status| row_style(dragged || selected, status, palette))
+                    .on_press(RepoMessage::PlanRowSelected(at));
+
+                // The gesture is spread across three rows' worth of events: the
+                // press lands on one row, the crossings on others, and the
+                // release wherever the pointer happens to be. Only the editor
+                // sees all three, which is why it holds the drag rather than
+                // any row doing so.
+                mouse_area(row)
+                    .on_press(RepoMessage::PlanRowDragStarted(at))
+                    .on_enter(RepoMessage::PlanRowDraggedOver(at))
+                    .on_release(RepoMessage::PlanRowDropped)
                     .into()
             })
             .collect::<Vec<_>>(),
