@@ -287,7 +287,10 @@ fn boot(
         Some(paths) => {
             hidegit_ui::i18n::Catalogue::load(&paths.locales, &hidegit_ui::i18n::from_environment())
         }
-        None => hidegit_ui::i18n::Catalogue::default(),
+        // No config directory means nowhere to *put* a translation, not that
+        // the machine's language stopped mattering: the ones hideGit ships are
+        // compiled in and need no directory at all.
+        None => hidegit_ui::i18n::Catalogue::for_locale(&hidegit_ui::i18n::from_environment()),
     };
 
     let keymap = hidegit_ui::keymap::Keymap::parse(

@@ -2,9 +2,18 @@
 #
 # This is the source: the code carries keys, this file carries strings, and it
 # is compiled into the binary as the fallback for every other language. To
-# translate, copy it to `locales/pt-BR.toml` beside your `config.toml`, replace
+# translate, copy it to `locales/<tag>.toml` beside your `config.toml`, replace
 # the values, and leave the keys alone. Anything you have not translated shows
 # in English rather than as a key, and hideGit says how many are left.
+#
+# The translations hideGit ships live beside this file and are compiled in too.
+# A file of the same name in your own `locales` directory still wins — yours is
+# a correction or a work in progress, and being overruled by the binary is the
+# one thing that would make writing one pointless.
+#
+# **A shipped translation may not have holes.** A contributor's own file may be
+# half-finished and shows English where it is; one that ships would show a
+# mixture of two languages to somebody with no file to fix. A test enforces it.
 #
 # See docs/adr/0008-translations-as-toml-catalogues.md.
 #
