@@ -509,6 +509,18 @@ binding depend on the keyboard.
 | `Cmd+]` / `Cmd+[` | Next / previous conflict |
 | `Cmd+Shift+.` | Continue operation |
 
+**Focus.** `Tab` cycles sidebar → graph → detail, and the pane that has the keyboard carries a
+one-pixel outline in the accent colour. Only the colour changes with focus, never the width: a
+border that appears takes a pixel from the pane it is on, and text that reflows as focus moves is
+worse than no ring. The ring clears the 3:1 WCAG bar for non-text against both pane backgrounds,
+asserted by test.
+
+`↑` / `↓` act on the pane that has focus. In the graph they move the commit selection; in the
+staging view they move the file row — the row `Space` stages, which before this could only be moved
+with the mouse. With nothing selected the first press enters the list rather than stepping into its
+second row. The sidebar has no row model, so focusing it shows the ring and nothing else; its
+entries are reached by clicking or through the command palette.
+
 **Chords.** `G` on its own arms the next key and does nothing else. A binding function that maps one
 press to one message cannot remember the press before it, so the pending prefix is state: `G` returns
 a message that records it, and the key after resolves against it. Anything that does not complete a
