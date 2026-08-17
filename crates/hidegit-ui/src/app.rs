@@ -250,6 +250,25 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::ChordStarted(prefix) => {
+                self.app.chord = Some(prefix);
+                Task::none()
+            }
+
+            Message::ChordCancelled => {
+                self.app.chord = None;
+                Task::none()
+            }
+
+            Message::ChordResolved(message) => {
+                // Cleared here rather than by the binding function, which has
+                // no state to clear. Anything else — a poll landing, a page
+                // arriving — must not eat a chord halfway through, so only the
+                // key that completes one clears it.
+                self.app.chord = None;
+                Task::done(*message)
+            }
+
             Message::PaletteRequested => {
                 self.app.palette = Some(crate::state::CommandPalette::default());
                 // Focused on open, for the reason the search is: a box you have
@@ -3052,6 +3071,7 @@ impl Hidegit {
                 settings_open: self.app.settings_open,
                 shortcuts_open: self.app.shortcuts_open,
                 palette_open: self.app.palette.is_some(),
+                chord: self.app.chord,
                 searching: self
                     .app
                     .active
@@ -3168,6 +3188,8 @@ pub struct KeyContext {
     pub shortcuts_open: bool,
     /// The command palette is open, and owns the keyboard the same way.
     pub palette_open: bool,
+    /// A chord prefix is pending, so the next key completes it or cancels.
+    pub chord: Option<char>,
     /// The repository whose search panel is open, if one is.
     pub searching: Option<usize>,
     /// How many tabs there are, so `Cmd+<n>` past the last does nothing.
@@ -3183,6 +3205,7 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         settings_open: settings,
         shortcuts_open,
         palette_open,
+        chord,
         searching,
         open_repos,
     } = cx;
@@ -3261,6 +3284,19 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
 
     let shift = modifiers.shift();
 
+    // A chord in progress takes the next key, whatever it is. Anything that
+    // does not complete one cancels rather than falling through to its ordinary
+    // binding: after `G`, a stray `J` should not step a hunk and leave the
+    // chord armed for the key after that.
+    if chord == Some('g') {
+        return match key {
+            Key::Character(c) if !command && c.eq_ignore_ascii_case("w") => Message::ChordResolved(
+                Box::new(repo(RepoMessage::Selected(Selection::WorkingDirectory))),
+            ),
+            _ => Message::ChordCancelled,
+        };
+    }
+
     match key {
         // Checked before the plain `Cmd+Enter`: match arms are tried in order,
         // and the unshifted one matches a shifted press too.
@@ -3327,6 +3363,10 @@ fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext)
         // are: with Shift held, the character iced reports is the shifted one on
         // most layouts, so an exact comparison makes `Shift+J` do nothing at all
         // — and UI_SPEC writes these bindings as `J` / `K`.
+        // The chord prefix. Bare, so it is guarded by `editing` like `J` and
+        // `K`, and it does nothing on its own — `shortcut` cannot remember it,
+        // so it says so and `update` holds it.
+        Key::Character(c) if c.eq_ignore_ascii_case("g") && !command => Message::ChordStarted('g'),
         Key::Character(c) if c.eq_ignore_ascii_case("j") && !command => {
             repo(RepoMessage::HunkStepped(1))
         }
@@ -5125,6 +5165,109 @@ mod tests {
         assert!(!app.app.settings_open);
     }
 
+    // ---- chords ----------------------------------------------------------
+
+    #[test]
+    fn g_then_w_goes_to_the_working_directory() {
+        let mut app = app_with(1);
+        let g = keyboard::Key::Character("g".into());
+        let w = keyboard::Key::Character("w".into());
+        let none = keyboard::Modifiers::default();
+        let cx = |chord| KeyContext {
+            active: Some(0),
+            chord,
+            ..KeyContext::default()
+        };
+
+        // `G` alone does nothing but arm the next key.
+        assert!(matches!(
+            shortcut(&g, none, cx(None)),
+            Message::ChordStarted('g')
+        ));
+        let _ = app.update(Message::ChordStarted('g'));
+        assert_eq!(app.app.chord, Some('g'));
+
+        let resolved = shortcut(&w, none, cx(Some('g')));
+        let Message::ChordResolved(inner) = resolved else {
+            panic!("got {resolved:?}");
+        };
+        assert!(matches!(
+            *inner,
+            Message::Repo(0, RepoMessage::Selected(Selection::WorkingDirectory))
+        ));
+
+        // And resolving it both clears the prefix and runs what it meant.
+        let sent = tests::drive::update_and_drive(&mut app, Message::ChordResolved(inner));
+        assert_eq!(app.app.chord, None);
+        assert!(
+            matches!(
+                sent.first(),
+                Some(Message::Repo(
+                    0,
+                    RepoMessage::Selected(Selection::WorkingDirectory)
+                ))
+            ),
+            "got {sent:?}"
+        );
+    }
+
+    #[test]
+    fn a_key_that_completes_nothing_cancels_instead_of_acting() {
+        // Otherwise `G` then `J` would step a hunk *and* leave the chord armed,
+        // so the key after that would be read as the second half of a chord
+        // nobody is still typing.
+        let mut app = app_with(1);
+        let j = keyboard::Key::Character("j".into());
+        let cx = KeyContext {
+            active: Some(0),
+            chord: Some('g'),
+            ..KeyContext::default()
+        };
+
+        assert!(matches!(
+            shortcut(&j, keyboard::Modifiers::default(), cx),
+            Message::ChordCancelled
+        ));
+
+        let _ = app.update(Message::ChordStarted('g'));
+        let _ = app.update(Message::ChordCancelled);
+        assert_eq!(app.app.chord, None);
+    }
+
+    #[test]
+    fn a_chord_survives_anything_that_is_not_a_keystroke() {
+        // A poll landing or a page arriving between `G` and `W` must not eat
+        // the chord — which is why the prefix is cleared by the key that
+        // completes it rather than by every message that passes through.
+        let mut app = app_with(1);
+        let _ = app.update(Message::ChordStarted('g'));
+
+        let _ = app.update(Message::Repo(0, RepoMessage::PrsRefreshRequested));
+
+        assert_eq!(app.app.chord, Some('g'), "still armed");
+    }
+
+    #[test]
+    fn the_chord_prefix_does_not_fire_while_a_message_is_being_typed() {
+        // `G` is bare, so it is guarded the way `J` and `K` are: without this,
+        // typing "Go to sleep" into a commit message arms a chord and the `o`
+        // after it cancels one.
+        let g = keyboard::Key::Character("g".into());
+
+        assert!(matches!(
+            shortcut(
+                &g,
+                keyboard::Modifiers::default(),
+                KeyContext {
+                    active: Some(0),
+                    editing: true,
+                    ..KeyContext::default()
+                }
+            ),
+            Message::ToastDismissed(_)
+        ));
+    }
+
     // ---- the command palette ---------------------------------------------
 
     #[test]
@@ -5396,7 +5539,13 @@ mod tests {
         every_candidate_chord()
             .into_iter()
             .filter(|(key, modifiers)| {
-                !matches!(shortcut(key, *modifiers, cx), Message::ToastDismissed(id) if id == u64::MAX)
+                // `ChordCancelled` is the way out of a half-typed chord, not a
+                // binding: after `G`, every key that is not `W` produces it,
+                // and listing all of them would say nothing.
+                !matches!(
+                    shortcut(key, *modifiers, cx),
+                    Message::ToastDismissed(id) if id == u64::MAX
+                ) && !matches!(shortcut(key, *modifiers, cx), Message::ChordCancelled)
             })
             .map(|(key, modifiers)| canonical(&key, modifiers, cx))
             .collect()
@@ -5452,6 +5601,13 @@ mod tests {
             ..KeyContext::default()
         };
         assert_eq!(bound_in(palette), listed_in(Context::Command));
+
+        let chord = KeyContext {
+            active: Some(0),
+            chord: Some('g'),
+            ..KeyContext::default()
+        };
+        assert_eq!(bound_in(chord), listed_in(Context::Chord));
 
         for panel in [
             KeyContext {

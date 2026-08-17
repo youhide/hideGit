@@ -29,6 +29,8 @@ pub enum Context {
     Search,
     /// Bound only while the command palette has the keyboard.
     Command,
+    /// Bound only as the second key of a `G` chord.
+    Chord,
     /// Bound only while a panel — settings, or this one — is up.
     Panel,
 }
@@ -100,6 +102,13 @@ pub const REFERENCE: &[Group] = &[
                 "Cycle panes: sidebar → graph → detail",
             ),
             Binding::one("Cmd+F", &["Cmd+F"], "Search commits"),
+            Binding::one("G", &["G"], "Start a chord — the next key completes it"),
+        ],
+    },
+    Group {
+        title: "After G",
+        bindings: &[
+            Binding::one("W", &["W"], "Go to the working directory").in_context(Context::Chord)
         ],
     },
     Group {
