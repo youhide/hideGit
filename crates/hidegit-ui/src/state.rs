@@ -433,6 +433,7 @@ pub const PROMPT_FIELD_IDS: [&str; 2] = ["hidegit-prompt-field-0", "hidegit-prom
 /// Carries an id so it can be focused when the panel opens — a search you have
 /// to click into before typing is a search that costs a click every time.
 pub const SEARCH_FIELD_ID: &str = "hidegit-search-field";
+pub const COMMAND_FIELD_ID: &str = "hidegit-command-field";
 
 pub const COMPOSER_FIELD_IDS: [&str; 2] = ["hidegit-composer-subject", "hidegit-composer-body"];
 
@@ -708,6 +709,19 @@ pub struct OpenRepo {
     pub blame: Option<BlameView>,
     /// The commit search, if it is open.
     pub search: Option<Search>,
+}
+
+/// The command palette, while it is up.
+///
+/// The query and the selection, and nothing else: the list of matches is
+/// derived from the query every frame rather than stored, because it is fifteen
+/// rows filtered by a substring — caching it would be more state to keep right
+/// than work to save.
+#[derive(Debug, Default)]
+pub struct CommandPalette {
+    pub query: String,
+    /// Which match the keyboard is on, as an index into the filtered list.
+    pub selected: usize,
 }
 
 /// The commit search.
@@ -1164,6 +1178,8 @@ pub struct App {
     /// is nothing to hold and nothing to discard on close. Settings that only
     /// take effect on OK are settings people are afraid to explore.
     pub settings_open: bool,
+    /// The command palette, if it is up.
+    pub palette: Option<CommandPalette>,
     /// The keyboard shortcut reference is open.
     ///
     /// Its own flag rather than a mode of the settings panel: it is opened from
@@ -1215,6 +1231,7 @@ impl Default for App {
             theme: Theme::default(),
             themes: Theme::built_in(),
             settings_open: false,
+            palette: None,
             shortcuts_open: false,
             settings_error: None,
             toasts: Vec::new(),

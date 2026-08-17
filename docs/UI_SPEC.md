@@ -471,7 +471,7 @@ and a new review thread both do notify.
 | `PageUp` / `PageDown` | Move by twenty |
 | `Tab` / `Shift+Tab` | Cycle panes: sidebar → graph → detail |
 | `Cmd+F` | Search commits — also a toolbar button, since a shortcut is how you use a thing you already know exists |
-| `Cmd+P` | Command palette — **not built** |
+| `Cmd+P` | Command palette. Substring match over the command titles, not fuzzy: a fuzzy match that puts "Discard the selected changes" under `push` because the letters appear in order is worse than no match, and the list is fifteen rows |
 | `G` then `W` | Go to working directory — **not built**; chords need a pending-key state nothing else wants yet |
 | `G` then `B` | Branch switcher — **not built**, same reason |
 | **Working directory** | |
@@ -516,6 +516,11 @@ that nothing dispatches yet; they are listed rather than removed so the gap is v
 binding function, and compares the two sets **in both directions** — a row for a binding that does
 not exist fails, and so does a binding added without a row. A reference that drifts is worse than
 none, because it is believed.
+
+Each palette row carries the chord that also runs it, and a second test asserts every chord the
+palette prints is one the reference lists — so the palette teaches shortcuts rather than competing
+with them. A command with nothing to act on is absent from the list rather than present and inert:
+a row that does nothing when pressed reads as the application being broken.
 
 That test found three bindings nobody chose. `↑`, `↓`, `PageUp`, `PageDown` and `Tab` were matched
 on the key alone, so `Cmd+↑` moved the selection and `Cmd+Tab` cycled panes — on macOS both mean

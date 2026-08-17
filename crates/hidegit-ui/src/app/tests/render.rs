@@ -212,6 +212,29 @@ fn a_window_that_covers_nothing_says_so() {
 }
 
 #[test]
+fn the_command_palette_lays_out_with_its_commands_and_their_chords() {
+    let mut app = app_with(1);
+    let _ = app.update(Message::PaletteRequested);
+
+    shows(&app, "Remotes");
+    shows(&app, "Push");
+    shows(
+        &app,
+        crate::widget::shortcuts::chord_label("Cmd+Shift+U").as_str(),
+    );
+}
+
+#[test]
+fn the_command_palette_says_when_nothing_matches() {
+    // Rather than an empty box, which reads as the palette being broken.
+    let mut app = app_with(1);
+    let _ = app.update(Message::PaletteRequested);
+    let _ = app.update(Message::PaletteQueryChanged("zzz".to_owned()));
+
+    shows(&app, "Nothing matches that.");
+}
+
+#[test]
 fn the_shortcut_reference_lays_out_with_its_bindings() {
     let mut app = app_with(1);
     let _ = app.update(Message::ShortcutsRequested);
