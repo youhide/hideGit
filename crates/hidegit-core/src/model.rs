@@ -187,6 +187,62 @@ impl Remote {
     }
 }
 
+/// A submodule, as the superproject records it.
+///
+/// A submodule is two facts that can disagree: the commit the superproject's
+/// index points at, and the commit the nested checkout is actually on. Keeping
+/// both — rather than one "is it up to date" boolean — is what lets the UI say
+/// *which* commit is wrong, which is the whole difficulty of submodules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Submodule {
+    /// The `.gitmodules` section name. Usually the path, but not necessarily:
+    /// it survives a `git mv`, which is why Git keys configuration on it.
+    pub name: String,
+    /// Where it sits in the superproject's worktree, relative to the root.
+    pub path: PathBuf,
+    /// The URL `.gitmodules` records. Empty rather than absent when the entry
+    /// has none — a submodule with no URL is broken, not missing.
+    pub url: String,
+    /// The branch `.gitmodules` names, for the submodules that track one.
+    pub branch: Option<String>,
+    /// The commit the superproject's index points at. `None` for an entry in
+    /// `.gitmodules` with nothing staged at its path, which is what a
+    /// half-removed submodule looks like.
+    pub recorded: Option<ObjectId>,
+    /// Where the nested checkout's own `HEAD` is. `None` when there is no
+    /// checkout to ask.
+    pub checked_out: Option<ObjectId>,
+}
+
+impl Submodule {
+    /// What `git submodule status` would print in its first column.
+    ///
+    /// The same three states, deliberately: someone who has read `-`, `+` or a
+    /// space in a terminal should not have to learn a second vocabulary here.
+    pub fn state(&self) -> SubmoduleState {
+        match (self.recorded, self.checked_out) {
+            (_, None) => SubmoduleState::Uninitialised,
+            (Some(recorded), Some(checked_out)) if recorded != checked_out => SubmoduleState::Moved,
+            _ => SubmoduleState::Current,
+        }
+    }
+}
+
+/// Whether a submodule's checkout agrees with the superproject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmoduleState {
+    /// No checkout on disk — cloning the superproject does not clone these, so
+    /// this is the state every submodule starts in. `git submodule status`
+    /// prints `-`.
+    Uninitialised,
+    /// Checked out at the commit the superproject records. `git submodule
+    /// status` prints a space.
+    Current,
+    /// Checked out at some other commit, so committing the superproject now
+    /// would move the recorded pointer. `git submodule status` prints `+`.
+    Moved,
+}
+
 /// One entry on the stash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StashEntry {
@@ -654,5 +710,43 @@ mod tests {
         assert!(!RepoState::Clean.is_in_progress());
         assert!(RepoState::Rebasing.is_in_progress());
         assert!(RepoState::Merging.is_in_progress());
+    }
+
+    #[test]
+    fn a_submodule_state_is_the_column_git_submodule_status_prints() {
+        let one = ObjectId::from_hex(&"a".repeat(40)).expect("valid hex");
+        let other = ObjectId::from_hex(&"b".repeat(40)).expect("valid hex");
+
+        let submodule = |recorded, checked_out| Submodule {
+            name: "vendor/lib".to_owned(),
+            path: PathBuf::from("vendor/lib"),
+            url: "https://example.invalid/lib.git".to_owned(),
+            branch: None,
+            recorded,
+            checked_out,
+        };
+
+        assert_eq!(
+            submodule(Some(one), Some(one)).state(),
+            SubmoduleState::Current
+        );
+        assert_eq!(
+            submodule(Some(one), Some(other)).state(),
+            SubmoduleState::Moved
+        );
+        assert_eq!(
+            submodule(Some(one), None).state(),
+            SubmoduleState::Uninitialised
+        );
+        assert_eq!(
+            submodule(None, None).state(),
+            SubmoduleState::Uninitialised,
+            "an entry with nothing staged and nothing checked out has no commit to disagree about"
+        );
+        assert_eq!(
+            submodule(None, Some(one)).state(),
+            SubmoduleState::Current,
+            "a submodule staged for removal is not a submodule that moved"
+        );
     }
 }

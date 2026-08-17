@@ -17,7 +17,7 @@ use crate::model::{
     Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
     DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind,
     ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState, RevSpec, Signature,
-    StashEntry, Tag, WorktreeStatus,
+    StashEntry, Submodule, Tag, WorktreeStatus,
 };
 use crate::ops::{Blame, BlameLine, SearchField, SearchHit, SearchQuery, SearchResults};
 
@@ -362,6 +362,101 @@ pub(crate) fn stashes(repo: &gix::Repository) -> Result<Vec<StashEntry>, GitErro
         });
     }
 
+    Ok(out)
+}
+
+/// The submodules `.gitmodules` declares, in path order.
+///
+/// Two commits per entry, and they are read from different places on purpose.
+/// `recorded` comes from the superproject's *index*, which is what
+/// `git submodule status` compares against and what a commit would write.
+/// `checked_out` comes from opening the nested repository and asking its own
+/// `HEAD` — no amount of reading the superproject answers that, which is the
+/// reason this method costs a repository open per submodule.
+///
+/// Nothing here is fatal per entry. A submodule whose URL will not parse, or
+/// whose checkout is a directory Git cannot open, is still one the user
+/// configured; it is listed with whatever could be read, because a list that
+/// silently drops the broken entry makes "why is my submodule missing"
+/// unanswerable.
+pub(crate) fn submodules(repo: &gix::Repository) -> Result<Vec<Submodule>, GitError> {
+    // `None` is a repository with no `.gitmodules` at all — the overwhelming
+    // majority — and is an empty list rather than an error.
+    let Some(found) = repo
+        .submodules()
+        .map_err(|e| GitError::gix("reading .gitmodules", e))?
+    else {
+        return Ok(Vec::new());
+    };
+
+    let mut out = Vec::new();
+    for submodule in found {
+        let name = submodule.name().to_str_lossy().into_owned();
+
+        let path = match submodule.path() {
+            Ok(path) => gix::path::from_bstring(path),
+            Err(e) => {
+                tracing::warn!(%name, error = %e, "submodule with no readable path");
+                PathBuf::from(&name)
+            }
+        };
+
+        let url = submodule
+            .url()
+            .map(|url| url.to_bstring().to_str_lossy().into_owned())
+            .unwrap_or_default();
+
+        // `.` in `.gitmodules` means "whatever the superproject is on", which is
+        // a rule rather than a branch name. It is spelled out rather than
+        // passed through, because `.` in a branch column reads as a typo.
+        let branch = submodule
+            .branch()
+            .ok()
+            .flatten()
+            .map(|branch| match branch {
+                gix::submodule::config::Branch::CurrentInSuperproject => {
+                    "the superproject's branch".to_owned()
+                }
+                gix::submodule::config::Branch::Name(name) => name.to_str_lossy().into_owned(),
+            });
+
+        let recorded = submodule.index_id().ok().flatten().map(|id| to_id(&id));
+
+        // Gated on there being a worktree, which is not the same question as
+        // the repository existing. `git submodule deinit` empties the checkout
+        // but keeps the repository in `.git/modules`, so opening it still
+        // succeeds and still answers with a `HEAD` — one that describes a
+        // directory the user is looking at as empty. Git itself prints `-` for
+        // that state, and so does this.
+        let checked_out = match submodule.state() {
+            Ok(state) if state.worktree_checkout => match submodule.open() {
+                Ok(Some(nested)) => nested.head_id().ok().map(|id| to_id(&id.detach())),
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(%name, error = %e, "submodule checkout would not open");
+                    None
+                }
+            },
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!(%name, error = %e, "submodule state would not read");
+                None
+            }
+        };
+
+        out.push(Submodule {
+            name,
+            path,
+            url,
+            branch,
+            recorded,
+            checked_out,
+        });
+    }
+
+    // Path order rather than `.gitmodules` order: the file's order is whatever
+    // sequence they were added in, and the sidebar shows a tree.
+    out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
 

@@ -10,7 +10,7 @@ use hidegit_core::backend::{GitBackend, HybridBackend};
 use hidegit_core::fixture::fixture;
 use hidegit_core::model::{
     ChangeStatus, ConflictKind, DiffTarget, FileDiffContent, Head, LineKind, LogPage, RefKind,
-    RepoState, RevSpec,
+    RepoState, RevSpec, SubmoduleState,
 };
 use hidegit_core::{GitError, ObjectId};
 
@@ -886,5 +886,147 @@ fn a_generated_history_has_the_shape_the_benchmarks_assume() {
     assert!(
         layout.width >= 2,
         "a merged side branch needs a second lane"
+    );
+}
+
+// ---- submodules ----------------------------------------------------------
+
+#[test]
+fn a_repository_with_no_submodules_lists_none() {
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+
+    assert_eq!(
+        backend
+            .submodules()
+            .expect("no .gitmodules is not an error"),
+        Vec::new(),
+        "the overwhelming majority of repositories have no .gitmodules at all"
+    );
+}
+
+#[test]
+fn a_submodule_is_listed_with_its_name_path_and_url() {
+    let repo = fixture().commit("A").with_submodule("vendor/lib").build();
+    let backend = repo.backend();
+
+    let submodules = backend.submodules().expect("a submodule is readable");
+    assert_eq!(submodules.len(), 1, "one submodule was added");
+
+    let submodule = &submodules[0];
+    assert_eq!(submodule.name, "vendor/lib");
+    assert_eq!(submodule.path, PathBuf::from("vendor/lib"));
+    assert_eq!(
+        submodule.url,
+        repo.submodule_source("vendor/lib").display().to_string(),
+        "the URL is what .gitmodules records, verbatim"
+    );
+}
+
+#[test]
+fn a_submodule_at_the_recorded_commit_is_current() {
+    let repo = fixture().commit("A").with_submodule("vendor/lib").build();
+    let backend = repo.backend();
+
+    let submodules = backend.submodules().expect("a submodule is readable");
+    let submodule = &submodules[0];
+
+    let recorded = submodule
+        .recorded
+        .expect("the superproject staged a gitlink");
+    let checked_out = submodule
+        .checked_out
+        .expect("`submodule add` leaves a checkout behind");
+    assert_eq!(
+        recorded, checked_out,
+        "a freshly added submodule is at the commit the superproject records"
+    );
+    assert_eq!(submodule.state(), SubmoduleState::Current);
+
+    // Against real Git rather than against our own reader: `git submodule
+    // status` prints a leading space for exactly this state.
+    let status = repo.git(["submodule", "status"]);
+    assert!(
+        status.starts_with(' ') || status.starts_with(&recorded.to_hex()),
+        "git itself calls this in sync, got {status:?}"
+    );
+}
+
+#[test]
+fn a_submodule_moved_off_the_recorded_commit_says_so() {
+    let repo = fixture()
+        .commit("A")
+        .with_submodule("vendor/lib")
+        .commit_in_submodule("vendor/lib", "Nested change")
+        .build();
+    let backend = repo.backend();
+
+    let submodules = backend.submodules().expect("a submodule is readable");
+    let submodule = &submodules[0];
+
+    let recorded = submodule.recorded.expect("the gitlink is still staged");
+    let checked_out = submodule.checked_out.expect("the checkout is still there");
+    assert_ne!(
+        recorded, checked_out,
+        "the nested repository moved and the superproject did not"
+    );
+    assert_eq!(submodule.state(), SubmoduleState::Moved);
+
+    assert_eq!(
+        checked_out.to_hex(),
+        hidegit_core::fixture::Repo::git_in(&repo.path().join("vendor/lib"), ["rev-parse", "HEAD"]),
+        "checked_out is the nested repository's own HEAD, not the superproject's idea of it"
+    );
+}
+
+#[test]
+fn a_submodule_that_was_never_checked_out_is_still_listed() {
+    // The state a fresh `git clone` of the superproject leaves every submodule
+    // in, because clone does not clone them. Reporting it as missing rather
+    // than as absent is the whole point.
+    let repo = fixture()
+        .commit("A")
+        .with_submodule("vendor/lib")
+        .deinit_submodule("vendor/lib")
+        .build();
+    let backend = repo.backend();
+
+    let submodules = backend
+        .submodules()
+        .expect("a deinitialised submodule is readable");
+    assert_eq!(submodules.len(), 1, "the .gitmodules entry did not go away");
+
+    let submodule = &submodules[0];
+    assert!(
+        submodule.recorded.is_some(),
+        "the superproject still records a commit for it"
+    );
+    assert_eq!(
+        submodule.checked_out, None,
+        "there is no nested repository left to ask"
+    );
+    assert_eq!(submodule.state(), SubmoduleState::Uninitialised);
+}
+
+#[test]
+fn submodules_come_back_in_path_order() {
+    let repo = fixture()
+        .commit("A")
+        .with_submodule("zeta")
+        .with_submodule("alpha")
+        .build();
+    let backend = repo.backend();
+
+    let paths: Vec<_> = backend
+        .submodules()
+        .expect("two submodules are readable")
+        .into_iter()
+        .map(|s| s.path)
+        .collect();
+
+    assert_eq!(
+        paths,
+        vec![PathBuf::from("alpha"), PathBuf::from("zeta")],
+        ".gitmodules order is the order they were added in, which is not an order to show"
     );
 }
