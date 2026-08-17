@@ -21,6 +21,9 @@ pub struct Paths {
     pub config: PathBuf,
     /// Things hideGit records for itself.
     pub state: PathBuf,
+    /// Theme files the user writes, one per file. Next to `config.toml`
+    /// rather than beside the state, because it is theirs to edit.
+    pub themes: PathBuf,
 }
 
 impl Paths {
@@ -30,6 +33,7 @@ impl Paths {
         Some(Self {
             config: dirs.config_dir().join("config.toml"),
             state: dirs.data_dir().join("state.toml"),
+            themes: dirs.config_dir().join("themes"),
         })
     }
 }

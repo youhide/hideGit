@@ -212,6 +212,22 @@ fn a_window_that_covers_nothing_says_so() {
 }
 
 #[test]
+fn the_settings_panel_lists_a_custom_theme_by_its_file_name() {
+    // The two that ship are shown as "Dark" and "Light" — labels, not config
+    // keys. A custom theme's name is one somebody chose, so it is shown as
+    // written.
+    let mut app = app_with(1);
+    app.app
+        .themes
+        .push(crate::theme::Theme::from_toml("zinc", "accent = \"#0550ae\"").unwrap());
+    let _ = app.update(Message::SettingsRequested);
+
+    shows(&app, "Dark");
+    shows(&app, "Light");
+    shows(&app, "zinc");
+}
+
+#[test]
 fn the_settings_panel_offers_the_geometry_switch() {
     let mut app = app_with(1);
     let _ = app.update(Message::SettingsRequested);

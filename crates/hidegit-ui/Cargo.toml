@@ -17,6 +17,11 @@ tokio = { version = "1", features = ["rt", "time"] }
 time = { workspace = true, features = ["formatting", "local-offset", "macros"] }
 tracing.workspace = true
 open = "5.4.0"
+# Custom themes are TOML files in the config directory. Parsed here rather than
+# in the shell so the field list stays next to the `Palette` it fills in.
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+thiserror.workspace = true
 
 [lints]
 workspace = true
@@ -24,3 +29,4 @@ workspace = true
 [dev-dependencies]
 iced_runtime = "0.14"
 iced_test = "0.14"
+tempfile = "3"

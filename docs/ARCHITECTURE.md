@@ -80,7 +80,7 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `tokio` | 1 | Blocking pool for Git work | M1 |
 | `rfd` | 0.15 | Native file/folder pickers and startup dialogs | M1 |
 | `directories` | 6 | Platform config, cache and data paths | M1 |
-| `serde` + `toml` | 1 / 0.9 | Configuration | M1 |
+| `serde` + `toml` | 1 / 0.9 | Configuration, and custom theme files | M1 |
 | `time` | 0.3 | Commit timestamps with their recorded offset | M1 |
 | `tracing` | 0.1 | Structured logging | M1 |
 | `thiserror` | 2 | Error types in libraries | M1 |

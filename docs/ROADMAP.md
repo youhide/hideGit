@@ -325,8 +325,13 @@ Everything between "works" and "someone who does not write Rust can install it".
   themes have landed** and `theme.name` in `config.toml` now selects between them — it had been read
   from disk and ignored since M1. A name that is not a theme falls back to dark **and says so on
   screen**, which is what [UI_SPEC](./UI_SPEC.md#theming) promised: the warning went only to stderr,
-  so a typo in `theme.name` looked exactly like the setting being ignored again. Custom themes as
-  TOML files are still to come
+  so a typo in `theme.name` looked exactly like the setting being ignored again. **Custom themes have
+  landed** as one TOML file per theme in a `themes` directory beside `config.toml`, named by the file
+  rather than by a key inside it, and listed on the settings panel next to the two that ship. Every
+  colour is optional and inherited from `based_on`, so a theme that changes the accent is a two-line
+  file; an unknown key is refused rather than ignored, because a silently dropped `acccent` is the
+  same failure as the one above. A file that cannot be used is skipped with its reason on screen and
+  never prevents startup
 - Complete keyboard navigation; a discoverable shortcut reference. **Partly landed**: `Tab`, `Space`,
   `Cmd+Shift+Enter`, `Cmd+]` / `Cmd+[` and `Cmd+Shift+.` are bound, which closes the `Space` debt M2
   wrote down — focus turned out to be observable through a `find_focused` widget operation, which is

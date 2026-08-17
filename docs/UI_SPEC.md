@@ -565,8 +565,29 @@ Constraints:
   for 8% of men is a broken graph.
 - Colour is never the only carrier of meaning — added/removed lines, CI state and conflict markers
   all have a shape or glyph as well.
-- Custom themes are TOML files dropped in the config directory. A malformed theme falls back to
-  the default with a warning; it never prevents startup.
+- Custom themes are TOML files dropped in a `themes` directory beside `config.toml`, one per
+  theme. A malformed theme is skipped with its reason shown on screen; it never prevents startup.
+
+A theme is named by its file — `themes/zinc.toml` is `theme.name = "zinc"` — so two files cannot
+claim the same name, and a file may not take a name that ships. Colours are `#rrggbb`, or
+`#rrggbbaa` where something sits over what is behind it:
+
+```toml
+# themes/zinc.toml — every key is optional.
+based_on = "hidegit-light"    # defaults to hidegit-dark
+accent = "#0550ae"
+selection = "#e9eaed"
+lanes = ["#0550ae", "#1a7f37", "#8250df", "#106e75", "#bf3989", "#b8410a"]
+```
+
+Every colour not named is inherited from `based_on`. A palette has eighteen of them, and requiring
+all eighteen would make changing the accent a twenty-line file with eighteen chances to be rejected
+over a colour the author never cared about. `lanes` is all six or none — accepting four and
+repeating them would quietly change how many lines the graph can tell apart.
+
+An unrecognised key is an error, not a shrug: a file with `acccent` in it and no complaint looks
+exactly like hideGit ignoring the setting, which is the failure the settings screen exists to stop.
+The shipped palettes are not overridable in place; `based_on` is how you start from one.
 
 ## Interaction rules
 

@@ -1150,6 +1150,10 @@ pub struct App {
     /// Most recently opened first, deduplicated.
     pub recents: Vec<PathBuf>,
     pub theme: Theme,
+    /// Every theme that can be chosen: the two that ship, then whatever was
+    /// found in the themes directory. Held rather than recomputed because the
+    /// custom ones came off disk once, at startup.
+    pub themes: Vec<Theme>,
     pub toasts: Vec<Toast>,
     /// The confirmation currently on screen, if any.
     pub confirming: Option<Confirmation>,
@@ -1203,6 +1207,7 @@ impl Default for App {
             active: None,
             recents: Vec::new(),
             theme: Theme::default(),
+            themes: Theme::built_in(),
             settings_open: false,
             settings_error: None,
             toasts: Vec::new(),

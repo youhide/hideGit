@@ -156,11 +156,38 @@ impl Theme {
     pub const DARK_NAME: &'static str = "hidegit-dark";
     pub const LIGHT_NAME: &'static str = "hidegit-light";
 
+    /// The two that ship, in the order the settings panel lists them.
+    pub fn built_in() -> Vec<Self> {
+        vec![
+            Self {
+                name: Self::DARK_NAME.to_owned(),
+                palette: Palette::DARK,
+            },
+            Self {
+                name: Self::LIGHT_NAME.to_owned(),
+                palette: Palette::LIGHT,
+            },
+        ]
+    }
+
+    /// What the settings panel calls this theme.
+    ///
+    /// The two that ship have a config name nobody chose — `hidegit-dark` is a
+    /// key, not a label. A custom theme is named by its file, which somebody did
+    /// choose, so it is shown as written.
+    pub fn label(&self) -> &str {
+        match self.name.as_str() {
+            Self::DARK_NAME => "Dark",
+            Self::LIGHT_NAME => "Light",
+            other => other,
+        }
+    }
+
     /// The built-in theme with this name.
     ///
     /// `None` for anything else, which the caller reports and falls back from —
     /// a typo in a config file must not stop the application starting. Custom
-    /// themes as TOML files are still to come; this is the pair that ships.
+    /// themes are resolved against the loaded set instead; see [`load_dir`].
     pub fn by_name(name: &str) -> Option<Self> {
         match name {
             Self::DARK_NAME => Some(Self {
@@ -191,9 +218,364 @@ impl Theme {
     }
 }
 
+/// A theme file that could not be used, and why.
+///
+/// Carried rather than only logged. A theme that silently does not apply reads
+/// as the setting being ignored, and the person it reads that way to is looking
+/// at a window, not at stderr under `HIDEGIT_LOG`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Problem {
+    /// The file name, as written in the directory.
+    pub file: String,
+    pub reason: String,
+}
+
+/// What a directory of theme files yielded.
+#[derive(Debug, Default)]
+pub struct Custom {
+    pub themes: Vec<Theme>,
+    pub problems: Vec<Problem>,
+}
+
+/// Why a theme file was rejected.
+#[derive(Debug, thiserror::Error)]
+pub enum ThemeError {
+    #[error("not valid TOML: {0}")]
+    NotValidToml(#[from] toml::de::Error),
+    #[error("`based_on` names “{0}”, which is not a theme that ships with hideGit")]
+    UnknownBase(String),
+    #[error("`{key}` is not a colour: expected something like \"#1c1f26\", got “{value}”")]
+    NotAColour { key: &'static str, value: String },
+    #[error("`lanes` needs exactly {expected} colours, got {got}")]
+    WrongLaneCount { expected: usize, got: usize },
+    #[error("{0} is a name that ships with hideGit; rename the file")]
+    ShadowsBuiltIn(String),
+    #[error("could not be read: {0}")]
+    Unreadable(std::io::Error),
+}
+
+/// The file format: every colour optional, inherited from `based_on`.
+///
+/// Optional on purpose. A palette has eighteen colours, and requiring all of
+/// them means a theme that changes the background is a twenty-line file — with
+/// eighteen chances to be rejected over a colour the author never cared about.
+/// A two-line file is a theme.
+///
+/// Unknown keys are an error rather than ignored: a file with `acccent` in it
+/// and no complaint looks exactly like hideGit ignoring the setting, which is
+/// the failure this whole screen exists to stop.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    based_on: Option<String>,
+    background: Option<String>,
+    surface: Option<String>,
+    border: Option<String>,
+    text: Option<String>,
+    muted: Option<String>,
+    accent: Option<String>,
+    success: Option<String>,
+    warning: Option<String>,
+    danger: Option<String>,
+    lanes: Option<Vec<String>>,
+    added: Option<String>,
+    removed: Option<String>,
+    selection: Option<String>,
+    selection_idle: Option<String>,
+}
+
+/// `#rrggbb`, or `#rrggbbaa` where something wants to sit over what is behind it.
+fn colour(key: &'static str, raw: &str) -> Result<Color, ThemeError> {
+    let reject = || ThemeError::NotAColour {
+        key,
+        value: raw.to_owned(),
+    };
+    let digits = raw.strip_prefix('#').ok_or_else(reject)?;
+    if !matches!(digits.len(), 6 | 8) || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(reject());
+    }
+
+    let byte = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).map_err(|_| reject());
+    Ok(Color::from_rgba8(
+        byte(0)?,
+        byte(2)?,
+        byte(4)?,
+        match digits.len() {
+            8 => f32::from(byte(6)?) / 255.0,
+            _ => 1.0,
+        },
+    ))
+}
+
+impl Theme {
+    /// Reads one theme file. The name comes from the file, not from inside it:
+    /// two files claiming the same name in one directory would be a collision
+    /// with no way to tell which one `theme.name` meant.
+    pub fn from_toml(name: &str, text: &str) -> Result<Self, ThemeError> {
+        if Self::by_name(name).is_some() {
+            return Err(ThemeError::ShadowsBuiltIn(name.to_owned()));
+        }
+
+        let file: File = toml::from_str(text)?;
+        let base = match &file.based_on {
+            None => Palette::DARK,
+            Some(name) => {
+                Self::by_name(name)
+                    .ok_or_else(|| ThemeError::UnknownBase(name.clone()))?
+                    .palette
+            }
+        };
+
+        // Every field named once, so adding a colour to `Palette` fails to
+        // compile here rather than silently becoming unthemeable.
+        let mut palette = base;
+        macro_rules! set {
+            ($($field:ident),* $(,)?) => {$(
+                if let Some(raw) = &file.$field {
+                    palette.$field = colour(stringify!($field), raw)?;
+                }
+            )*};
+        }
+        set!(
+            background,
+            surface,
+            border,
+            text,
+            muted,
+            accent,
+            success,
+            warning,
+            danger,
+            added,
+            removed,
+            selection,
+            selection_idle,
+        );
+
+        if let Some(lanes) = &file.lanes {
+            if lanes.len() != palette.lanes.len() {
+                return Err(ThemeError::WrongLaneCount {
+                    expected: palette.lanes.len(),
+                    got: lanes.len(),
+                });
+            }
+            for (slot, raw) in palette.lanes.iter_mut().zip(lanes) {
+                *slot = colour("lanes", raw)?;
+            }
+        }
+
+        Ok(Self {
+            name: name.to_owned(),
+            palette,
+        })
+    }
+
+    /// Every usable theme file in a directory, plus the ones that were not.
+    ///
+    /// A missing directory is the ordinary case — most people never write a
+    /// theme — so it is not a problem, it is an empty list. A file that cannot
+    /// be used is skipped and reported; nothing here prevents startup.
+    pub fn load_dir(dir: &std::path::Path) -> Custom {
+        let mut custom = Custom::default();
+
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return custom;
+        };
+
+        let mut files: Vec<_> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "toml"))
+            .collect();
+        // Sorted, so the settings panel lists them in the same order twice.
+        files.sort();
+
+        for path in files {
+            let file = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let name = path.file_stem().unwrap_or_default().to_string_lossy();
+
+            let outcome = std::fs::read_to_string(&path)
+                .map_err(ThemeError::Unreadable)
+                .and_then(|text| Self::from_toml(&name, &text));
+
+            match outcome {
+                Ok(theme) => custom.themes.push(theme),
+                Err(error) => {
+                    tracing::warn!(theme = %file, %error, "theme file skipped");
+                    custom.problems.push(Problem {
+                        file,
+                        reason: error.to_string(),
+                    });
+                }
+            }
+        }
+
+        custom
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The smallest theme worth writing, and the reason every key is optional.
+    const TWO_LINES: &str = "based_on = \"hidegit-light\"\naccent = \"#0550ae\"\n";
+
+    #[test]
+    fn a_theme_inherits_every_colour_it_does_not_name() {
+        // The decision the format turns on. A palette has eighteen colours, and
+        // requiring all of them would mean eighteen chances to be rejected over
+        // a colour the author never cared about.
+        let theme = Theme::from_toml("mine", TWO_LINES).unwrap();
+
+        assert_eq!(theme.name, "mine");
+        assert_eq!(
+            theme.palette.accent,
+            Color::from_rgba8(0x05, 0x50, 0xae, 1.0)
+        );
+        assert_eq!(
+            theme.palette.background,
+            Palette::LIGHT.background,
+            "unnamed colours come from the base"
+        );
+        assert_eq!(theme.palette.lanes, Palette::LIGHT.lanes);
+    }
+
+    #[test]
+    fn no_base_means_the_dark_theme() {
+        let theme = Theme::from_toml("mine", "accent = \"#ffffff\"").unwrap();
+        assert_eq!(theme.palette.background, Palette::DARK.background);
+    }
+
+    #[test]
+    fn a_misspelt_key_is_refused_rather_than_ignored() {
+        // A file with `acccent` in it and no complaint looks exactly like
+        // hideGit ignoring the setting, which is the failure the whole settings
+        // screen exists to stop.
+        let error = Theme::from_toml("mine", "acccent = \"#ffffff\"").unwrap_err();
+        assert!(
+            matches!(error, ThemeError::NotValidToml(_)),
+            "got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_colour_that_is_not_one_says_which_key() {
+        let error = Theme::from_toml("mine", "accent = \"orange\"").unwrap_err();
+
+        match error {
+            ThemeError::NotAColour { key, value } => {
+                assert_eq!(key, "accent");
+                assert_eq!(value, "orange");
+            }
+            other => panic!("got {other:?}"),
+        }
+        // The shapes that are nearly right are the ones worth rejecting clearly.
+        for bad in ["#fff", "1c1f26", "#gggggg", "#1c1f2"] {
+            assert!(
+                Theme::from_toml("mine", &format!("accent = \"{bad}\"")).is_err(),
+                "{bad} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn eight_digits_carry_an_alpha() {
+        let theme = Theme::from_toml("mine", "selection = \"#1c1f2680\"").unwrap();
+        assert!((theme.palette.selection.a - 128.0 / 255.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_short_lane_list_is_refused() {
+        // Six is what `lane()` cycles through. Accepting four and repeating them
+        // would silently change how many lines the graph can tell apart.
+        let error = Theme::from_toml("mine", "lanes = [\"#111111\", \"#222222\"]").unwrap_err();
+
+        match error {
+            ThemeError::WrongLaneCount { expected, got } => {
+                assert_eq!(expected, 6);
+                assert_eq!(got, 2);
+            }
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_base_is_refused_rather_than_quietly_defaulted() {
+        let error = Theme::from_toml("mine", "based_on = \"solarized\"").unwrap_err();
+        assert!(matches!(error, ThemeError::UnknownBase(_)), "got {error:?}");
+    }
+
+    #[test]
+    fn a_file_cannot_take_a_name_that_ships() {
+        // Otherwise `theme.name = "hidegit-dark"` is ambiguous, and a broken
+        // file could take out the theme everything else falls back to.
+        let error = Theme::from_toml(Theme::DARK_NAME, "accent = \"#ffffff\"").unwrap_err();
+        assert!(
+            matches!(error, ThemeError::ShadowsBuiltIn(_)),
+            "got {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_directory_yields_its_themes_named_by_their_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("zinc.toml"), TWO_LINES).unwrap();
+        std::fs::write(dir.path().join("amber.toml"), TWO_LINES).unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "not a theme").unwrap();
+
+        let custom = Theme::load_dir(dir.path());
+
+        let names: Vec<&str> = custom.themes.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["amber", "zinc"], "sorted, and .txt is not a theme");
+        assert!(custom.problems.is_empty());
+    }
+
+    #[test]
+    fn one_broken_file_does_not_take_the_others_with_it() {
+        // It never prevents startup, per `docs/UI_SPEC.md#theming` — and the
+        // reason is carried rather than only logged, because a theme that
+        // silently does not apply reads as the setting being ignored.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.toml"), TWO_LINES).unwrap();
+        std::fs::write(dir.path().join("broken.toml"), "accent = \"nope\"").unwrap();
+
+        let custom = Theme::load_dir(dir.path());
+
+        assert_eq!(custom.themes.len(), 1);
+        assert_eq!(custom.themes[0].name, "good");
+        assert_eq!(custom.problems.len(), 1);
+        assert_eq!(custom.problems[0].file, "broken.toml");
+        assert!(
+            custom.problems[0].reason.contains("accent"),
+            "{:?}",
+            custom.problems[0]
+        );
+    }
+
+    #[test]
+    fn no_themes_directory_is_not_a_problem() {
+        // Most people never write a theme. An empty list, not a complaint.
+        let dir = tempfile::tempdir().unwrap();
+        let custom = Theme::load_dir(&dir.path().join("nothing-here"));
+
+        assert!(custom.themes.is_empty());
+        assert!(custom.problems.is_empty());
+    }
+
+    #[test]
+    fn the_built_in_themes_are_labelled_rather_than_keyed() {
+        // `hidegit-dark` is a config key nobody chose. A custom theme's name is
+        // a file name somebody did choose, so it is shown as written.
+        let built_in = Theme::built_in();
+        assert_eq!(built_in[0].label(), "Dark");
+        assert_eq!(built_in[1].label(), "Light");
+        assert_eq!(Theme::from_toml("zinc", TWO_LINES).unwrap().label(), "zinc");
+    }
 
     /// Both shipped palettes.
     ///
