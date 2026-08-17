@@ -10,6 +10,7 @@ pub mod app;
 pub mod forge;
 pub mod format;
 pub mod highlight;
+pub mod i18n;
 pub mod keymap;
 pub mod message;
 pub mod state;

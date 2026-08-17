@@ -21,7 +21,7 @@ use crate::theme::Palette;
 pub fn view<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     let panel = container(
         column![
-            header(palette),
+            header(app, palette),
             divider(palette),
             container(scrollable(body(app, palette)).height(Fill))
                 .height(Fill)
@@ -58,18 +58,27 @@ pub fn view<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
         .into()
 }
 
-fn header<'a>(palette: &'a Palette) -> Element<'a, Message> {
-    container(text("Settings").size(14.0).color(palette.text).font(Font {
-        weight: iced::font::Weight::Semibold,
-        ..Font::DEFAULT
-    }))
+fn header<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
+    container(
+        text(app.text.get("settings.title"))
+            .size(14.0)
+            .color(palette.text)
+            .font(Font {
+                weight: iced::font::Weight::Semibold,
+                ..Font::DEFAULT
+            }),
+    )
     .padding([10, 16])
     .width(Fill)
     .into()
 }
 
 fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
-    let mut sections = column![section("Appearance", palette)].spacing(6);
+    let mut sections = column![section(
+        app.text.get("settings.section.appearance"),
+        palette
+    )]
+    .spacing(6);
 
     // The two that ship, then whatever was found in the themes directory. A
     // custom theme that could be selected only by typing its name into the file
@@ -89,10 +98,10 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     }
 
     sections = sections.push(Space::new().height(14));
-    sections = sections.push(section("Window", palette));
+    sections = sections.push(section(app.text.get("settings.section.window"), palette));
     sections = sections.push(
         checkbox(app.remember_geometry)
-            .label("Reopen at the last size and position")
+            .label(app.text.get("settings.window.remember"))
             .size(15.0)
             .text_size(13.0)
             .on_toggle(|_| Message::RememberGeometryToggled),
@@ -100,16 +109,19 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     sections = sections.push(
         // Says what "no" means, which is otherwise a guess: the alternative is
         // not "wherever the window manager feels like", it is a fixed default.
-        text("Off, hideGit opens at its default size, centred.")
+        text(app.text.get("settings.window.remember.off"))
             .size(11.0)
             .color(palette.muted),
     );
 
     sections = sections.push(Space::new().height(14));
-    sections = sections.push(section("Diagnostics", palette));
+    sections = sections.push(section(
+        app.text.get("settings.section.diagnostics"),
+        palette,
+    ));
     sections = sections.push(
         checkbox(app.panic_reports)
-            .label("Write a report when something goes wrong")
+            .label(app.text.get("settings.diagnostics.reports"))
             .size(15.0)
             .text_size(13.0)
             .on_toggle(|_| Message::PanicReportsToggled),
@@ -117,14 +129,14 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     sections = sections.push(
         // Both halves said, because both are otherwise reasonable to assume the
         // other way round.
-        text("Saved on this machine. Nothing is ever sent anywhere.")
+        text(app.text.get("settings.diagnostics.reports.note"))
             .size(11.0)
             .color(palette.muted),
     );
     sections = sections.push(Space::new().height(6));
     sections = sections.push(
         checkbox(app.check_for_updates)
-            .label("Check for a newer hideGit")
+            .label(app.text.get("settings.diagnostics.updates"))
             .size(15.0)
             .text_size(13.0)
             .on_toggle(|_| Message::UpdateCheckToggled),
@@ -132,13 +144,13 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     sections = sections.push(
         // Says exactly what it contacts and what it will not do, because an
         // update check is the one thing here that leaves the machine.
-        text("Asks github.com once a day. Never installs anything.")
+        text(app.text.get("settings.diagnostics.updates.note"))
             .size(11.0)
             .color(palette.muted),
     );
 
     sections = sections.push(Space::new().height(14));
-    sections = sections.push(section("Pull request alerts", palette));
+    sections = sections.push(section(app.text.get("settings.section.alerts"), palette));
 
     let enabled = app.alerts.enabled;
     for which in AlertToggle::ALL {
@@ -165,7 +177,7 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     sections = sections.push(Space::new().height(8));
     sections = sections.push(quiet_hours(app, palette));
     sections = sections.push(Space::new().height(14));
-    sections = sections.push(section("Muted repositories", palette));
+    sections = sections.push(section(app.text.get("settings.section.muted"), palette));
     sections = sections.push(muted(app, palette));
 
     sections.into()
@@ -231,7 +243,7 @@ fn quiet_hours<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     let live = app.alerts.enabled;
 
     let switch = checkbox(quiet.enabled)
-        .label("Quiet hours")
+        .label(app.text.get("settings.quiet.title"))
         .size(15.0)
         .text_size(13.0)
         .on_toggle_maybe(live.then_some(|_| Message::QuietHoursToggled));
@@ -239,9 +251,13 @@ fn quiet_hours<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     // Picked from a list rather than typed: an hour is one of twenty-four
     // values, and a text field would have to decide what "25" or "" means.
     let bounds = row![
-        text("from").size(12.0).color(palette.muted),
+        text(app.text.get("settings.quiet.from"))
+            .size(12.0)
+            .color(palette.muted),
         hour_picker(QuietBound::From, quiet.from, live && quiet.enabled, palette),
-        text("to").size(12.0).color(palette.muted),
+        text(app.text.get("settings.quiet.to"))
+            .size(12.0)
+            .color(palette.muted),
         hour_picker(QuietBound::To, quiet.to, live && quiet.enabled, palette),
     ]
     .spacing(8)
@@ -255,7 +271,7 @@ fn quiet_hours<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     if quiet.enabled && quiet.from == quiet.to {
         block = block.push(
             container(
-                text("A window that starts and ends at the same hour silences nothing.")
+                text(app.text.get("settings.quiet.empty"))
                     .size(11.0)
                     .color(palette.warning),
             )
@@ -336,7 +352,7 @@ fn footer<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
         row![
             text(note).size(11.0).color(colour),
             Space::new().width(Fill),
-            button(text("Done").size(11.0))
+            button(text(app.text.get("settings.done")).size(11.0))
                 .padding([5, 14])
                 .style(move |_, status| button::Style {
                     background: Some(

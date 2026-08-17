@@ -454,6 +454,32 @@ fn the_settings_panel_lists_a_custom_theme_by_its_file_name() {
 }
 
 #[test]
+fn a_translation_changes_what_the_settings_panel_says() {
+    // The whole mechanism, end to end: a key in the code, a string in a file,
+    // and the screen showing the second one. Everything the translation does
+    // not cover stays readable in English rather than showing a key.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pt-BR.toml"),
+        "[settings]\ntitle = \"Ajustes\"\n",
+    )
+    .unwrap();
+
+    let mut app = app_with(1);
+    app.app.text = crate::i18n::Catalogue::load(dir.path(), "pt-BR");
+    let _ = app.update(Message::SettingsRequested);
+
+    shows(&app, "Ajustes");
+    shows(&app, "Diagnostics");
+
+    let mut ui = render(&app);
+    assert!(
+        ui.find("Settings").is_err(),
+        "the English title is gone, not sitting beside the translation"
+    );
+}
+
+#[test]
 fn the_settings_panel_offers_panic_reports_and_says_they_stay_here() {
     // Both halves said, because both are otherwise reasonable to assume the
     // other way round: that nothing is recorded, or that something is sent.

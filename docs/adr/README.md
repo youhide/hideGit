@@ -16,6 +16,7 @@ and re-litigated every six months.
 | [0005](./0005-progress-and-cancellation.md) | Progress and cancellation by parsing stderr and killing the child | Accepted |
 | [0006](./0006-poll-pull-requests-over-graphql.md) | Poll pull request state over GraphQL, not conditional REST | Accepted |
 | [0007](./0007-rebase-plan-through-the-environment.md) | Drive interactive rebase by handing the plan through the environment | Accepted |
+| [0008](./0008-translations-as-toml-catalogues.md) | Translate through TOML catalogues, with no i18n runtime | Accepted |
 
 ## Conventions
 

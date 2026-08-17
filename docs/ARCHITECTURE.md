@@ -202,6 +202,17 @@ whether anybody is signed in. It goes through octocrab's generic `get` with hide
 release type rather than octocrab's `Release`, which carries three dozen fields this does not read
 and every one of which would have to be faked in a test.
 
+**User-facing text is keys in the code and strings in a catalogue.** `hidegit-ui::i18n` loads
+`locales/<tag>.toml` from beside `config.toml`, falling back per key to the English catalogue
+compiled into the binary — so a half-finished translation shows English where it is unfinished and
+says how much is left, never a key and never a blank. There is no i18n crate behind it; see
+[ADR-0008](./adr/0008-translations-as-toml-catalogues.md) for why, and for what would have to change
+for a language with more than two plural forms.
+
+Two things are deliberately outside it. `hidegit-core` returns typed errors and holds no user-facing
+strings at all, so the whole translation surface is one crate. And Git's own stderr reaches the user
+verbatim — a paraphrase of a Git error is worse than the error, and worse again in a second language.
+
 **A panic is written down.** `crash::install` sets a panic hook at startup that logs every panic and,
 when `diagnostics.panic_reports` is on, writes a report to the data directory: version, platform,
 message, location, backtrace. Nothing is sent anywhere and nothing names a repository, a branch or a

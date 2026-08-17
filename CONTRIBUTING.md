@@ -170,6 +170,19 @@ application.
 New forges are post-1.0 by default. If you want to land one earlier, open an issue first so we can
 agree the trait is stable enough to build against.
 
+## User-facing text
+
+New strings go in `crates/hidegit-ui/locales/en.toml` with a key, not inline at the call site. The
+code reads them through `app.text.get("some.key")`; see
+[ADR-0008](./docs/adr/0008-translations-as-toml-catalogues.md).
+
+The application is **not yet fully converted** — the catalogue landed with the settings panel moved
+across to prove it, and roughly 690 literals elsewhere are still inline. That is work in progress
+rather than a pattern to copy: if you are adding text, add a key.
+
+Two things never go in the catalogue: Git's own output, which reaches the user verbatim on purpose,
+and anything that came out of a repository — branch names, paths, remote URLs, commit messages.
+
 ## Commits and pull requests
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
