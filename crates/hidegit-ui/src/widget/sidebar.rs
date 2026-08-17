@@ -127,7 +127,7 @@ pub fn view<'a>(
             palette,
         ));
         for worktree in &repo.worktrees {
-            sections = sections.push(worktree_row(worktree, palette));
+            sections = sections.push(worktree_row(worktree, index, palette));
         }
     }
 
@@ -827,7 +827,7 @@ fn submodule_row<'a>(
 /// Not a button, and not selectable: another checkout is not a place in this
 /// repository's history to jump to. The actions arrive with the operations that
 /// would run them.
-fn worktree_row<'a>(worktree: &Worktree, palette: &Palette) -> Element<'a, Message> {
+fn worktree_row<'a>(worktree: &Worktree, index: usize, palette: &Palette) -> Element<'a, Message> {
     let palette = *palette;
 
     // `▸` for the checkout being looked at, matching the local-branch row's
@@ -883,14 +883,67 @@ fn worktree_row<'a>(worktree: &Worktree, palette: &Palette) -> Element<'a, Messa
         tip = format!("{tip} — the directory is gone; `git worktree prune` clears it");
     }
 
-    hinted(
+    let row = hinted(
         container(label)
             .width(Fill)
             .padding(Padding::from([3, 12]))
             .into(),
         tip,
         palette,
-    )
+    );
+
+    let Some(sheet) = worktree_sheet(worktree, index) else {
+        return row;
+    };
+
+    row![
+        row,
+        action_button(
+            "⋯",
+            format!("Actions for {}", worktree.path.display()),
+            sheet,
+            palette
+        ),
+    ]
+    .align_y(Center)
+    .into()
+}
+
+/// What a worktree row offers, or `None` when it has nothing to offer.
+///
+/// Three rows have nothing. The **main** worktree cannot be removed and cannot
+/// be locked, so every action here is refused for it. The **current** one
+/// cannot be removed either — `git worktree remove` will not take the directory
+/// you are standing in — and offering it would be a control that always fails.
+/// A **locked** one is locked precisely so that nothing removes or prunes it;
+/// unlocking is how that is undone, and hideGit does not offer a way around a
+/// decision the user already made.
+fn worktree_sheet(worktree: &Worktree, index: usize) -> Option<ActionSheet> {
+    if worktree.is_main || worktree.is_current || worktree.locked.is_some() {
+        return None;
+    }
+
+    let at = worktree.path.display().to_string();
+    if worktree.prunable {
+        // Not "remove": there is no directory left to remove. Pruning is what
+        // clears the registration, and it is the only thing that would work.
+        return Some(
+            ActionSheet::new(format!("{at} is registered, and its directory is gone")).item(
+                "Clear the stale registration",
+                Message::Repo(index, RepoMessage::WorktreePruneRequested),
+            ),
+        );
+    }
+
+    Some(ActionSheet::new(at).destructive(
+        "Remove",
+        Message::Repo(
+            index,
+            RepoMessage::WorktreeRemoveRequested {
+                path: worktree.path.clone(),
+            },
+        ),
+    ))
 }
 
 /// What a worktree has checked out, in the vocabulary Git uses for it.
@@ -1114,6 +1167,87 @@ mod tests {
             recorded: recorded.map(id),
             checked_out: checked_out.map(id),
         }
+    }
+
+    fn linked(name: &str) -> Worktree {
+        Worktree {
+            path: PathBuf::from(format!("/elsewhere/{name}")),
+            head: Some(Head::Branch {
+                name: RefName {
+                    kind: RefKind::LocalBranch,
+                    full: format!("refs/heads/{name}"),
+                    short: name.to_owned(),
+                },
+                target: hidegit_core::ObjectId::from_hex(&"0".repeat(40)).unwrap(),
+            }),
+            is_current: false,
+            is_main: false,
+            locked: None,
+            prunable: false,
+        }
+    }
+
+    #[test]
+    fn the_main_worktree_offers_nothing_because_every_action_would_be_refused() {
+        let mut main = linked("main");
+        main.is_main = true;
+        assert!(worktree_sheet(&main, 0).is_none());
+    }
+
+    #[test]
+    fn the_worktree_being_looked_at_cannot_be_removed_from_inside_it() {
+        // `git worktree remove` will not take the directory you are standing
+        // in, so offering it would be a control that always fails.
+        let mut current = linked("side");
+        current.is_current = true;
+        assert!(worktree_sheet(&current, 0).is_none());
+    }
+
+    #[test]
+    fn a_locked_worktree_offers_nothing_rather_than_a_way_around_the_lock() {
+        // Locking one is how the user says "leave this alone". Unlocking is how
+        // that is undone; hideGit does not offer a route past a decision the
+        // user already made.
+        let mut locked = linked("side");
+        locked.locked = Some("on the external drive".to_owned());
+        assert!(worktree_sheet(&locked, 0).is_none());
+
+        // And a locked one whose directory is gone is still locked — which is
+        // exactly the case locking exists for.
+        locked.prunable = true;
+        assert!(worktree_sheet(&locked, 0).is_none());
+    }
+
+    #[test]
+    fn a_live_worktree_offers_removal_marked_destructive() {
+        let sheet = worktree_sheet(&linked("side"), 0).expect("there is something to do");
+
+        assert!(matches!(
+            sheet.items.as_slice(),
+            [item] if item.destructive
+                && matches!(
+                    &item.message,
+                    Message::Repo(0, RepoMessage::WorktreeRemoveRequested { path })
+                        if path == &PathBuf::from("/elsewhere/side")
+                )
+        ));
+    }
+
+    #[test]
+    fn a_worktree_whose_directory_is_gone_offers_pruning_rather_than_removal() {
+        // There is no directory left to remove, so "Remove" would be the wrong
+        // verb for the only operation that would work.
+        let mut stale = linked("side");
+        stale.prunable = true;
+        let sheet = worktree_sheet(&stale, 0).expect("there is something to do");
+
+        assert!(matches!(
+            sheet.items.as_slice(),
+            [item] if matches!(
+                &item.message,
+                Message::Repo(0, RepoMessage::WorktreePruneRequested)
+            )
+        ));
     }
 
     #[test]

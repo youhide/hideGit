@@ -195,6 +195,19 @@ for the branch `HEAD` is on.
 Neither worktree rows nor submodule rows are selectable: another checkout, like another repository,
 is not a place in *this* history to jump to.
 
+**A worktree row carries a `⋯` only where an action would work.** Three rows have none: the **main**
+worktree, which cannot be removed; the **current** one, because `git worktree remove` will not take
+the directory you are standing in; and a **locked** one, because locking it is how the user said
+"leave this alone" and unlocking is how that is undone — hideGit does not offer a route past a
+decision they already made.
+
+The rest offer one action, and which one depends on whether the directory is still there. A live
+worktree offers **Remove**, marked destructive, behind a confirmation that names the branch coming
+back — "it stays, and becomes checkoutable here again" is the reassurance that makes the dialog safe
+to accept. A worktree whose directory is gone offers **Clear the stale registration** instead, with
+no confirmation: there is no directory left to lose, and "Remove" would be the wrong verb for the
+only operation that would work.
+
 **A submodule row says which of the two pointers is wrong.** A submodule is two commits that can
 disagree: the one the superproject's index records, and the one the nested checkout is actually on.
 The row carries Git's own column — `-`, a space, `+`, exactly what `git submodule status` prints —
