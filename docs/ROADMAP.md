@@ -394,7 +394,11 @@ Everything between "works" and "someone who does not write Rust can install it".
   first matches" and "these are the matches" are different answers. Typing is **debounced**: a search
   is a walk of the whole history, and a ten-letter word typed at speed was ordering ten of them. The
   guard that stops a stale answer landing was already there and was doing its job — it just never
-  stopped the work. File search within a commit is still to come
+  stopped the work. **File search within a commit has landed** too, as a filter box over the changed
+  files — the one place in the interface where the thing you are looking for is already named on
+  screen. It says how much it is hiding, and the rows keep addressing the commit's own list rather
+  than the filtered one, since an index off the visible list would open whichever file sat in that
+  position
 - Blame view. **Landed**, and it is the last `GitBackend` method that was returning
   `NotImplementedYet` — the trait declared its whole surface from M1 and is now entirely
   implemented. Rename detection had to be turned on explicitly: gitoxide leaves it off by default,

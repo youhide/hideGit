@@ -188,6 +188,19 @@ pixel, and a thumb nobody can grab is the same as no thumb.
 **Detail pane** — commit metadata and changed files when a commit is selected; the staging view
 when the working directory is selected.
 
+The file list carries a filter box. A commit that touches two hundred files is a scroll to find the
+one you came for, and the file list is the one place in the interface where the thing you want is
+already named on screen. Matching is substring over the path, case-insensitive. While a filter is on
+the count says both numbers — *"3 of 42 file(s)"* — because "3 file(s)" over a commit that touched
+forty-two is a quiet lie. Nothing matching says so rather than leaving an empty column, which reads
+as a commit that changed nothing.
+
+Rows address the commit's own file list, not the filtered one: an index taken from the visible list
+would open whichever file happened to sit in that position. The filter is cleared when the selection
+changes, since one written against the last commit's files would hide most of the next one's with
+nothing on screen saying why. Typing into the box takes the keyboard the same way the commit composer
+does, and clicking a row gives it back.
+
 **Toolbar** — the operations reached constantly. Push shows its ahead-count; the notification bell
 shows unread PR alerts. A control that cannot work is unavailable and carries *why* in its tooltip —
 "A merge in progress", "Nothing to push from a detached HEAD" — rather than leaving that to be

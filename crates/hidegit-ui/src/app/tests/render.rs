@@ -235,6 +235,65 @@ fn the_command_palette_says_when_nothing_matches() {
 }
 
 #[test]
+fn a_filter_narrows_the_file_list_and_says_how_much_it_hid() {
+    // "2 file(s)" over a commit that touched four is a quiet lie, so the count
+    // says both numbers while a filter is on.
+    let mut app = app_showing_a_commit();
+
+    let stat = crate::format::diff_stat(10, 2);
+    shows(&app, "Cargo.toml");
+    shows(&app, &format!("4 file(s)   {stat}"));
+
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::FileFilterChanged("src/".to_owned()),
+    ));
+
+    shows(&app, "src/app.rs");
+    shows(&app, &format!("2 of 4 file(s)   {stat}"));
+    let mut ui = render(&app);
+    assert!(
+        ui.find("Cargo.toml").is_err(),
+        "a file that does not match is gone"
+    );
+}
+
+#[test]
+fn a_filtered_row_opens_the_file_it_names_rather_than_the_one_in_that_position() {
+    // The failure this feature could have shipped with, silently: rows address
+    // the commit's list, and a filtered index would open whichever file
+    // happened to sit in that slot. Here `src/theme.rs` is the fourth file and
+    // the second row — clicking it must ask for 3, not 1.
+    let mut app = app_showing_a_commit();
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::FileFilterChanged("theme".to_owned()),
+    ));
+
+    let mut ui = render(&app);
+    ui.click("src/theme.rs").expect("the row is on screen");
+
+    let sent: Vec<Message> = ui.into_messages().collect();
+    assert!(
+        sent.iter()
+            .any(|message| matches!(message, Message::Repo(0, RepoMessage::FileSelected(3)))),
+        "got {sent:?}"
+    );
+}
+
+#[test]
+fn a_filter_matching_nothing_says_so_rather_than_emptying_the_pane() {
+    let mut app = app_showing_a_commit();
+
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::FileFilterChanged("zzz".to_owned()),
+    ));
+
+    shows(&app, "No file matches that.");
+}
+
+#[test]
 fn the_reference_prints_the_chord_a_command_answers_to_now() {
     // A reference that still prints Cmd+Shift+U after Push was rebound is the
     // drift the reference exists to prevent, one config file later.

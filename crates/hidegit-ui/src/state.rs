@@ -434,6 +434,9 @@ pub const PROMPT_FIELD_IDS: [&str; 2] = ["hidegit-prompt-field-0", "hidegit-prom
 /// to click into before typing is a search that costs a click every time.
 pub const SEARCH_FIELD_ID: &str = "hidegit-search-field";
 pub const COMMAND_FIELD_ID: &str = "hidegit-command-field";
+/// The file filter above a commit's file list. Carries an id so the `Space`
+/// binding can find out it has focus; see [`COMPOSER_FIELD_IDS`].
+pub const FILE_FILTER_ID: &str = "hidegit-file-filter";
 
 pub const COMPOSER_FIELD_IDS: [&str; 2] = ["hidegit-composer-subject", "hidegit-composer-body"];
 
@@ -709,6 +712,12 @@ pub struct OpenRepo {
     pub blame: Option<BlameView>,
     /// The commit search, if it is open.
     pub search: Option<Search>,
+    /// Narrows the file list of the commit being looked at.
+    ///
+    /// Cleared whenever the selection changes: a filter left over from the last
+    /// commit, hiding files in this one, is a list that looks wrong with
+    /// nothing on screen to explain it.
+    pub file_filter: String,
 }
 
 /// The command palette, while it is up.
