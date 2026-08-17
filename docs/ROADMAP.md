@@ -423,6 +423,18 @@ Everything between "works" and "someone who does not write Rust can install it".
   put branch, tag, remote and stash actions behind one. `Tab` moves between a prompt's fields, which
   a two-field prompt like "Add a remote" needed and did not have.
 
+  **The focus ring has landed, and the audit that came with it found a real gap.** `Tab` cycled
+  three panes and only the graph showed it, through the tint on its selected row — so two of the
+  three positions looked identical and the key appeared to do nothing. Every pane now carries a
+  one-pixel outline whose *colour* changes with focus, never its width, since a border that appears
+  reflows the text beside it.
+
+  Worse, the arrows always moved the graph regardless of which pane had focus: `Tab` to the staging
+  list and the graph scrolled behind it, while the row `Space` acts on could only be moved with the
+  mouse. They now follow the focus. What remains, named rather than left looking finished: the
+  **sidebar has no row model**, so focusing it shows the ring and nothing more — branches, stashes
+  and pull requests are still reached by clicking or through the command palette.
+
   Still to do: a focus ring that is visible on every focusable widget, and an audit that every
   action has a keyboard route
 - Crash reporting that is local and opt-in

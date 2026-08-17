@@ -45,16 +45,35 @@ pub fn view<'a>(
     }
 
     stack = stack.push(divider(border).map(repo_message));
+    // Which pane the keyboard is pointed at, said out loud. `Tab` cycles all
+    // three; before this only the graph showed it, through the tint on its
+    // selected row, so two of the three positions looked identical.
+    let ring = |pane: Pane, element: Element<'a, Message>| -> Element<'a, Message> {
+        let border = crate::theme::focus_ring(repo.focus == pane, palette);
+        container(element)
+            .style(move |_| container::Style {
+                border,
+                ..container::Style::default()
+            })
+            .into()
+    };
+
     stack = stack.push(
         row![
-            sidebar::view(app, repo, index, palette),
+            ring(Pane::Sidebar, sidebar::view(app, repo, index, palette)),
             vertical_rule(border).map(repo_message),
             column![
-                graph_pane(repo, palette, cache).map(repo_message),
+                ring(
+                    Pane::Graph,
+                    graph_pane(repo, palette, cache).map(repo_message)
+                ),
                 divider(border).map(repo_message),
-                container(detail::view(repo, palette).map(repo_message))
-                    .height(Length::FillPortion(4))
-                    .width(Fill),
+                container(ring(
+                    Pane::Detail,
+                    detail::view(repo, palette).map(repo_message)
+                ))
+                .height(Length::FillPortion(4))
+                .width(Fill),
             ]
             .height(Fill)
             .width(Fill),

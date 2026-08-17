@@ -1293,6 +1293,34 @@ impl Hidegit {
             }
 
             RepoMessage::SelectionMoved(delta) => {
+                // The arrows belong to whichever pane has the keyboard. Before
+                // this they always moved the graph, so `Tab` to the staging list
+                // and the graph scrolled behind it — and the row `Space` acts on
+                // could only be moved with the mouse.
+                if repo.focus == Pane::Detail
+                    && let DetailPane::WorkingDirectory { selected, .. } = &repo.detail
+                {
+                    let rows = crate::state::StagingRow::all(&repo.status);
+                    if rows.is_empty() {
+                        return Task::none();
+                    }
+
+                    // With nothing selected, the first press enters the list
+                    // rather than stepping into its second row.
+                    let next = match selected.and_then(|row| rows.iter().position(|r| *r == row)) {
+                        None => 0,
+                        // Clamped rather than wrapped, like every other list here.
+                        Some(at) => {
+                            (at as i64 + delta as i64).clamp(0, rows.len() as i64 - 1) as usize
+                        }
+                    };
+
+                    return Task::done(Message::Repo(
+                        index,
+                        RepoMessage::StagingRowSelected(rows[next]),
+                    ));
+                }
+
                 if repo.graph.is_empty() {
                     return Task::none();
                 }
@@ -5264,6 +5292,131 @@ mod tests {
 
         let _ = app.update(Message::SettingsDismissed);
         assert!(!app.app.settings_open);
+    }
+
+    // ---- focus, and what the arrows reach --------------------------------
+
+    /// An app whose detail pane is the staging view, with two changed files and
+    /// one conflict.
+    fn app_staging() -> Hidegit {
+        use hidegit_core::model::{ChangeStatus, Conflict, ConflictKind, FileChange};
+
+        let mut app = app_with(2);
+        let repo = app.app.repos.get_mut(0).unwrap();
+        let change = |path: &str| FileChange {
+            path: std::path::PathBuf::from(path),
+            status: ChangeStatus::Modified,
+        };
+
+        repo.status.conflicted = vec![Conflict {
+            path: std::path::PathBuf::from("both.rs"),
+            kind: ConflictKind::BothModified,
+        }];
+        repo.status.staged = vec![change("staged.rs")];
+        repo.status.unstaged = vec![change("changed.rs")];
+        repo.status.untracked = vec![std::path::PathBuf::from("new.rs")];
+        repo.detail = crate::state::DetailPane::WorkingDirectory {
+            staged: Box::default(),
+            unstaged: Box::default(),
+            selected: None,
+            lines: Default::default(),
+        };
+        app
+    }
+
+    #[test]
+    fn the_staging_rows_are_walked_in_the_order_the_pane_draws_them() {
+        // Conflicts first, then staged, changed, untracked. The keyboard has to
+        // move through the list the eye reads, not through the order the fields
+        // happen to be declared in.
+        let app = app_staging();
+        let rows = crate::state::StagingRow::all(&app.app.repos[0].status);
+
+        assert_eq!(
+            rows.iter().map(|row| row.section).collect::<Vec<_>>(),
+            [
+                Section::Conflicted,
+                Section::Staged,
+                Section::Unstaged,
+                Section::Untracked
+            ]
+        );
+    }
+
+    #[test]
+    fn the_arrows_move_the_staging_list_when_it_has_the_keyboard() {
+        // They always moved the graph before, so `Tab` to the staging list and
+        // the graph scrolled behind it — and the row `Space` acts on could only
+        // be moved with the mouse.
+        let mut app = app_staging();
+        app.app.repos[0].focus = crate::state::Pane::Detail;
+
+        let sent = tests::drive::update_and_drive(
+            &mut app,
+            Message::Repo(0, RepoMessage::SelectionMoved(1)),
+        );
+
+        assert!(
+            matches!(
+                sent.first(),
+                Some(Message::Repo(
+                    0,
+                    RepoMessage::StagingRowSelected(crate::state::StagingRow {
+                        section: Section::Conflicted,
+                        index: 0
+                    })
+                ))
+            ),
+            "got {sent:?}"
+        );
+    }
+
+    #[test]
+    fn the_arrows_still_move_the_graph_when_the_graph_has_the_keyboard() {
+        let mut app = app_staging();
+        app.app.repos[0].focus = crate::state::Pane::Graph;
+
+        let sent = tests::drive::update_and_drive(
+            &mut app,
+            Message::Repo(0, RepoMessage::SelectionMoved(1)),
+        );
+
+        assert!(
+            matches!(
+                sent.first(),
+                Some(Message::Repo(
+                    0,
+                    RepoMessage::Selected(Selection::Commit(_))
+                ))
+            ),
+            "got {sent:?}"
+        );
+    }
+
+    #[test]
+    fn stepping_the_staging_list_is_clamped_at_both_ends() {
+        let mut app = app_staging();
+        app.app.repos[0].focus = crate::state::Pane::Detail;
+
+        for _ in 0..10 {
+            let sent = tests::drive::update_and_drive(
+                &mut app,
+                Message::Repo(0, RepoMessage::SelectionMoved(1)),
+            );
+            for message in sent {
+                let _ = app.update(message);
+            }
+        }
+
+        let crate::state::DetailPane::WorkingDirectory { selected, .. } = &app.app.repos[0].detail
+        else {
+            panic!("the staging view went away");
+        };
+        assert_eq!(
+            selected.map(|row| row.section),
+            Some(Section::Untracked),
+            "stopped at the last row rather than wrapping"
+        );
     }
 
     // ---- the file filter -------------------------------------------------

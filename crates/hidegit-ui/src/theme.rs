@@ -132,6 +132,26 @@ impl Palette {
     }
 }
 
+/// The outline drawn around whichever pane has the keyboard.
+///
+/// `Tab` moved focus between three panes and only one of them showed it, so the
+/// cycle was invisible: you pressed the key and nothing on screen changed.
+///
+/// The border is always one pixel wide, focused or not — only its colour
+/// changes — because a ring that appears costs a pixel of layout on every pane
+/// it touches, and text that reflows as focus moves is worse than no ring.
+pub fn focus_ring(focused: bool, palette: &Palette) -> iced::Border {
+    iced::Border {
+        color: if focused {
+            palette.accent
+        } else {
+            Color::TRANSPARENT
+        },
+        width: 1.0,
+        radius: 0.0.into(),
+    }
+}
+
 /// The active theme.
 ///
 /// A struct rather than an enum because custom themes are TOML files dropped in
@@ -602,6 +622,31 @@ mod tests {
         let (a, b) = (luminance(a), luminance(b));
         let (light, dark) = if a > b { (a, b) } else { (b, a) };
         (light + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn the_focus_ring_is_visible_and_costs_no_layout() {
+        // The width never changes, only the colour: a border that appears takes
+        // a pixel from every pane it touches, and text that reflows as focus
+        // moves is worse than no ring at all.
+        for (name, palette) in palettes() {
+            let on = focus_ring(true, &palette);
+            let off = focus_ring(false, &palette);
+
+            assert_eq!(on.width, off.width, "{name}: the ring moves the layout");
+            assert_eq!(off.color, Color::TRANSPARENT, "{name}");
+            assert_eq!(on.color, palette.accent, "{name}");
+
+            // The 3:1 bar WCAG sets for something that is not text. A ring
+            // nobody can see against the pane behind it is not a ring.
+            for background in [palette.background, palette.surface] {
+                assert!(
+                    contrast(on.color, background) >= 3.0,
+                    "{name}: the ring is {:.2}:1 against the pane",
+                    contrast(on.color, background)
+                );
+            }
+        }
     }
 
     #[test]

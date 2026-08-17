@@ -258,6 +258,23 @@ pub struct StagingRow {
     pub index: usize,
 }
 
+impl StagingRow {
+    /// Every row of the staging list, in the order the pane draws them.
+    ///
+    /// Conflicts first — nothing else in the working directory matters until
+    /// they are resolved — then staged, changed, untracked. The keyboard walks
+    /// this list, so it has to be the same order the eye does.
+    pub fn all(status: &WorktreeStatus) -> Vec<Self> {
+        let section = |section, count| (0..count).map(move |index| Self { section, index });
+
+        section(Section::Conflicted, status.conflicted.len())
+            .chain(section(Section::Staged, status.staged.len()))
+            .chain(section(Section::Unstaged, status.unstaged.len()))
+            .chain(section(Section::Untracked, status.untracked.len()))
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     Staged,
