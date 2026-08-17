@@ -11,7 +11,7 @@ authors.workspace = true
 [dependencies]
 hidegit-core = { workspace = true, features = ["fake"] }
 hidegit-forge = { workspace = true, features = ["fake"] }
-iced = { workspace = true, features = ["canvas", "tokio", "advanced"] }
+iced = { workspace = true, features = ["canvas", "tokio", "advanced", "highlighter"] }
 rfd = "0.15"
 tokio = { version = "1", features = ["rt", "time"] }
 time = { workspace = true, features = ["formatting", "local-offset", "macros"] }

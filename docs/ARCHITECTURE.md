@@ -91,6 +91,7 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `keyring` | 4 | OS keychain access for forge tokens | M4 |
 | `notify-rust` | 4 | Native desktop notifications | M4 |
 | `open` | 5 | Handing a URL to the platform's browser | M4 |
+| `syntect` | via `iced/highlighter` | Syntax highlighting in the diff | M6 |
 
 Versions are pinned in the workspace `Cargo.toml` and inherited by every crate, so a bump happens
 in one place. Crates whose milestone has not arrived carry no version here — recording a number

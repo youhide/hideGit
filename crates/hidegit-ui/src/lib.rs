@@ -9,6 +9,7 @@ pub mod alerts;
 pub mod app;
 pub mod forge;
 pub mod format;
+pub mod highlight;
 pub mod keymap;
 pub mod message;
 pub mod state;

@@ -1,13 +1,14 @@
 //! The diff viewer: unified and side-by-side.
 //!
-//! Syntax highlighting is deliberately absent in M1 — correct diffing first.
-//! Binary and oversized files get a placeholder rather than an attempt to
-//! render them, because the alternative is a hang.
+//! Syntax highlighting was deliberately absent in M1 — correct diffing first —
+//! and arrived in M6; see [`crate::highlight`] for why a diff needs two parsers
+//! rather than one. Binary and oversized files get a placeholder rather than an
+//! attempt to render them, because the alternative is a hang.
 
 use std::collections::BTreeSet;
 
 use hidegit_core::model::{Diff, FileDiff, FileDiffContent, Hunk, LineKind};
-use iced::widget::{Space, button, column, container, row, scrollable, text};
+use iced::widget::{Space, button, column, container, rich_text, row, scrollable, text};
 use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
@@ -93,6 +94,7 @@ fn unified<'a>(
     staging: Option<Staging<'a>>,
 ) -> Element<'a, RepoMessage> {
     let mut body = column![].spacing(0);
+    let mut painter = painter_for(file, hunks, palette);
 
     for (index, hunk) in hunks.iter().enumerate() {
         body = body.push(hunk_header(hunk, index, palette, staging));
@@ -114,10 +116,7 @@ fn unified<'a>(
             let content = row![
                 numbers,
                 text(marker).size(CODE_SIZE).font(mono()).color(colour),
-                text(line.text.as_str())
-                    .size(CODE_SIZE)
-                    .font(mono())
-                    .color(colour),
+                line_text(painter.line(line.kind, line.text.as_str(), colour)),
             ]
             .spacing(6);
 
@@ -263,6 +262,26 @@ fn side_by_side<'a>(
         flush(&mut removals, &mut additions, &mut pairs);
     }
 
+    // Coloured up front, in the diff's own order, because the parser's state
+    // after a line depends on having seen the one before it — and the panes are
+    // built by walking pairs, which is not that order.
+    let mut painter = painter_for(file, hunks, palette);
+    let mut coloured: std::collections::HashMap<*const hidegit_core::model::DiffLine, Vec<_>> =
+        std::collections::HashMap::new();
+
+    for hunk in hunks {
+        for line in &hunk.lines {
+            let colour = match line.kind {
+                LineKind::Context => palette.muted,
+                _ => palette.text,
+            };
+            coloured.insert(
+                std::ptr::from_ref(line),
+                painter.line(line.kind, line.text.as_str(), colour),
+            );
+        }
+    }
+
     let mut left = column![].spacing(0);
     let mut right = column![].spacing(0);
 
@@ -277,11 +296,11 @@ fn side_by_side<'a>(
             Pair::Lines { left: l, right: r } => {
                 left = left.push(match l {
                     Some(line) if line.kind == LineKind::Context => {
-                        code_line(line.old_lineno, &line.text, " ", None, palette)
+                        code_line(line.old_lineno, spans(&coloured, line), " ", None, palette)
                     }
                     Some(line) => code_line(
                         line.old_lineno,
-                        &line.text,
+                        spans(&coloured, line),
                         "−",
                         Some(palette.removed),
                         palette,
@@ -290,11 +309,11 @@ fn side_by_side<'a>(
                 });
                 right = right.push(match r {
                     Some(line) if line.kind == LineKind::Context => {
-                        code_line(line.new_lineno, &line.text, " ", None, palette)
+                        code_line(line.new_lineno, spans(&coloured, line), " ", None, palette)
                     }
                     Some(line) => code_line(
                         line.new_lineno,
-                        &line.text,
+                        spans(&coloured, line),
                         "+",
                         Some(palette.added),
                         palette,
@@ -478,9 +497,49 @@ fn action<'a>(label: &str, message: RepoMessage, palette: &Palette) -> Element<'
         .into()
 }
 
+/// One line of code, as cheap a widget as it can be.
+///
+/// A line the highlighter left in one piece is a plain `text`, not a `rich_text`
+/// of one span: most of a diff is such lines, and `Rich` lays out per span. It
+/// is also what keeps an unhighlighted diff visible to the render tests, which
+/// see `text` widgets and not the insides of rich ones.
+fn line_text<'a>(spans: Vec<iced::widget::text::Span<'a, (), Font>>) -> Element<'a, RepoMessage> {
+    match <[_; 1]>::try_from(spans) {
+        Ok([only]) => text(only.text)
+            .size(CODE_SIZE)
+            .font(only.font.unwrap_or_else(mono))
+            .color_maybe(only.color)
+            .into(),
+        Err(spans) => rich_text(spans).size(CODE_SIZE).into(),
+    }
+}
+
+/// A painter for this file, or a plain one when the diff is too big to colour.
+fn painter_for(file: &FileDiff, hunks: &[Hunk], palette: &Palette) -> crate::highlight::Painter {
+    let lines = hunks.iter().map(|hunk| hunk.lines.len()).sum();
+    crate::highlight::Painter::new(&file.path, lines, palette)
+}
+
+/// The coloured pieces of a line, looked up by identity.
+///
+/// Keyed by address because a line has no id and two identical lines in one
+/// hunk are genuinely different rows, each with its own parser state behind it.
+fn spans<'a>(
+    coloured: &std::collections::HashMap<
+        *const hidegit_core::model::DiffLine,
+        Vec<iced::widget::text::Span<'a, (), Font>>,
+    >,
+    line: &'a hidegit_core::model::DiffLine,
+) -> Vec<iced::widget::text::Span<'a, (), Font>> {
+    coloured
+        .get(&std::ptr::from_ref(line))
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn code_line<'a>(
     lineno: Option<u32>,
-    content: &str,
+    content: Vec<iced::widget::text::Span<'a, (), Font>>,
     marker: &'static str,
     background: Option<iced::Color>,
     palette: &Palette,
@@ -498,10 +557,7 @@ fn code_line<'a>(
         row![
             gutter(lineno, palette),
             text(marker).size(CODE_SIZE).font(mono()).color(colour),
-            text(content.to_owned())
-                .size(CODE_SIZE)
-                .font(mono())
-                .color(colour),
+            line_text(content),
         ]
         .spacing(6),
     )

@@ -626,6 +626,7 @@ Constraints:
   for 8% of men is a broken graph.
 - Colour is never the only carrier of meaning — added/removed lines, CI state and conflict markers
   all have a shape or glyph as well.
+- Diff text is syntax-highlighted, with every colour lifted to WCAG AA — see below.
 - Custom themes are TOML files dropped in a `themes` directory beside `config.toml`, one per
   theme. A malformed theme is skipped with its reason shown on screen; it never prevents startup.
 
@@ -649,6 +650,28 @@ repeating them would quietly change how many lines the graph can tell apart.
 An unrecognised key is an error, not a shrug: a file with `acccent` in it and no complaint looks
 exactly like hideGit ignoring the setting, which is the failure the settings screen exists to stop.
 The shipped palettes are not overridable in place; `based_on` is how you start from one.
+
+**Syntax highlighting** is syntect, through `iced::highlighter`, driven a line at a time. A diff is
+not a document — it is two documents interleaved — so there are **two parsers, one per side**: the
+old side sees context and removed lines, the new side sees context and added ones. Feeding one
+parser a removed line and then the added line replacing it leaves both wrong.
+
+It is approximate at the top of a hunk, deliberately. A hunk starts where the diff starts, not at
+the top of the file, so a line inside a block comment that opened fifty lines earlier reads as code.
+Fixing that means reading every blob of every commit anyone clicks on. The colours are a reading
+aid; the text is the truth.
+
+Every colour is lifted to 4.5:1 against the row it sits on. Syntax themes dim comments on purpose:
+measured against hideGit's diff backgrounds, the worst colour in each of the five syntect themes
+lands between 2.33:1 and 2.62:1 — below what this document guarantees for text. Rather than drop the
+guarantee for the pane people read longest, each colour that falls short is moved along lightness by
+bisection until it clears, and no further. Which syntect theme is used follows the palette's
+background luminance, not the theme's name, so a custom theme gets the right one too.
+
+Context lines lose their muting, because every line now carries its own colours. What separates
+added from removed is the marker glyph and the row background — which is what has to carry it
+anyway, since colour alone never does. A file whose extension syntect does not know, or a diff over
+4,000 lines, renders plain.
 
 ## Interaction rules
 
