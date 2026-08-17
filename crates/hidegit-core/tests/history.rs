@@ -774,22 +774,20 @@ fn an_interactive_plan_squashes_and_drops() {
     let backend = repo.backend();
 
     let base = id_of(repo.path(), "HEAD~3");
-    let plan = RebasePlan {
-        steps: vec![
-            RebaseStep {
-                action: RebaseAction::Pick,
-                commit: id_of(repo.path(), "HEAD~2"),
-            },
-            RebaseStep {
-                action: RebaseAction::Squash,
-                commit: id_of(repo.path(), "HEAD~1"),
-            },
-            RebaseStep {
-                action: RebaseAction::Drop,
-                commit: id_of(repo.path(), "HEAD"),
-            },
-        ],
-    };
+    let plan = RebasePlan::Steps(vec![
+        RebaseStep {
+            action: RebaseAction::Pick,
+            commit: id_of(repo.path(), "HEAD~2"),
+        },
+        RebaseStep {
+            action: RebaseAction::Squash,
+            commit: id_of(repo.path(), "HEAD~1"),
+        },
+        RebaseStep {
+            action: RebaseAction::Drop,
+            commit: id_of(repo.path(), "HEAD"),
+        },
+    ]);
 
     let outcome = backend
         .rebase(&base.to_hex(), &plan)
@@ -825,18 +823,16 @@ fn a_plan_reorders_commits() {
     let base = id_of(repo.path(), "HEAD~2");
     // The plan is applied in the order given, which is what makes reordering a
     // plan change rather than a separate operation.
-    let plan = RebasePlan {
-        steps: vec![
-            RebaseStep {
-                action: RebaseAction::Pick,
-                commit: id_of(repo.path(), "HEAD"),
-            },
-            RebaseStep {
-                action: RebaseAction::Pick,
-                commit: id_of(repo.path(), "HEAD~1"),
-            },
-        ],
-    };
+    let plan = RebasePlan::Steps(vec![
+        RebaseStep {
+            action: RebaseAction::Pick,
+            commit: id_of(repo.path(), "HEAD"),
+        },
+        RebaseStep {
+            action: RebaseAction::Pick,
+            commit: id_of(repo.path(), "HEAD~1"),
+        },
+    ]);
 
     backend
         .rebase(&base.to_hex(), &plan)
@@ -855,18 +851,16 @@ fn an_edit_step_stops_the_rebase_for_the_user() {
     let backend = repo.backend();
 
     let base = id_of(repo.path(), "HEAD~2");
-    let plan = RebasePlan {
-        steps: vec![
-            RebaseStep {
-                action: RebaseAction::Edit,
-                commit: id_of(repo.path(), "HEAD~1"),
-            },
-            RebaseStep {
-                action: RebaseAction::Pick,
-                commit: id_of(repo.path(), "HEAD"),
-            },
-        ],
-    };
+    let plan = RebasePlan::Steps(vec![
+        RebaseStep {
+            action: RebaseAction::Edit,
+            commit: id_of(repo.path(), "HEAD~1"),
+        },
+        RebaseStep {
+            action: RebaseAction::Pick,
+            commit: id_of(repo.path(), "HEAD"),
+        },
+    ]);
 
     // An `edit` step exits zero, so a backend that trusted the exit status
     // would report this finished while the repository is mid-rebase.
@@ -912,12 +906,10 @@ fn a_commit_subject_never_reaches_the_sequence_editor() {
     let backend = repo.backend();
 
     let base = id_of(repo.path(), "HEAD~1");
-    let plan = RebasePlan {
-        steps: vec![RebaseStep {
-            action: RebaseAction::Pick,
-            commit: id_of(repo.path(), "HEAD"),
-        }],
-    };
+    let plan = RebasePlan::Steps(vec![RebaseStep {
+        action: RebaseAction::Pick,
+        commit: id_of(repo.path(), "HEAD"),
+    }]);
 
     backend
         .rebase(&base.to_hex(), &plan)
@@ -1172,15 +1164,15 @@ fn the_preview_matches_what_the_plan_then_rebases() {
     let backend = repo.backend();
 
     let preview = backend.rebase_preview("main").expect("the preview reads");
-    let plan = RebasePlan {
-        steps: preview
+    let plan = RebasePlan::Steps(
+        preview
             .iter()
             .map(|c| RebaseStep {
                 action: RebaseAction::Pick,
                 commit: c.id,
             })
             .collect(),
-    };
+    );
 
     let outcome = backend.rebase("main", &plan).expect("the rebase succeeds");
 
@@ -1436,4 +1428,86 @@ fn search_ignores_case_in_both_directions() {
 
     assert_eq!(backend.search(&query("parser", 10)).unwrap().hits.len(), 1);
     assert_eq!(backend.search(&query("FIX", 10)).unwrap().hits.len(), 1);
+}
+
+// ---- autosquash ----------------------------------------------------------
+
+#[test]
+fn autosquash_folds_a_fixup_into_the_commit_it_names() {
+    // The reordering is Git's, not hideGit's: `--autosquash` rewrites the todo
+    // before the sequence editor sees it, and hideGit's editor accepts that
+    // file unedited. What this asserts is that the delegation is wired, and
+    // that the result is what `git rebase -i --autosquash` produces.
+    let repo = fixture()
+        .commit("A")
+        .branch("feature")
+        .commit("B")
+        .commit("C")
+        .edit("B.txt", "contents of B\nand the fix\n", "fixup! B")
+        .build();
+    let backend = repo.backend();
+
+    let outcome = backend
+        .rebase("main", &RebasePlan::Autosquash)
+        .expect("an autosquash rebase");
+    assert_eq!(outcome, SequenceOutcome::Completed);
+
+    let subjects = repo.git(["log", "--format=%s", "main..HEAD"]);
+    assert_eq!(
+        subjects.lines().collect::<Vec<_>>(),
+        vec!["C", "B"],
+        "the fixup was folded into B rather than replayed as its own commit"
+    );
+    // And it is the *content* that moved, not just the commit that vanished.
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("B.txt")).expect("readable"),
+        "contents of B\nand the fix\n"
+    );
+}
+
+#[test]
+fn an_ordinary_rebase_leaves_a_fixup_as_its_own_commit() {
+    // The other half of the same claim: without asking for it, nothing is
+    // reordered. Git only autosquashes when told to — unless the user set
+    // `rebase.autoSquash`, which is theirs to set and hideGit does not override.
+    let repo = fixture()
+        .commit("A")
+        .branch("feature")
+        .commit("B")
+        .edit("B.txt", "contents of B\nand the fix\n", "fixup! B")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .rebase("main", &RebasePlan::Ordinary)
+        .expect("an ordinary rebase");
+
+    let subjects = repo.git(["log", "--format=%s", "main..HEAD"]);
+    assert_eq!(
+        subjects.lines().collect::<Vec<_>>(),
+        vec!["fixup! B", "B"],
+        "an ordinary rebase replays what is there"
+    );
+}
+
+#[test]
+fn autosquash_with_nothing_to_squash_is_an_ordinary_replay() {
+    let repo = fixture()
+        .commit("A")
+        .branch("feature")
+        .commit("B")
+        .commit("C")
+        .build();
+    let backend = repo.backend();
+
+    backend
+        .rebase("main", &RebasePlan::Autosquash)
+        .expect("nothing to squash is not a failure");
+
+    assert_eq!(
+        repo.git(["log", "--format=%s", "main..HEAD"])
+            .lines()
+            .collect::<Vec<_>>(),
+        vec!["C", "B"]
+    );
 }

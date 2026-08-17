@@ -246,10 +246,39 @@ pub struct RebaseStep {
     pub commit: ObjectId,
 }
 
-/// The full plan for an interactive rebase, in application order.
+/// What kind of rebase to run.
+///
+/// An enum rather than a struct with a list and a flag, because two of the
+/// three are mutually exclusive by construction and a struct could hold both.
+/// `--autosquash` rewrites Git's todo list *before* the sequence editor runs,
+/// so a plan that replaced the file would discard exactly what autosquash did —
+/// a combination that has to be unrepresentable rather than documented as
+/// ignored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RebasePlan {
-    pub steps: Vec<RebaseStep>,
+pub enum RebasePlan {
+    /// Replay the commits as they are. No todo list and no sequence editor.
+    #[default]
+    Ordinary,
+    /// Git's own todo list, with `fixup!` and `squash!` commits moved under the
+    /// commits they name, accepted unedited.
+    ///
+    /// Git computes the ordering and hideGit does not touch it.
+    /// [ADR-0007](../../docs/adr/0007-rebase-plan-through-the-environment.md)
+    /// rejected re-implementing rebase precisely so that things like this stay
+    /// Git's, and stay identical to what the same user gets in a terminal.
+    Autosquash,
+    /// hideGit's own todo list, in application order, from the plan editor.
+    Steps(Vec<RebaseStep>),
+}
+
+impl RebasePlan {
+    /// The steps this plan carries, empty for the two that carry none.
+    pub fn steps(&self) -> &[RebaseStep] {
+        match self {
+            Self::Steps(steps) => steps,
+            Self::Ordinary | Self::Autosquash => &[],
+        }
+    }
 }
 
 /// How a rebase, cherry-pick or revert ended.

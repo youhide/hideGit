@@ -604,9 +604,20 @@ pub enum RepoMessage {
     MergeFinished(Box<Result<MergeOutcome, UiError>>),
     /// Asks to rebase the current branch onto `onto`, which confirms first:
     /// rebasing rewrites every commit it moves.
-    RebaseRequested(String),
+    ///
+    /// `autosquash` hands the reordering to Git, which moves each `fixup!` and
+    /// `squash!` commit under the one it names. It is carried from the request
+    /// through the confirmation rather than decided afterwards, so the dialog
+    /// can say which of the two is about to happen.
+    RebaseRequested {
+        onto: String,
+        autosquash: bool,
+    },
     /// The confirmation was accepted. Only ever sent by the dialog.
-    RebaseConfirmed(String),
+    RebaseConfirmed {
+        onto: String,
+        autosquash: bool,
+    },
     /// Opens the interactive plan editor for a rebase onto this ref. Nothing
     /// runs until the plan is started.
     RebasePlanRequested(String),
