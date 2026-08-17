@@ -85,6 +85,23 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     }
 
     sections = sections.push(Space::new().height(14));
+    sections = sections.push(section("Window", palette));
+    sections = sections.push(
+        checkbox(app.remember_geometry)
+            .label("Reopen at the last size and position")
+            .size(15.0)
+            .text_size(13.0)
+            .on_toggle(|_| Message::RememberGeometryToggled),
+    );
+    sections = sections.push(
+        // Says what "no" means, which is otherwise a guess: the alternative is
+        // not "wherever the window manager feels like", it is a fixed default.
+        text("Off, hideGit opens at its default size, centred.")
+            .size(11.0)
+            .color(palette.muted),
+    );
+
+    sections = sections.push(Space::new().height(14));
     sections = sections.push(section("Pull request alerts", palette));
 
     let enabled = app.alerts.enabled;

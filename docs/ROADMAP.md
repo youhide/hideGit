@@ -363,7 +363,8 @@ Everything between "works" and "someone who does not write Rust can install it".
   names every open repository with a GitHub remote plus anything already muted, which may well not be
   open: an entry that vanished from the panel the moment you closed its tab would be a setting you
   could not undo without editing the file. It is kept sorted, because it is written to a file people
-  read and diff.
+  read and diff. **`window.remember_geometry` has landed** too, saying on the panel what turning it
+  off actually does — the default size, centred — rather than leaving that to be guessed.
 
   **The panel used to lie.** Writing in place means refusing to overwrite a file somebody is
   part-way through editing, and that refusal — along with an unreadable file, a config directory

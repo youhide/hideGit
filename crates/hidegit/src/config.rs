@@ -395,6 +395,9 @@ pub fn save_settings(path: &Path, settings: &Settings) -> Result<(), SaveError> 
     let theme = doc["theme"].or_insert(Item::Table(toml_edit::Table::new()));
     theme["name"] = value(settings.theme.clone());
 
+    let window = doc["window"].or_insert(Item::Table(toml_edit::Table::new()));
+    window["remember_geometry"] = value(settings.remember_geometry);
+
     let alerts = doc["alerts"].or_insert(Item::Table(toml_edit::Table::new()));
     alerts["enabled"] = value(settings.alerts.enabled);
 
@@ -464,6 +467,8 @@ pub enum SaveError {
 pub struct Settings {
     pub theme: String,
     pub alerts: hidegit_forge::AlertPrefs,
+    /// Reopen at the size and position the window was last closed at.
+    pub remember_geometry: bool,
 }
 
 #[cfg(test)]
@@ -474,6 +479,7 @@ mod settings_tests {
         Settings {
             theme: theme.to_owned(),
             alerts: hidegit_forge::AlertPrefs::default(),
+            remember_geometry: true,
         }
     }
 
@@ -492,8 +498,9 @@ mod settings_tests {
              # picked to match my terminal\n\
              name = \"hidegit-dark\"\n\
              \n\
-             [window]\n\
-             remember_geometry = false\n",
+             [personal]\n\
+             # hideGit has never heard of this table\n\
+             note = \"kept\"\n",
         )
         .unwrap();
 
@@ -502,14 +509,32 @@ mod settings_tests {
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("# my settings, do not laugh"), "{after}");
         assert!(after.contains("# picked to match my terminal"), "{after}");
-        // A key this screen does not own is left exactly as it was.
-        assert!(after.contains("remember_geometry = false"), "{after}");
+        // A key hideGit does not know at all is left exactly as it was. This
+        // used to be checked with `remember_geometry`, which the panel has
+        // since taken ownership of — a table nothing in the schema mentions is
+        // the stronger version of the same property.
+        assert!(
+            after.contains("# hideGit has never heard of this table"),
+            "{after}"
+        );
+        assert!(after.contains(r#"note = "kept""#), "{after}");
         assert!(after.contains(r#"name = "hidegit-light""#), "{after}");
 
-        // And it still parses back into the config it came from.
+        // And a file without that table still parses back into the config it
+        // came from — `Config` denies unknown fields, so the two properties
+        // cannot be checked against the same file.
+        let path = dir.path().join("known.toml");
+        std::fs::write(&path, "# keep me\n[theme]\nname = \"hidegit-dark\"\n").unwrap();
+        save_settings(&path, &settings("hidegit-light")).expect("a writable file saves");
+
         let reloaded: Config = load(&path);
         assert_eq!(reloaded.theme.name, "hidegit-light");
-        assert!(!reloaded.window.remember_geometry);
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("# keep me"),
+            "the comment survived the round trip"
+        );
     }
 
     #[test]
@@ -563,6 +588,7 @@ mod settings_tests {
             &Settings {
                 theme: "hidegit-dark".to_owned(),
                 alerts,
+                remember_geometry: true,
             },
         )
         .expect("a writable file saves");
@@ -582,8 +608,8 @@ mod settings_tests {
         std::fs::write(
             &path,
             "# mine\n\
-             [window]\n\
-             remember_geometry = false\n\
+             [personal]\n\
+             note = \"kept\"\n\
              \n\
              [alerts.quiet_hours]\n\
              # I go to bed late\n\
@@ -600,14 +626,39 @@ mod settings_tests {
             &Settings {
                 theme: "hidegit-dark".to_owned(),
                 alerts,
+                remember_geometry: true,
             },
         )
         .expect("a writable file saves");
 
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("# I go to bed late"), "{after}");
-        assert!(after.contains("remember_geometry = false"), "{after}");
+        assert!(after.contains(r#"note = "kept""#), "{after}");
         assert!(after.contains("from = 2"), "{after}");
+    }
+
+    #[test]
+    fn the_geometry_preference_survives_the_file() {
+        // It is read at startup to decide the window's size and position, and
+        // was previously only reachable by editing the file by hand.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        save_settings(
+            &path,
+            &Settings {
+                remember_geometry: false,
+                ..settings("hidegit-dark")
+            },
+        )
+        .unwrap();
+
+        let reloaded: Config = load(&path);
+        assert!(!reloaded.window.remember_geometry);
+
+        save_settings(&path, &settings("hidegit-dark")).unwrap();
+        let reloaded: Config = load(&path);
+        assert!(reloaded.window.remember_geometry, "and back on again");
     }
 
     #[test]
@@ -625,6 +676,7 @@ mod settings_tests {
             &Settings {
                 theme: "hidegit-dark".to_owned(),
                 alerts,
+                remember_geometry: true,
             },
         )
         .expect("a writable file saves");
@@ -650,6 +702,7 @@ mod settings_tests {
             &Settings {
                 theme: "hidegit-dark".to_owned(),
                 alerts: hidegit_forge::AlertPrefs::default(),
+                remember_geometry: true,
             },
         )
         .expect("a writable file saves");

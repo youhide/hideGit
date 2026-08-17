@@ -1186,6 +1186,12 @@ pub struct App {
     pub focused: bool,
     /// Which alerts to send, and when not to.
     pub alerts: AlertPrefs,
+    /// Reopen at the size and position the window was last closed at.
+    ///
+    /// Held here only so the settings panel can show and change it. The window
+    /// itself belongs to the shell — `hidegit-ui` never reads it, and nothing
+    /// in this crate behaves differently either way.
+    pub remember_geometry: bool,
     next_toast_id: u64,
 }
 
@@ -1210,6 +1216,7 @@ impl Default for App {
             // than on demand.
             focused: true,
             alerts: AlertPrefs::default(),
+            remember_geometry: true,
             next_toast_id: 0,
         }
     }
