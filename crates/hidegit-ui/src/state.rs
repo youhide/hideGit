@@ -1164,6 +1164,12 @@ pub struct App {
     /// is nothing to hold and nothing to discard on close. Settings that only
     /// take effect on OK are settings people are afraid to explore.
     pub settings_open: bool,
+    /// The keyboard shortcut reference is open.
+    ///
+    /// Its own flag rather than a mode of the settings panel: it is opened from
+    /// a key, read, and closed, and putting it behind a settings tab would make
+    /// the answer to "what was that key again" three keystrokes away.
+    pub shortcuts_open: bool,
     /// Why the last settings change did not reach the file, if it did not.
     ///
     /// Set by whoever owns the file — the shell, not the interface — because
@@ -1209,6 +1215,7 @@ impl Default for App {
             theme: Theme::default(),
             themes: Theme::built_in(),
             settings_open: false,
+            shortcuts_open: false,
             settings_error: None,
             toasts: Vec::new(),
             confirming: None,

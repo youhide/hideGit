@@ -212,6 +212,20 @@ fn a_window_that_covers_nothing_says_so() {
 }
 
 #[test]
+fn the_shortcut_reference_lays_out_with_its_bindings() {
+    let mut app = app_with(1);
+    let _ = app.update(Message::ShortcutsRequested);
+
+    shows(&app, "Keyboard shortcuts");
+    shows(&app, "Remotes");
+    shows(&app, "Push");
+    shows(
+        &app,
+        crate::widget::shortcuts::chord_label("Cmd+Shift+U").as_str(),
+    );
+}
+
+#[test]
 fn the_settings_panel_lists_a_custom_theme_by_its_file_name() {
     // The two that ship are shown as "Dark" and "Light" — labels, not config
     // keys. A custom theme's name is one somebody chose, so it is shown as

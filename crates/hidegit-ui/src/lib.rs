@@ -30,6 +30,7 @@ pub mod widget {
     pub mod resolver;
     pub mod search;
     pub mod settings;
+    pub mod shortcuts;
     pub mod sidebar;
     pub mod staging;
     pub mod tabs;

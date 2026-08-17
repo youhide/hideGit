@@ -285,6 +285,10 @@ pub enum Message {
     /// One end of the quiet-hours window was set to an hour.
     QuietHourChosen(QuietBound, u8),
     /// A repository was muted or unmuted, keyed as `owner/name`.
+    /// The keyboard shortcut reference was asked for.
+    ShortcutsRequested,
+    /// …and dismissed.
+    ShortcutsDismissed,
     /// The window should — or should no longer — reopen where it was left.
     RememberGeometryToggled,
     RepositoryMuteToggled(String),

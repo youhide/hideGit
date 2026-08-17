@@ -465,8 +465,10 @@ and a new review thread both do notify.
 | `Cmd+Shift+O` | Clone repository — checked before the unshifted `O`, or it would open a picker |
 | `Cmd+1` … `Cmd+9` | Switch repository tab. Past the last tab does nothing rather than clamping to it |
 | `Cmd+,` | Settings |
+| `Cmd+/` | This table, on screen. Modified deliberately: a bare `?`, which terminal tools use, would hit the same hazard `Space` did and open the reference instead of typing the first character of a commit message |
 | **Navigation** | |
 | `↑` / `↓` | Move selection in the focused list |
+| `PageUp` / `PageDown` | Move by twenty |
 | `Tab` / `Shift+Tab` | Cycle panes: sidebar → graph → detail |
 | `Cmd+F` | Search commits — also a toolbar button, since a shortcut is how you use a thing you already know exists |
 | `Cmd+P` | Command palette — **not built** |
@@ -508,6 +510,18 @@ M2 deferred `Space` on the grounds that focus was not observable at all. That wa
 Shortcuts are user-remappable at M6. The scheme deliberately avoids fighting muscle memory built
 in terminal Git tools. Rows marked **not built** are bindings this table has promised since M1 and
 that nothing dispatches yet; they are listed rather than removed so the gap is visible.
+
+**This table is on `Cmd+/`, and a test keeps the two in step.** The reference panel is a table in
+`widget/shortcuts.rs` rather than prose, and a test parses every chord in it, feeds each to the
+binding function, and compares the two sets **in both directions** — a row for a binding that does
+not exist fails, and so does a binding added without a row. A reference that drifts is worse than
+none, because it is believed.
+
+That test found three bindings nobody chose. `↑`, `↓`, `PageUp`, `PageDown` and `Tab` were matched
+on the key alone, so `Cmd+↑` moved the selection and `Cmd+Tab` cycled panes — on macOS both mean
+something else entirely. And a panel that owns the keyboard only owned the unmodified half of it, so
+`Cmd+Esc` closed the search and `Cmd+Enter` jumped to a commit from inside it. All of them are now
+guarded; a panel that owns the keyboard owns all of it.
 
 ## Theming
 

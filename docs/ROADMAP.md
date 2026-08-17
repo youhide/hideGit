@@ -337,7 +337,11 @@ Everything between "works" and "someone who does not write Rust can install it".
   wrote down — focus turned out to be observable through a `find_focused` widget operation, which is
   not the signal M2 was reaching for. What is still missing is named in
   [UI_SPEC](./UI_SPEC.md#keyboard-shortcuts) rather than left looking implemented: the command
-  palette, the `G` chords, repository tabs, and a shortcut reference someone can actually read
+  palette and the `G` chords. **The shortcut reference has landed** on `Cmd+/`, as a table the
+  binding function is tested against in both directions — a row for a binding that does not exist
+  fails, and so does a binding added without a row, because a reference that drifts is worse than
+  none. Writing it that way turned up three bindings nobody chose: `Cmd+↑` moved the selection,
+  `Cmd+Tab` cycled panes, and `Cmd+Esc` closed the search from inside it
 - **Drag-and-drop on the graph** for merge and rebase, with a confirmation step — deferred from
   [M5](#m5--history-operations). **Landed.** A press becomes a drag only past a threshold, so
   clicking a badge still selects; the drop opens the action sheet rather than running anything;
