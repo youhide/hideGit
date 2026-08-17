@@ -20,8 +20,9 @@ use crate::model::{
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FastForward, FetchOpts, FetchOutcome,
     ForceMode, MergeOpts, MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome,
-    PushSpec, RebaseAction, RebasePlan, ResetMode, SearchQuery, SearchResults, SequenceControl,
-    SequenceOutcome, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec, WorktreeSpec,
+    PushSpec, RebaseAction, RebasePlan, RebaseStep, ResetMode, SearchQuery, SearchResults,
+    SequenceControl, SequenceOutcome, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec,
+    WorktreeSpec,
 };
 use crate::process::GitCommand;
 
@@ -997,26 +998,39 @@ impl GitBackend for HybridBackend {
             // cannot see, and the task hangs forever with no way to answer it.
             .env("GIT_EDITOR", "true");
 
-        if plan.steps.is_empty() {
-            // No plan is an ordinary rebase, which needs no todo list and no
-            // sequence editor at all.
-            command = command.operands([onto]);
-        } else {
+        command = match plan {
+            // An ordinary rebase needs no todo list and no sequence editor.
+            RebasePlan::Ordinary => command.operands([onto]),
+
+            // Git generates the todo, moves the `fixup!` and `squash!` commits
+            // under the ones they name, and hands the result to the sequence
+            // editor. `true` accepts that file unedited, which is the whole
+            // point: the reordering is Git's, so it is identical to what the
+            // same user gets in a terminal. A plan here would overwrite the
+            // file and throw away exactly what `--autosquash` did.
+            //
+            // Still a constant string literal, so ADR-0007 holds: nothing from
+            // the repository reaches `sh`.
+            RebasePlan::Autosquash => command
+                .args(["--interactive", "--autosquash"])
+                .env("GIT_SEQUENCE_EDITOR", "true")
+                .operands([onto]),
+
             // The plan goes in an environment variable and the sequence editor
             // is a fixed string that copies it into the todo file Git hands it.
             // The alternative — interpolating the plan into the editor command —
             // would put commit ids and actions through `sh`. Keeping the code
             // constant and the data in a variable means nothing from the plan is
             // ever parsed as shell syntax. See ADR-0007.
-            command = command
+            RebasePlan::Steps(steps) => command
                 .arg("--interactive")
-                .env("HIDEGIT_REBASE_TODO", plan_to_todo(plan))
+                .env("HIDEGIT_REBASE_TODO", plan_to_todo(steps))
                 .env(
                     "GIT_SEQUENCE_EDITOR",
                     r#"printf "%s" "$HIDEGIT_REBASE_TODO" >"#,
                 )
-                .operands([onto]);
-        }
+                .operands([onto]),
+        };
 
         let result = command.cwd(&self.workdir).takes_locks().run();
         self.invalidate();
@@ -1150,9 +1164,9 @@ impl GitBackend for HybridBackend {
 /// would silently keep the old message — the one thing a reword must not do.
 /// `edit` stops after applying the commit, which hands control back so the
 /// message can be changed by an amend from hideGit's own editor.
-fn plan_to_todo(plan: &RebasePlan) -> String {
+fn plan_to_todo(steps: &[RebaseStep]) -> String {
     let mut todo = String::new();
-    for step in &plan.steps {
+    for step in steps {
         let verb = match step.action {
             RebaseAction::Pick => "pick",
             RebaseAction::Reword | RebaseAction::Edit => "edit",

@@ -2385,7 +2385,13 @@ impl Hidegit {
                         )
                         .item(
                             format!("Rebase {head} onto {other}…"),
-                            Message::Repo(index, RepoMessage::RebaseRequested(other.clone())),
+                            Message::Repo(
+                                index,
+                                RepoMessage::RebaseRequested {
+                                    onto: other.clone(),
+                                    autosquash: false,
+                                },
+                            ),
                         )
                         .item(
                             format!("Rebase {head} onto {other}, interactively…"),
@@ -2417,24 +2423,47 @@ impl Hidegit {
                 }
             },
 
-            RepoMessage::RebaseRequested(onto) => {
+            RepoMessage::RebaseRequested { onto, autosquash } => {
+                let rewritten = format!(
+                    "Every commit on this branch that is not already on {onto} is rewritten \
+                     with a new id. If the branch is pushed, the next push has to be forced."
+                );
                 self.app.confirming = Some(Confirmation {
-                    title: format!("Rebase onto {onto}?"),
-                    body: format!(
-                        "Every commit on this branch that is not already on {onto} is rewritten \
-                         with a new id. If the branch is pushed, the next push has to be forced."
-                    ),
+                    title: if autosquash {
+                        format!("Rebase onto {onto}, squashing fixups?")
+                    } else {
+                        format!("Rebase onto {onto}?")
+                    },
+                    // The extra sentence, not a different one: squashing is a
+                    // rebase plus a reordering, and the warning about rewritten
+                    // ids applies just as much.
+                    body: if autosquash {
+                        format!(
+                            "{rewritten} Commits whose message begins with `fixup!` or `squash!` \
+                             are folded into the commit they name."
+                        )
+                    } else {
+                        rewritten
+                    },
                     confirm_label: "Rebase".to_owned(),
-                    action: Box::new(Message::Repo(index, RepoMessage::RebaseConfirmed(onto))),
+                    action: Box::new(Message::Repo(
+                        index,
+                        RepoMessage::RebaseConfirmed { onto, autosquash },
+                    )),
                 });
                 Task::none()
             }
 
-            RepoMessage::RebaseConfirmed(onto) => {
+            RepoMessage::RebaseConfirmed { onto, autosquash } => {
                 let backend = Arc::clone(&repo.backend);
-                // An empty plan is an ordinary rebase. The plan editor is what
-                // fills one in, and it is not built yet.
-                blocking(move || backend.rebase(&onto, &RebasePlan::default()))
+                // Never `Steps` from here: that plan comes from the editor,
+                // which starts its rebase itself.
+                let plan = if autosquash {
+                    RebasePlan::Autosquash
+                } else {
+                    RebasePlan::Ordinary
+                };
+                blocking(move || backend.rebase(&onto, &plan))
                     .map(move |r| Message::Repo(index, RepoMessage::SequenceFinished(Box::new(r))))
             }
 
@@ -4392,7 +4421,10 @@ mod tests {
 
         let _ = app.update(Message::Repo(
             0,
-            RepoMessage::RebaseRequested("main".to_owned()),
+            RepoMessage::RebaseRequested {
+                onto: "main".to_owned(),
+                autosquash: false,
+            },
         ));
 
         let confirming = app.app.confirming.as_ref().expect("a rebase confirms");
@@ -4407,7 +4439,55 @@ mod tests {
         assert!(
             matches!(
                 &*confirming.action,
-                Message::Repo(0, RepoMessage::RebaseConfirmed(onto)) if onto == "main"
+                Message::Repo(
+                    0,
+                    RepoMessage::RebaseConfirmed {
+                        onto,
+                        autosquash: false
+                    }
+                ) if onto == "main"
+            ),
+            "the confirm button carries {:?}",
+            confirming.action
+        );
+    }
+
+    #[test]
+    fn asking_to_squash_fixups_says_so_in_the_dialog_and_carries_it_through() {
+        // The two rebases differ in how many commits they rewrite, so which one
+        // is about to run has to be visible before it does — and the answer has
+        // to survive the dialog rather than being decided afterwards.
+        let mut app = app_with(3);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::RebaseRequested {
+                onto: "main".to_owned(),
+                autosquash: true,
+            },
+        ));
+
+        let confirming = app.app.confirming.as_ref().expect("a rebase confirms");
+        assert!(
+            confirming.body.contains("fixup!"),
+            "the dialog says what squashing does, got {:?}",
+            confirming.body
+        );
+        assert!(
+            confirming.body.contains("new id"),
+            "and still warns that commits are rewritten, got {:?}",
+            confirming.body
+        );
+        assert!(
+            matches!(
+                &*confirming.action,
+                Message::Repo(
+                    0,
+                    RepoMessage::RebaseConfirmed {
+                        autosquash: true,
+                        ..
+                    }
+                )
             ),
             "the confirm button carries {:?}",
             confirming.action
@@ -4722,7 +4802,7 @@ mod tests {
 
         let editor = plan_of(&app);
         let on_screen: Vec<_> = editor.steps.iter().map(|s| s.commit.id).collect();
-        let handed_over: Vec<_> = editor.plan().steps.iter().map(|s| s.commit).collect();
+        let handed_over: Vec<_> = editor.plan().steps().iter().map(|s| s.commit).collect();
 
         assert_eq!(on_screen, handed_over);
     }

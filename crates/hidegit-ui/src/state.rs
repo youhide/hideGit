@@ -917,16 +917,15 @@ impl RebaseEditor {
 
     /// The plan as the backend takes it.
     pub fn plan(&self) -> RebasePlan {
-        RebasePlan {
-            steps: self
-                .steps
+        RebasePlan::Steps(
+            self.steps
                 .iter()
                 .map(|s| RebaseStep {
                     action: s.action,
                     commit: s.commit.id,
                 })
                 .collect(),
-        }
+        )
     }
 
     /// How many commits survive the plan.

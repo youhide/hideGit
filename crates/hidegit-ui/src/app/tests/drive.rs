@@ -500,3 +500,74 @@ mod new_worktree {
         );
     }
 }
+
+/// Which rebase the confirmed request actually runs.
+#[cfg(test)]
+mod autosquash {
+    use hidegit_core::backend::WriteCall;
+    use hidegit_core::ops::RebasePlan;
+
+    use super::*;
+
+    fn app_with_fake() -> (Hidegit, Arc<FakeBackend>) {
+        let fake = Arc::new(FakeBackend::new().with_commits(commits(3)));
+        let mut app = Hidegit::default();
+        let mut opened = opened(3);
+        opened.backend = Arc::clone(&fake) as Arc<dyn GitBackend>;
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+        (app, fake)
+    }
+
+    fn rebase_plan(fake: &FakeBackend) -> RebasePlan {
+        fake.writes()
+            .into_iter()
+            .find_map(|call| match call {
+                WriteCall::Rebase { plan, .. } => Some(plan),
+                _ => None,
+            })
+            .expect("a rebase reached the backend")
+    }
+
+    #[test]
+    fn confirming_a_squashing_rebase_asks_git_to_squash() {
+        // The dialog carrying the flag is worth nothing if the call underneath
+        // drops it, and the two are far enough apart that only running the task
+        // connects them.
+        let (mut app, fake) = app_with_fake();
+
+        let _ = update_and_drive(
+            &mut app,
+            Message::Repo(
+                0,
+                RepoMessage::RebaseConfirmed {
+                    onto: "main".to_owned(),
+                    autosquash: true,
+                },
+            ),
+        );
+
+        assert_eq!(rebase_plan(&fake), RebasePlan::Autosquash);
+    }
+
+    #[test]
+    fn confirming_a_plain_rebase_does_not() {
+        let (mut app, fake) = app_with_fake();
+
+        let _ = update_and_drive(
+            &mut app,
+            Message::Repo(
+                0,
+                RepoMessage::RebaseConfirmed {
+                    onto: "main".to_owned(),
+                    autosquash: false,
+                },
+            ),
+        );
+
+        assert_eq!(
+            rebase_plan(&fake),
+            RebasePlan::Ordinary,
+            "a plain rebase must not quietly rewrite more than it said it would"
+        );
+    }
+}

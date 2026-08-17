@@ -207,6 +207,16 @@ acquires a `.git`, and `feat/graph` is not a directory name.
 outright, and a control that always fails is worse than an absent one. The rest of that branch's
 actions — merge, rebase, rename, delete — are unaffected and stay.
 
+**"Squashing fixups" is its own sheet entry, not a checkbox on the plain rebase.** The same reason
+the interactive form is separate: which one you get must not depend on a toggle you might not have
+noticed, and this one rewrites more commits than the plain form does. Its confirmation says so —
+the ordinary warning about rewritten ids, plus a sentence naming what `fixup!` and `squash!` do —
+because the two differ in *how much* they rewrite and that has to be visible before it happens.
+
+The reordering itself is Git's. `--autosquash` rewrites the todo list before the sequence editor
+runs, so hideGit hands Git the flag and accepts the todo unedited rather than computing the ordering
+itself; the result is identical to what the same user gets in a terminal.
+
 **A worktree row carries a `⋯` only where an action would work.** Three rows have none: the **main**
 worktree, which cannot be removed; the **current** one, because `git worktree remove` will not take
 the directory you are standing in; and a **locked** one, because locking it is how the user said

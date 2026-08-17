@@ -537,7 +537,27 @@ fn branch_sheet(
         );
         sheet = sheet.item(
             format!("Rebase {head} onto {name}…"),
-            Message::Repo(index, RepoMessage::RebaseRequested(name.clone())),
+            Message::Repo(
+                index,
+                RepoMessage::RebaseRequested {
+                    onto: name.clone(),
+                    autosquash: false,
+                },
+            ),
+        );
+        // Its own entry rather than a checkbox on the first, for the reason the
+        // interactive form is: which one you get must not depend on a toggle
+        // you might not have noticed, and this one silently rewrites more
+        // commits than the plain form does.
+        sheet = sheet.item(
+            format!("Rebase {head} onto {name}, squashing fixups…"),
+            Message::Repo(
+                index,
+                RepoMessage::RebaseRequested {
+                    onto: name.clone(),
+                    autosquash: true,
+                },
+            ),
         );
         // The interactive form is a separate entry rather than a checkbox on
         // the first: one runs immediately after a confirmation, the other opens
@@ -1235,6 +1255,39 @@ mod tests {
             "refs/heads/side"
         ));
         assert!(!held_elsewhere(&[side], "refs/heads/other"));
+    }
+
+    #[test]
+    fn squashing_fixups_is_its_own_entry_rather_than_a_toggle_on_the_plain_rebase() {
+        // Which one you get must not depend on a toggle you might not have
+        // noticed, and this one silently rewrites more commits than the plain
+        // form does.
+        let sheet = branch_sheet(
+            &branch("feat/graph", None),
+            0,
+            false,
+            2,
+            Some("main"),
+            false,
+        );
+
+        let asks: Vec<bool> = sheet
+            .items
+            .iter()
+            .filter_map(|item| match &item.message {
+                Message::Repo(_, RepoMessage::RebaseRequested { autosquash, .. }) => {
+                    Some(*autosquash)
+                }
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            asks,
+            vec![false, true],
+            "both forms are offered, plain first: {:?}",
+            sheet.items.iter().map(|i| &i.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]
