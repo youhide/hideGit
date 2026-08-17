@@ -21,7 +21,7 @@ use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FastForward, FetchOpts, FetchOutcome,
     ForceMode, MergeOpts, MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome,
     PushSpec, RebaseAction, RebasePlan, ResetMode, SearchQuery, SearchResults, SequenceControl,
-    SequenceOutcome, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec,
+    SequenceOutcome, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec, WorktreeSpec,
 };
 use crate::process::GitCommand;
 
@@ -597,6 +597,49 @@ impl GitBackend for HybridBackend {
     fn delete_tag(&self, name: &str) -> Result<(), GitError> {
         self.guard_index()?;
         self.write(GitCommand::new("tag").arg("--delete").operands([name]))
+    }
+
+    fn add_worktree(&self, path: &Path, spec: &WorktreeSpec) -> Result<(), GitError> {
+        self.guard_index()?;
+
+        let mut command = GitCommand::new("worktree").arg("add");
+        if let Some(branch) = &spec.new_branch {
+            // `-b<name>`, glued. `git worktree add` has **no long form** for
+            // `-b` — `--branch=` is rejected outright — so the usual
+            // `--opt=value` shape is unavailable here, and `-b` followed by the
+            // name as a separate argument is not equivalent: git's option
+            // parser reads a dash-leading next argument as a flag rather than
+            // as the value. Gluing keeps the name one argv element and one
+            // *value*, which is the property that matters.
+            command = command.arg(format!("-b{branch}"));
+        }
+
+        // `worktree add` takes a path and then a commit-ish, and it does accept
+        // `--` before them — checked against `git` rather than assumed. Both
+        // come from the user, so both belong after the separator.
+        self.write(command.operands([path.as_os_str(), Self::start_point(&spec.start).as_ref()]))
+    }
+
+    fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), GitError> {
+        self.guard_index()?;
+
+        let mut command = GitCommand::new("worktree").arg("remove");
+        if force {
+            command = command.arg("--force");
+        }
+        self.write(command.operands([path]))
+    }
+
+    fn prune_worktrees(&self) -> Result<(), GitError> {
+        self.guard_index()?;
+        // No operands at all, so no separator: `git worktree prune` takes none,
+        // and a bare `--` on a command that accepts nothing after it is noise.
+        //
+        // No flags either. `prune` offers only `-n`, `-v` and `--expire`, and
+        // none of them overrides a lock — so "a locked worktree survives being
+        // pruned" is a guarantee of git's rather than a choice made here, and
+        // there is no argument this could pass that would change it.
+        self.write(GitCommand::new("worktree").arg("prune"))
     }
 
     fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError> {

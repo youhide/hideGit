@@ -22,6 +22,7 @@ use crate::ops::{
     MergeOutcome, Patch, ProgressSink, ProgressUpdate, PullOpts, PullOutcome, PushOutcome,
     PushSpec, RebasePlan, ResetMode, SearchField, SearchHit, SearchQuery, SearchResults,
     SequenceControl, SequenceOutcome, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec,
+    WorktreeSpec,
 };
 
 /// An error the fake should return instead of data.
@@ -97,6 +98,15 @@ pub enum WriteCall {
         url: String,
     },
     RemoveRemote(String),
+    AddWorktree {
+        path: PathBuf,
+        spec: WorktreeSpec,
+    },
+    RemoveWorktree {
+        path: PathBuf,
+        force: bool,
+    },
+    PruneWorktrees,
     Fetch {
         remote: String,
         opts: FetchOpts,
@@ -561,6 +571,24 @@ impl GitBackend for FakeBackend {
 
     fn delete_tag(&self, name: &str) -> Result<(), GitError> {
         self.record(WriteCall::DeleteTag(name.to_owned()))
+    }
+
+    fn add_worktree(&self, path: &Path, spec: &WorktreeSpec) -> Result<(), GitError> {
+        self.record(WriteCall::AddWorktree {
+            path: path.to_path_buf(),
+            spec: spec.clone(),
+        })
+    }
+
+    fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), GitError> {
+        self.record(WriteCall::RemoveWorktree {
+            path: path.to_path_buf(),
+            force,
+        })
+    }
+
+    fn prune_worktrees(&self) -> Result<(), GitError> {
+        self.record(WriteCall::PruneWorktrees)
     }
 
     fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError> {

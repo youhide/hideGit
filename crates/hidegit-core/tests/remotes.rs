@@ -17,6 +17,7 @@ use hidegit_core::model::{DiffTarget, Divergence, Head, RevSpec, SubmoduleState}
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, FetchOpts, ForceMode, NoProgress, ProgressSink, ProgressUpdate,
     PullOpts, PullOutcome, PushSpec, StartPoint, StashOp, StashOutcome, SubmoduleUpdate, TagSpec,
+    WorktreeSpec,
 };
 use hidegit_core::{GitError, ObjectId};
 
@@ -1773,5 +1774,165 @@ fn updating_a_path_that_is_not_a_submodule_fails_with_gits_own_words() {
     assert!(
         error.to_string().contains("not-a-submodule"),
         "git's own message names the path, and it reaches the user: {error}"
+    );
+}
+
+// ---- worktrees -----------------------------------------------------------
+
+#[test]
+fn adding_a_worktree_creates_a_checkout_on_a_new_branch() {
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+    let scratch = tempfile::tempdir().expect("a temporary directory");
+    let at = scratch.path().join("side");
+
+    backend
+        .add_worktree(
+            &at,
+            &WorktreeSpec {
+                new_branch: Some("side".to_owned()),
+                start: StartPoint::Head,
+            },
+        )
+        .expect("a worktree on a new branch");
+
+    // Against the filesystem and real git, not against hideGit's own reader.
+    assert!(at.join("A.txt").is_file(), "the checkout is actually there");
+    assert_eq!(
+        Repo::git_in(&at, ["rev-parse", "--abbrev-ref", "HEAD"]),
+        "side",
+        "git agrees the new worktree is on the new branch"
+    );
+
+    let worktrees = backend.worktrees().expect("worktrees are readable");
+    assert_eq!(
+        worktrees.len(),
+        2,
+        "the read side sees it without reopening"
+    );
+}
+
+#[test]
+fn adding_a_worktree_on_a_branch_checked_out_elsewhere_is_refused() {
+    // The one rule worktrees have. hideGit does not paper over it: a second
+    // checkout that quietly became something else is worse than a refusal.
+    let repo = fixture().commit("A").build();
+    let backend = repo.backend();
+    let scratch = tempfile::tempdir().expect("a temporary directory");
+
+    let error = backend
+        .add_worktree(
+            &scratch.path().join("dup"),
+            &WorktreeSpec {
+                new_branch: None,
+                start: StartPoint::Ref("main".to_owned()),
+            },
+        )
+        .expect_err("main is already checked out in the main worktree");
+
+    assert!(
+        error.to_string().contains("main"),
+        "git's own message names the branch, and it reaches the user: {error}"
+    );
+    assert!(
+        !scratch.path().join("dup").exists(),
+        "a refused add leaves nothing behind"
+    );
+}
+
+#[test]
+fn removing_a_worktree_takes_the_checkout_and_the_registration_with_it() {
+    let repo = fixture().commit("A").with_worktree("side").build();
+    let backend = repo.backend();
+    let at = repo.worktree_path("side").to_path_buf();
+    assert!(at.is_dir(), "the fixture made one");
+
+    backend
+        .remove_worktree(&at, false)
+        .expect("a clean worktree removes without force");
+
+    assert!(!at.exists(), "the directory went too");
+    assert_eq!(
+        backend.worktrees().expect("readable").len(),
+        1,
+        "and so did the registration"
+    );
+}
+
+#[test]
+fn removing_a_worktree_with_uncommitted_work_needs_force() {
+    // The safe form refuses, and `force` is what the user chooses afterwards —
+    // never a silent retry.
+    let repo = fixture().commit("A").with_worktree("side").build();
+    let backend = repo.backend();
+    let at = repo.worktree_path("side").to_path_buf();
+    std::fs::write(at.join("A.txt"), "edited in the other checkout\n")
+        .expect("a writable worktree");
+
+    backend
+        .remove_worktree(&at, false)
+        .expect_err("a dirty worktree is not removed by the safe form");
+    assert!(at.is_dir(), "and nothing was taken");
+
+    backend
+        .remove_worktree(&at, true)
+        .expect("force is what the user chooses afterwards");
+    assert!(!at.exists());
+}
+
+#[test]
+fn pruning_clears_a_registration_whose_directory_is_gone() {
+    let repo = fixture()
+        .commit("A")
+        .with_worktree("side")
+        .orphan_worktree("side")
+        .build();
+    let backend = repo.backend();
+    assert_eq!(backend.worktrees().expect("readable").len(), 2);
+
+    backend.prune_worktrees().expect("pruning a stale entry");
+
+    assert_eq!(
+        backend.worktrees().expect("readable").len(),
+        1,
+        "the stale registration was holding a branch nothing could check out"
+    );
+}
+
+#[test]
+fn pruning_with_nothing_stale_is_not_a_failure() {
+    // "There was nothing to prune" is the answer, not an error.
+    let repo = fixture().commit("A").with_worktree("side").build();
+    let backend = repo.backend();
+
+    backend
+        .prune_worktrees()
+        .expect("nothing stale is not an error");
+
+    assert_eq!(
+        backend.worktrees().expect("readable").len(),
+        2,
+        "a live worktree is not stale"
+    );
+}
+
+#[test]
+fn pruning_leaves_a_locked_worktree_alone_even_when_its_directory_is_gone() {
+    // Which is what locking one is for: a checkout on a drive that is not
+    // always plugged in looks exactly like a stale registration.
+    let repo = fixture()
+        .commit("A")
+        .with_worktree("side")
+        .lock_worktree("side", "on the external drive")
+        .orphan_worktree("side")
+        .build();
+    let backend = repo.backend();
+
+    backend.prune_worktrees().expect("pruning succeeds");
+
+    assert_eq!(
+        backend.worktrees().expect("readable").len(),
+        2,
+        "the lock is what stops it being pruned"
     );
 }

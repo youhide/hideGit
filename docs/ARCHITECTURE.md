@@ -144,6 +144,9 @@ pub trait GitBackend: Send + Sync + Debug {
     fn delete_branch(&self, name: &str, force: bool) -> Result<(), GitError>;
     fn create_tag(&self, spec: &TagSpec) -> Result<(), GitError>;
     fn delete_tag(&self, name: &str) -> Result<(), GitError>;
+    fn add_worktree(&self, path: &Path, spec: &WorktreeSpec) -> Result<(), GitError>;
+    fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), GitError>;
+    fn prune_worktrees(&self) -> Result<(), GitError>;
     fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError>;
     fn set_remote_url(&self, name: &str, url: &str) -> Result<(), GitError>;
     fn remove_remote(&self, name: &str) -> Result<(), GitError>;

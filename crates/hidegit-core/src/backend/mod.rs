@@ -39,7 +39,7 @@ use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
     MergeOutcome, Patch, ProgressSink, PullOpts, PullOutcome, PushOutcome, PushSpec, RebasePlan,
     ResetMode, SearchQuery, SearchResults, SequenceControl, SequenceOutcome, StartPoint, StashOp,
-    StashOutcome, SubmoduleUpdate, TagSpec,
+    StashOutcome, SubmoduleUpdate, TagSpec, WorktreeSpec,
 };
 
 /// Everything hideGit can ask of a repository.
@@ -193,6 +193,28 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     fn create_tag(&self, spec: &TagSpec) -> Result<(), GitError>;
 
     fn delete_tag(&self, name: &str) -> Result<(), GitError>;
+
+    /// Creates a checkout at `path`, registered against this repository.
+    ///
+    /// Fails rather than choosing for the user when the branch is already
+    /// checked out somewhere else: that is the one rule worktrees have, and
+    /// hiding it would make the second checkout silently a different thing from
+    /// what was asked for.
+    fn add_worktree(&self, path: &Path, spec: &WorktreeSpec) -> Result<(), GitError>;
+
+    /// Removes a checkout and its registration.
+    ///
+    /// `force` is what allows removing one with uncommitted changes or a
+    /// missing directory, and it is never a silent retry after the safe form
+    /// was refused — the same rule [`GitBackend::delete_branch`] follows.
+    fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), GitError>;
+
+    /// Clears registrations whose directory is gone.
+    ///
+    /// Succeeds with nothing to do, because "there was nothing stale" is the
+    /// answer rather than a failure. A locked worktree is left alone, which is
+    /// what locking one is for.
+    fn prune_worktrees(&self) -> Result<(), GitError>;
 
     fn add_remote(&self, name: &str, url: &str) -> Result<(), GitError>;
 
