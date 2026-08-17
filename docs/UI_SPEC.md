@@ -459,6 +459,11 @@ Two modes, toggleable and remembered per user: **unified** and **side-by-side**.
   when a file moves into or out of it — a change of *storage* rather than of content, which a
   three-line pointer diff would say neither of. This needs no `git-lfs` installed: the pointer is a
   text file, and recognising it is reading, not tooling
+- **Opening a repository that uses LFS without `git-lfs` installed raises a toast naming the tool.**
+  Said on the way in, because the symptom arrives before the question does: pointer text where the
+  content should be reads as corruption, and naming what is missing is the whole fix. Read once, at
+  open — neither half of the question changes while a repository is on screen, and a toast that came
+  back on every file save would be worse than what it reports
 - Syntax highlighting deferred past M1 — correct diffing first
 
 ## Conflict resolver

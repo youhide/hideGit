@@ -208,6 +208,11 @@ pub struct OpenedRepository {
     pub remotes: Vec<Remote>,
     pub submodules: Vec<Submodule>,
     pub worktrees: Vec<Worktree>,
+    /// The repository tracks something with Git LFS **and** `git lfs` is not
+    /// installed. Read once, at open: neither half changes while a repository
+    /// is on screen, and a toast that reappeared on every file save would be
+    /// worse than the problem it reports.
+    pub needs_lfs: bool,
     pub total: usize,
     pub first_page: Vec<Commit>,
 }

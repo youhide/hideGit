@@ -534,6 +534,22 @@ fn parse_version(line: &str) -> Option<Version> {
     })
 }
 
+/// Whether `git lfs` answers at all.
+///
+/// The question is only ever "is the tool there", never which version, because
+/// hideGit does not drive it — Git does, through the clean and smudge filters a
+/// repository's own `.gitattributes` configures. What this changes is what
+/// hideGit can *tell* the user: an LFS repository opened without the tool
+/// checks out pointer files everywhere, which looks like corruption and is not.
+///
+/// Deliberately not parsed. `git lfs version` prints `git-lfs/3.4.1 (GitHub;
+/// …)` rather than anything resembling `git --version`, and hideGit has no
+/// minimum to enforce, so reading a number out of it would be inventing a
+/// requirement to go with it.
+pub fn lfs_available() -> bool {
+    GitCommand::new("lfs").arg("version").run().is_ok()
+}
+
 /// Whether a stale `index.lock` is sitting in `git_dir`.
 ///
 /// Cancelling an operation kills the child process, and a killed `git` may

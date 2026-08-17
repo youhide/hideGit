@@ -135,6 +135,21 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     /// checked out in another.
     fn worktrees(&self) -> Result<Vec<Worktree>, GitError>;
 
+    /// Whether anything in this repository is tracked with Git LFS.
+    ///
+    /// Reads the attribute files rather than asking `git lfs`, because the
+    /// question is what the *repository* declares and that is answerable with
+    /// or without the tool installed — which is exactly the situation worth
+    /// reporting.
+    ///
+    /// The root `.gitattributes` and `.git/info/attributes` only. `git lfs
+    /// track` writes to the first and a user may have written the second;
+    /// attribute files in subdirectories are legal and not scanned, because
+    /// walking the tree on every open to answer a yes/no question is not worth
+    /// what it costs. A repository that tracks LFS only from a nested file
+    /// therefore answers `false` — stated here rather than discovered.
+    fn uses_lfs(&self) -> Result<bool, GitError>;
+
     /// Ahead/behind for every local branch that has an upstream, keyed by the
     /// branch's full ref name.
     ///
