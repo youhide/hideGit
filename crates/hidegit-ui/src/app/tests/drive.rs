@@ -163,3 +163,148 @@ mod paging {
         );
     }
 }
+
+/// Submodule updates, from the row to the backend and back.
+#[cfg(test)]
+mod submodules {
+    use hidegit_core::backend::WriteCall;
+    use hidegit_core::model::Submodule;
+    use hidegit_core::ops::SubmoduleUpdate;
+
+    use super::*;
+
+    fn submodule(recorded: Option<&str>, checked_out: Option<&str>) -> Submodule {
+        let id = |hex: &str| ObjectId::from_hex(&hex.repeat(40)).expect("valid hex");
+
+        Submodule {
+            name: "vendor/lib".to_owned(),
+            path: PathBuf::from("vendor/lib"),
+            url: "https://example.invalid/lib.git".to_owned(),
+            branch: None,
+            recorded: recorded.map(id),
+            checked_out: checked_out.map(id),
+        }
+    }
+
+    /// An app whose backend records what is asked of it, with one submodule.
+    fn app_with_submodule(submodules: Vec<Submodule>) -> (Hidegit, Arc<FakeBackend>) {
+        let fake = Arc::new(
+            FakeBackend::new()
+                .with_commits(commits(3))
+                .with_submodules(submodules.clone()),
+        );
+        let mut app = Hidegit::default();
+        let mut opened = opened(3);
+        opened.backend = Arc::clone(&fake) as Arc<dyn GitBackend>;
+        opened.submodules = submodules;
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+        (app, fake)
+    }
+
+    #[test]
+    fn setting_up_a_submodule_reaches_the_backend_with_init() {
+        let (mut app, fake) = app_with_submodule(vec![submodule(Some("a"), None)]);
+
+        let _ = update_and_drive(
+            &mut app,
+            Message::Repo(
+                0,
+                RepoMessage::SubmoduleUpdateRequested {
+                    path: PathBuf::from("vendor/lib"),
+                    init: true,
+                },
+            ),
+        );
+
+        let writes = fake.writes();
+        assert!(
+            writes.iter().any(|call| matches!(
+                call,
+                WriteCall::UpdateSubmodules { paths, opts }
+                    if paths == &[PathBuf::from("vendor/lib")]
+                        && *opts == SubmoduleUpdate { init: true, recursive: false }
+            )),
+            "the update never reached the backend, or not with --init: {writes:?}"
+        );
+    }
+
+    #[test]
+    fn returning_a_moved_submodule_does_not_ask_for_init() {
+        // A submodule that moved is already set up. Passing `--init` anyway
+        // would be asking for something the user did not, on a repository that
+        // does not need it.
+        let (mut app, fake) = app_with_submodule(vec![submodule(Some("a"), Some("b"))]);
+
+        let _ = update_and_drive(
+            &mut app,
+            Message::Repo(
+                0,
+                RepoMessage::SubmoduleUpdateRequested {
+                    path: PathBuf::from("vendor/lib"),
+                    init: false,
+                },
+            ),
+        );
+
+        let writes = fake.writes();
+        assert!(
+            writes.iter().any(|call| matches!(
+                call,
+                WriteCall::UpdateSubmodules { opts, .. } if !opts.init
+            )),
+            "the update reached the backend asking for the wrong thing: {writes:?}"
+        );
+    }
+
+    #[test]
+    fn an_update_that_settled_nothing_says_so_rather_than_looking_like_it_worked() {
+        // `git submodule update` reports success for a submodule it left
+        // exactly as it found it, which is why the outcome carries `settled`.
+        let (mut app, _) = app_with_submodule(vec![submodule(Some("a"), None)]);
+        let _cancel = pending(&mut app, 3);
+        let id = 3;
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationFinished(
+                id,
+                Box::new(Ok(OperationOutcome::SubmodulesUpdated {
+                    path: PathBuf::from("vendor/lib"),
+                    settled: false,
+                })),
+            ),
+        ));
+
+        let toast = app.app.toasts.last().expect("it does not pass in silence");
+        assert!(
+            toast.summary.contains("vendor/lib"),
+            "the toast names the submodule: {}",
+            toast.summary
+        );
+    }
+
+    #[test]
+    fn an_update_that_settled_passes_in_silence() {
+        // The refresh that follows is the result, the same as every other
+        // operation that worked.
+        let (mut app, _) = app_with_submodule(vec![submodule(Some("a"), Some("a"))]);
+        let _cancel = pending(&mut app, 3);
+        let id = 3;
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::OperationFinished(
+                id,
+                Box::new(Ok(OperationOutcome::SubmodulesUpdated {
+                    path: PathBuf::from("vendor/lib"),
+                    settled: true,
+                })),
+            ),
+        ));
+
+        assert!(
+            app.app.toasts.is_empty(),
+            "an operation that did what it said needs no announcement"
+        );
+    }
+}

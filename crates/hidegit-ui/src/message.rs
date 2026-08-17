@@ -464,6 +464,19 @@ pub enum RepoMessage {
         force: bool,
     },
 
+    // ---- submodules ----
+    /// Brings one submodule to the commit the superproject records.
+    ///
+    /// One path rather than all of them, because that is the granularity the
+    /// sidebar row acts at and "update everything" is a decision the user has
+    /// not been asked to make. `init` is carried rather than always set: it is
+    /// what separates setting up a submodule that has no checkout from moving
+    /// one that already has.
+    SubmoduleUpdateRequested {
+        path: PathBuf,
+        init: bool,
+    },
+
     // ---- remotes ----
     /// `Cmd+Shift+F`, or the toolbar. Every remote, pruning as it goes.
     FetchRequested,
@@ -709,6 +722,17 @@ pub enum OperationOutcome {
     Fetched(FetchOutcome),
     Pulled(PullOutcome),
     Pushed(PushOutcome),
+    /// A submodule update, and whether the submodule actually ended up where
+    /// the superproject says it should be.
+    ///
+    /// `settled` is carried because `git submodule update` reports success for
+    /// a submodule it left exactly as it found it — so "the operation
+    /// succeeded" is not the same claim as "the submodule is now current", and
+    /// the user is owed the second one.
+    SubmodulesUpdated {
+        path: PathBuf,
+        settled: bool,
+    },
 }
 
 /// A commit and its diff, loaded together because the detail pane shows both.
