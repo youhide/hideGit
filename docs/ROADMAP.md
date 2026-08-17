@@ -411,6 +411,11 @@ Everything between "works" and "someone who does not write Rust can install it".
   implemented. Rename detection had to be turned on explicitly: gitoxide leaves it off by default,
   and without it every line of a renamed file is attributed to the commit that moved it rather than
   the commit that wrote it, which answers the wrong question entirely
+- Progress while a large repository opens. **Landed.** Opening spends over a second before anything
+  can be drawn — the walk-and-order pass alone measures 1.19 s at a hundred thousand commits — and
+  the window used to sit on whatever it was showing with nothing to say a repository was on its way.
+  It is a `Task::stream` reporting five named steps, like every other operation that reports, and
+  the banner names the repository because two paths on the command line open at once
 - Accessibility: focus order, contrast, screen-reader labels where iced supports them. **Partly
   landed, and the rest is blocked on the toolkit.** iced 0.14 has no accessibility surface at all —
   no AccessKit integration, no accessible trait, nothing a screen reader can read. That was checked

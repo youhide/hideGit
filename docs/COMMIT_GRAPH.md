@@ -183,7 +183,7 @@ Measured, not assumed. `cargo bench -p hidegit-core` builds a 100,000-commit rep
 |---|---|---|
 | **Lay out one visible window at row 50,000** | **52 µs** | Every frame — 0.3% of a 60fps budget |
 | The same window, with checkpoints skipped | 23.9 ms | Would miss the frame budget outright |
-| Walk and topologically order 100,000 commits | 1.01 s | Once, when a repository opens |
+| Walk and topologically order 100,000 commits | 1.19 s | Once, when a repository opens |
 | Build checkpoints over 100,000 commits | 47.6 ms | Once per loaded page |
 | Hydrate one 2,000-commit page into full commits | 14.8 ms | Once per loaded page |
 | **Read the working directory after a file save** | **1.26 ms** | Every save, while you type |
@@ -192,8 +192,13 @@ The first row is the one that decides whether scrolling is smooth. The gap betwe
 second is the entire justification for checkpoints: without them the per-frame cost grows with how
 far down the history you have scrolled, and by row 50,000 it is 450× over budget.
 
-Everything else runs off the UI thread. The 1.01s ordering pass is the cost of opening a repository
-that size — it is the first-screen latency, and the thing to attack if opening feels slow.
+Everything else runs off the UI thread. The 1.19 s ordering pass is the cost of opening a repository
+that size — it is the first-screen latency, and the thing to attack if opening feels slow. Until it
+is attacked it is at least **said**: opening reports five named steps, and "Counting commits…" is
+this row. See [UI_SPEC](./UI_SPEC.md#main-window).
+
+(The table read 1.01 s until M6, when the same benchmark on the same machine measured 1.19 s. The
+number moved with the machine, not with the code — nothing in the walk changed between them.)
 
 **The last row used to be the third one.** The filesystem watcher invalidated the memoised walk
 whatever had changed, so saving a file in an editor ordered the whole history again: a second of CPU

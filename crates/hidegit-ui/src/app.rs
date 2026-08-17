@@ -161,6 +161,74 @@ where
     Task::stream(stream)
 }
 
+/// Opens a repository, saying what it is doing on the way.
+///
+/// A `Task::stream` for the reason every other reporting operation is one: it
+/// yields many messages and ends when the work does, which is a stream rather
+/// than a long-lived subscription. The sender is moved into the blocking
+/// closure, so it is dropped exactly when the open returns.
+fn opening(id: u64, path: PathBuf) -> Task<Message> {
+    /// Not started, or started and reporting.
+    ///
+    /// The work is spawned on the stream's first poll rather than when the
+    /// `Task` is built: `spawn_blocking` needs a runtime, and a `Task` is
+    /// constructed inside `update`, which is not one.
+    enum Step {
+        Start(PathBuf),
+        Running(
+            iced::futures::channel::mpsc::UnboundedReceiver<crate::state::OpenPhase>,
+            tokio::task::JoinHandle<Result<OpenedRepository, GitError>>,
+        ),
+    }
+
+    /// The open is over: collect what it produced.
+    async fn finish(
+        worker: tokio::task::JoinHandle<Result<OpenedRepository, GitError>>,
+    ) -> Message {
+        let result = match worker.await {
+            Ok(result) => result.map_err(UiError::from),
+            Err(error) => Err(UiError {
+                summary: "Opening the repository failed".to_owned(),
+                details: error.to_string(),
+            }),
+        };
+        Message::RepositoryOpened(Box::new(result))
+    }
+
+    let stream = iced::futures::stream::unfold(Some(Step::Start(path)), move |state| async move {
+        use iced::futures::StreamExt as _;
+
+        let (mut receiver, worker) = match state? {
+            Step::Start(path) => {
+                let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+                let worker = tokio::task::spawn_blocking(move || {
+                    open_repository(&path, &|phase| {
+                        // Nobody listening is not a failure: the window may
+                        // have moved on.
+                        let _ = sender.unbounded_send(phase);
+                    })
+                });
+                (receiver, worker)
+            }
+            Step::Running(receiver, worker) => (receiver, worker),
+        };
+
+        match receiver.next().await {
+            Some(phase) => Some((
+                Message::OpeningProgress(id, phase),
+                Some(Step::Running(receiver, worker)),
+            )),
+            // The sender is gone, so the work is over. `None` as the next state
+            // ends the stream after this item.
+            None => Some((finish(worker).await, None)),
+        }
+    });
+
+    // `RepositoryOpened` first, then the banner clears — the other order would
+    // blank the banner a frame before the repository appeared.
+    Task::stream(stream).chain(Task::done(Message::OpeningFinished(id)))
+}
+
 impl Hidegit {
     pub fn new(
         initial: Vec<PathBuf>,
@@ -438,9 +506,29 @@ impl Hidegit {
                     return Task::none();
                 }
 
-                let for_task = path.clone();
-                blocking(move || open_repository(&for_task))
-                    .map(|result| Message::RepositoryOpened(Box::new(result)))
+                // Said on screen while it happens. Opening a hundred thousand
+                // commits spends over a second in the walk alone, and until now
+                // the window sat on whatever it was showing before with nothing
+                // to say a repository was on its way.
+                let id = self.app.next_opening_id();
+                self.app.opening.push(crate::state::Opening {
+                    id,
+                    path: path.clone(),
+                    phase: crate::state::OpenPhase::Opening,
+                });
+                opening(id, path)
+            }
+
+            Message::OpeningProgress(id, phase) => {
+                if let Some(opening) = self.app.opening.iter_mut().find(|o| o.id == id) {
+                    opening.phase = phase;
+                }
+                Task::none()
+            }
+
+            Message::OpeningFinished(id) => {
+                self.app.opening.retain(|opening| opening.id != id);
+                Task::none()
             }
 
             Message::RepositoryOpened(result) => match *result {
@@ -3019,14 +3107,20 @@ impl Hidegit {
 
         // A clone has no repository to hang a banner off, so it goes above the
         // whole screen — including the welcome screen it was started from.
-        let base = match &self.cloning {
-            Some(cloning) => iced::widget::column![
-                widget::overlay::clone_banner(cloning, palette),
-                self.screen(),
-            ]
-            .into(),
-            None => self.screen(),
-        };
+        let mut banners = iced::widget::column![].spacing(0);
+        if let Some(cloning) = &self.cloning {
+            banners = banners.push(widget::overlay::clone_banner(cloning, palette));
+        }
+        if !self.app.opening.is_empty() {
+            banners = banners.push(widget::overlay::opening_banner(&self.app.opening, palette));
+        }
+
+        let base: crate::Element<'_, Message> =
+            if self.cloning.is_some() || !self.app.opening.is_empty() {
+                iced::widget::column![banners, self.screen()].into()
+            } else {
+                self.screen()
+            };
 
         let base = if self.app.settings_open {
             iced::widget::stack![
@@ -3571,16 +3665,29 @@ fn modal_shortcut(key: &keyboard::Key, modal: Modal) -> Message {
 /// One blocking unit of work rather than five chained messages: the screen is
 /// not useful until all of it has arrived, and five round trips would show four
 /// intermediate states nobody wants to see.
-fn open_repository(path: &std::path::Path) -> Result<OpenedRepository, GitError> {
+fn open_repository(
+    path: &std::path::Path,
+    say: &dyn Fn(crate::state::OpenPhase),
+) -> Result<OpenedRepository, GitError> {
+    use crate::state::OpenPhase;
+
+    say(OpenPhase::Opening);
     let backend = HybridBackend::open(path)?;
 
+    say(OpenPhase::Refs);
     let head = backend.head()?;
     let refs = backend.refs()?;
+
+    say(OpenPhase::Worktree);
     let state = backend.repo_state()?;
     let status = backend.status()?;
     let stashes = backend.stashes()?;
     let remotes = backend.remotes()?;
+
+    say(OpenPhase::Counting);
     let total = backend.commit_count(&RevSpec::All)?;
+
+    say(OpenPhase::History);
     let first_page = backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?;
 
     Ok(OpenedRepository {
@@ -5292,6 +5399,94 @@ mod tests {
 
         let _ = app.update(Message::SettingsDismissed);
         assert!(!app.app.settings_open);
+    }
+
+    // ---- opening a repository --------------------------------------------
+
+    #[test]
+    fn opening_says_what_it_is_doing_before_anything_is_on_screen() {
+        // Over a second of it on a large repository: the walk-and-order pass
+        // alone measures 1.19 s at a hundred thousand commits, and the window
+        // used to sit on whatever it was showing with nothing to say why.
+        let mut app = Hidegit::default();
+
+        let _ = app.update(Message::OpenRepository(PathBuf::from("/fake/deep")));
+
+        let opening = app.app.opening.first().expect("an open is in flight");
+        assert_eq!(opening.path, PathBuf::from("/fake/deep"));
+        assert_eq!(opening.phase, crate::state::OpenPhase::Opening);
+    }
+
+    #[test]
+    fn the_phase_moves_and_the_banner_outlives_the_result() {
+        // The order matters: clearing on `RepositoryOpened` would blank the
+        // banner a frame before the repository appeared.
+        let mut app = Hidegit::default();
+        let _ = app.update(Message::OpenRepository(PathBuf::from("/fake")));
+        let id = app.app.opening[0].id;
+
+        let _ = app.update(Message::OpeningProgress(
+            id,
+            crate::state::OpenPhase::Counting,
+        ));
+        assert_eq!(app.app.opening[0].phase, crate::state::OpenPhase::Counting);
+
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened(1)))));
+        assert_eq!(app.app.opening.len(), 1, "still on screen with the result");
+
+        let _ = app.update(Message::OpeningFinished(id));
+        assert!(app.app.opening.is_empty());
+    }
+
+    #[test]
+    fn two_repositories_opening_at_once_keep_their_own_phases() {
+        // Two paths on the command line are read at the same time, so a single
+        // slot would show whichever reported last.
+        let mut app = Hidegit::default();
+        let _ = app.update(Message::OpenRepository(PathBuf::from("/one")));
+        let _ = app.update(Message::OpenRepository(PathBuf::from("/two")));
+
+        let (first, second) = (app.app.opening[0].id, app.app.opening[1].id);
+        assert_ne!(first, second, "each open is told apart from the other");
+
+        let _ = app.update(Message::OpeningProgress(
+            second,
+            crate::state::OpenPhase::History,
+        ));
+
+        assert_eq!(app.app.opening[0].phase, crate::state::OpenPhase::Opening);
+        assert_eq!(app.app.opening[1].phase, crate::state::OpenPhase::History);
+
+        let _ = app.update(Message::OpeningFinished(first));
+        assert_eq!(app.app.opening.len(), 1, "only the one that finished went");
+        assert_eq!(app.app.opening[0].id, second);
+    }
+
+    #[test]
+    fn a_repository_already_open_switches_to_it_without_a_banner() {
+        // Nothing is read, so there is nothing to report — and a banner that
+        // flashed on a tab switch would be noise.
+        let mut app = app_with(1);
+        let path = app.app.repos[0].path.clone();
+
+        let _ = app.update(Message::OpenRepository(path));
+
+        assert!(app.app.opening.is_empty());
+    }
+
+    #[test]
+    fn every_phase_of_an_open_says_something() {
+        use crate::state::OpenPhase;
+
+        for phase in [
+            OpenPhase::Opening,
+            OpenPhase::Refs,
+            OpenPhase::Worktree,
+            OpenPhase::Counting,
+            OpenPhase::History,
+        ] {
+            assert!(!phase.label().is_empty(), "{phase:?}");
+        }
     }
 
     // ---- focus, and what the arrows reach --------------------------------

@@ -737,6 +737,46 @@ pub struct OpenRepo {
     pub file_filter: String,
 }
 
+/// How far along opening a repository is.
+///
+/// Named steps rather than a bar: nothing here knows how long counting a
+/// hundred thousand commits will take, and a bar that has to guess is the
+/// indeterminate spinner `UI_SPEC` rules out. What it can say honestly is which
+/// of five things it is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenPhase {
+    Opening,
+    Refs,
+    Worktree,
+    Counting,
+    History,
+}
+
+impl OpenPhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Opening => "Opening…",
+            Self::Refs => "Reading branches and tags…",
+            Self::Worktree => "Reading the working directory…",
+            // The expensive one on a large repository: a topological walk of
+            // the whole history, measured at 1.19 s over a hundred thousand
+            // commits. It is named because it is where the wait happens.
+            Self::Counting => "Counting commits…",
+            Self::History => "Reading history…",
+        }
+    }
+}
+
+/// A repository being opened, and what it is doing.
+#[derive(Debug, Clone)]
+pub struct Opening {
+    /// Identifies this open among any others in flight, since two paths given
+    /// on the command line are read at the same time.
+    pub id: u64,
+    pub path: PathBuf,
+    pub phase: OpenPhase,
+}
+
 /// The command palette, while it is up.
 ///
 /// The query and the selection, and nothing else: the list of matches is
@@ -1209,6 +1249,12 @@ pub struct App {
     /// Shared because the key subscription carries it in its identity, and a
     /// subscription's value is cloned per event.
     pub keymap: std::sync::Arc<crate::keymap::Keymap>,
+    /// The repositories being opened right now.
+    ///
+    /// A list rather than one, because two paths on the command line are read
+    /// at the same time and a single slot would show whichever reported last.
+    pub opening: Vec<Opening>,
+    next_opening: u64,
     /// A chord prefix waiting for the key that completes it.
     ///
     /// `G` on its own means nothing; `G` then `W` goes to the working
@@ -1268,6 +1314,8 @@ impl Default for App {
             theme: Theme::default(),
             themes: Theme::built_in(),
             settings_open: false,
+            opening: Vec::new(),
+            next_opening: 0,
             keymap: std::sync::Arc::default(),
             chord: None,
             palette: None,
@@ -1291,6 +1339,12 @@ impl Default for App {
 }
 
 impl App {
+    /// An id for an open in flight, unique for the life of the session.
+    pub fn next_opening_id(&mut self) -> u64 {
+        self.next_opening = self.next_opening.wrapping_add(1);
+        self.next_opening
+    }
+
     pub fn active_repo(&self) -> Option<&OpenRepo> {
         self.active.and_then(|i| self.repos.get(i))
     }

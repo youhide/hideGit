@@ -249,6 +249,12 @@ pub enum Message {
     PromptDismissed,
     OpenRepository(PathBuf),
     RepositoryOpened(Box<Result<OpenedRepository, UiError>>),
+    /// An open in flight reached a new step.
+    OpeningProgress(u64, crate::state::OpenPhase),
+    /// An open in flight is over, whichever way it went. Separate from
+    /// `RepositoryOpened` so that message keeps its shape, and sent after it, so
+    /// the banner clears once the repository is actually on screen.
+    OpeningFinished(u64),
     /// A URL to clone. The destination is asked for next, with the platform's own
     /// picker — pointing at a folder beats typing a path.
     CloneRequested(String),

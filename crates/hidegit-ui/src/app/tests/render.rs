@@ -295,6 +295,24 @@ fn app_showing_a_diff(name: &str) -> Hidegit {
 }
 
 #[test]
+fn an_open_in_flight_says_which_repository_and_which_step() {
+    // Two of them open at once from the command line, so the name is on the
+    // line: "Counting commits…" twice says nothing about which.
+    let mut app = Hidegit::default();
+    let _ = app.update(Message::OpenRepository(std::path::PathBuf::from(
+        "/src/hideGit",
+    )));
+    let id = app.app.opening[0].id;
+    let _ = app.update(Message::OpeningProgress(
+        id,
+        crate::state::OpenPhase::Counting,
+    ));
+
+    shows(&app, "Counting commits…");
+    shows(&app, "hideGit");
+}
+
+#[test]
 fn a_highlighted_diff_lays_out_in_both_modes() {
     // Both views execute, and the line arrives split rather than whole — the
     // render harness sees `text` widgets and not the insides of rich ones, so

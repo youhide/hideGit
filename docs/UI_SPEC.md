@@ -221,6 +221,22 @@ unless the killed `git` left `index.lock` behind, which is named, because hideGi
 **A clone** gets the same banner above the whole screen, including the welcome screen it was started
 from, because there is no repository yet to put it in.
 
+**Opening a repository** gets a banner in the same place, for the same reason: there is no
+repository to hang it off yet, and the window is showing the welcome screen or a different
+repository entirely. It names the repository and the step — *"Counting commits… hideGit"* — because
+two paths given on the command line open at the same time, and "Counting commits…" twice says
+nothing about which.
+
+Named steps, no bar. Nothing knows how long counting a hundred thousand commits will take, and a bar
+that has to guess is the indeterminate spinner ruled out above. The steps are Opening, reading
+branches and tags, reading the working directory, counting commits, reading history — counting is
+where the wait is: the walk-and-order pass measures **1.19 s over a hundred thousand commits**. No
+Cancel either: the read is already off the UI thread, and stopping half way would leave a tab that
+is neither open nor closed.
+
+The banner clears **after** the repository is on screen, not when its result arrives — the other
+order blanks it a frame early.
+
 **In-progress repository state** — mid-merge, mid-rebase — gets a second, persistent banner below
 that one: *"Rebasing feat/graph onto main — 3 of 7 commits"* with Continue / Skip / Abort (M5). It
 cannot be dismissed, because the repository genuinely is in that state and hiding it is how people
