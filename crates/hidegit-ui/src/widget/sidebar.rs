@@ -9,7 +9,9 @@
 //! glyph rather than a menu, the same way a staging row carries `+`, `−` and `✕` —
 //! and a `⋯` that opens the action sheet for everything that does not fit.
 
-use hidegit_core::model::{Branch, Divergence, Head, Remote, StashEntry, Tag};
+use hidegit_core::model::{
+    Branch, Divergence, Head, Remote, StashEntry, Submodule, SubmoduleState, Tag,
+};
 use hidegit_core::ops::{CheckoutTarget, StartPoint, StashOp};
 use iced::widget::{Space, button, column, container, row, scrollable, text, tooltip};
 use iced::{Center, Fill, Font, Length, Padding};
@@ -109,6 +111,23 @@ pub fn view<'a>(
         ));
         for entry in &repo.stashes {
             sections = sections.push(stash_row(repo, entry, index, palette));
+        }
+    }
+
+    // Same rule as STASHES, for the same reason: a submodule is not created
+    // from a heading — it comes from a `.gitmodules` somebody committed — so an
+    // empty SUBMODULES would be chrome with nothing behind it, on the
+    // overwhelming majority of repositories.
+    if !repo.submodules.is_empty() {
+        sections = sections.push(Space::new().height(8));
+        sections = sections.push(section_heading(
+            "SUBMODULES",
+            repo.submodules.len(),
+            None,
+            palette,
+        ));
+        for submodule in &repo.submodules {
+            sections = sections.push(submodule_row(submodule, palette));
         }
     }
 
@@ -685,6 +704,76 @@ fn stash_row<'a>(
     ]
     .align_y(Center)
     .into()
+}
+
+/// A submodule: where it sits, and whether its checkout agrees with the
+/// superproject.
+///
+/// The only row in the sidebar that is not a button, because there is nothing
+/// yet to press: reading submodules landed before initialising or updating them
+/// did, and a row that opens an empty action sheet would be worse than a row
+/// that admits it is informational. The tooltip carries the URL and what the
+/// state means; the glyph is Git's own `-`, ` ` and `+`.
+fn submodule_row<'a>(submodule: &Submodule, palette: &Palette) -> Element<'a, Message> {
+    let palette = *palette;
+    let state = submodule.state();
+
+    // Git's own column, so somebody who has read `git submodule status` in a
+    // terminal recognises it here without learning a second notation.
+    let (glyph, colour) = match state {
+        SubmoduleState::Current => (" ", palette.muted),
+        SubmoduleState::Moved => ("+", palette.accent),
+        SubmoduleState::Uninitialised => ("-", palette.muted),
+    };
+
+    // Both commits when they disagree, in that order. A single hash would leave
+    // the user asking which of the two it was — and *which pointer is wrong* is
+    // the only question a submodule ever raises.
+    let at = match (state, submodule.recorded, submodule.checked_out) {
+        (SubmoduleState::Uninitialised, _, _) => "not initialised".to_owned(),
+        (SubmoduleState::Moved, Some(recorded), Some(checked_out)) => {
+            format!("{} → {}", recorded.short(7), checked_out.short(7))
+        }
+        (_, Some(id), _) => id.short(7),
+        (_, None, _) => "not staged".to_owned(),
+    };
+
+    let label = row![
+        text(glyph)
+            .size(ITEM_SIZE)
+            .font(Font::MONOSPACE)
+            .color(colour),
+        text(submodule.path.display().to_string())
+            .size(ITEM_SIZE)
+            .color(palette.text),
+        Space::new().width(Fill),
+        text(at)
+            .size(HEADING_SIZE)
+            .font(Font::MONOSPACE)
+            .color(colour),
+    ]
+    .spacing(6)
+    .align_y(Center);
+
+    let explanation = match state {
+        SubmoduleState::Current => "at the commit the superproject records",
+        SubmoduleState::Moved => "moved off the commit the superproject records",
+        SubmoduleState::Uninitialised => "declared, but not checked out here",
+    };
+    let tip = if submodule.url.is_empty() {
+        format!("{}: {explanation}", submodule.path.display())
+    } else {
+        format!("{} — {explanation}", submodule.url)
+    };
+
+    hinted(
+        container(label)
+            .width(Fill)
+            .padding(Padding::from([3, 12]))
+            .into(),
+        tip,
+        palette,
+    )
 }
 
 /// The `⋯` on a row, which opens its action sheet.

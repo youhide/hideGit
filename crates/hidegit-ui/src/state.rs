@@ -13,7 +13,7 @@ use hidegit_core::conflict::{ConflictFile, ConflictRegion, Resolution};
 use hidegit_core::graph::{Checkpoints, GraphLayout, LaneState, layout_window};
 use hidegit_core::model::{
     Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
-    WorktreeStatus,
+    Submodule, WorktreeStatus,
 };
 use hidegit_core::ops::{
     BlameLine, CancelToken, ProgressUpdate, RebaseAction, RebasePlan, RebaseStep, SearchResults,
@@ -696,6 +696,12 @@ pub struct OpenRepo {
     /// Read alongside `refs`, because a remote that has never been fetched has no
     /// tracking refs and would otherwise be invisible.
     pub remotes: Vec<Remote>,
+    /// The submodules `.gitmodules` declares, in path order.
+    ///
+    /// Read on the same path as `remotes`, and empty for almost every
+    /// repository — which is why the sidebar shows the section only when there
+    /// is one, the way it treats stashes.
+    pub submodules: Vec<Submodule>,
     /// Ahead/behind per local branch, keyed by full ref name.
     ///
     /// Loaded by its own task rather than as part of a refresh: it costs a commit

@@ -152,7 +152,7 @@ rather than each operation remembering which views it invalidated.
 ```
 
 **Sidebar** — one tree, one mental model for "places I can jump to": working directory, local
-branches, remotes, tags, stashes, pull requests. Counts on section headers.
+branches, remotes, tags, stashes, submodules, pull requests. Counts on section headers.
 
 Every row carries its own controls, revealed as a glyph rather than hidden behind a menu bar — the
 same idiom the staging rows use for `+`, `−` and `✕` — plus a `⋯` that opens its action sheet.
@@ -171,7 +171,20 @@ drift gets arrows, and only the non-zero side of it.
 `LOCAL`, `REMOTES` and `TAGS` render even when empty, because their heading carries the `+` that
 creates the first one and "you have no remotes" is a true and useful thing to read. `STASHES` does not:
 a stash is made out of the working directory rather than from a heading, so stashing is offered from
-the working-directory row instead, and only when there is something to stash.
+the working-directory row instead, and only when there is something to stash. `SUBMODULES` follows
+the same rule, for the same reason — a submodule comes from a `.gitmodules` somebody committed, not
+from a heading — and it is absent on the overwhelming majority of repositories.
+
+**A submodule row says which of the two pointers is wrong.** A submodule is two commits that can
+disagree: the one the superproject's index records, and the one the nested checkout is actually on.
+The row carries Git's own column — `-`, a space, `+`, exactly what `git submodule status` prints —
+and then names the commits. In sync it shows one hash; moved, it shows `recorded → checked out`,
+because a single hash would leave the reader asking which of the two it was; never checked out, it
+says "not initialised" rather than showing the recorded hash, which would claim something is there.
+
+It is the one sidebar row that is **not** a button. Reading submodules landed before initialising or
+updating them did, and a row that opens an empty action sheet is worse than a row that admits it is
+informational. Its tooltip carries the URL and what the state means.
 
 **Graph** — the centre. Virtualised: only visible rows are laid out and drawn. Refs are rendered as
 badges on their commits. Selecting a row updates the detail pane. Full rendering rules in
