@@ -430,3 +430,73 @@ mod worktrees {
         );
     }
 }
+
+/// Making a worktree from the branch row, through the folder picker.
+#[cfg(test)]
+mod new_worktree {
+    use hidegit_core::backend::WriteCall;
+    use hidegit_core::ops::{StartPoint, WorktreeSpec};
+
+    use super::*;
+
+    fn app_with_fake() -> (Hidegit, Arc<FakeBackend>) {
+        let fake = Arc::new(FakeBackend::new().with_commits(commits(3)));
+        let mut app = Hidegit::default();
+        let mut opened = opened(3);
+        opened.backend = Arc::clone(&fake) as Arc<dyn GitBackend>;
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+        (app, fake)
+    }
+
+    #[test]
+    fn the_picked_folder_gets_a_directory_named_after_the_branch() {
+        // Not the picked folder itself: checking out straight into a directory
+        // chosen for other reasons is how a home folder acquires a `.git`.
+        // `feat/graph` is not a directory name either, so it is the last
+        // segment that names it.
+        let (mut app, fake) = app_with_fake();
+
+        let _ = update_and_drive(
+            &mut app,
+            Message::Repo(
+                0,
+                RepoMessage::WorktreeDestinationPicked(
+                    "feat/graph".to_owned(),
+                    Some(PathBuf::from("/checkouts")),
+                ),
+            ),
+        );
+
+        let writes = fake.writes();
+        assert!(
+            writes.iter().any(|call| matches!(
+                call,
+                WriteCall::AddWorktree { path, spec }
+                    if path == &PathBuf::from("/checkouts/graph")
+                        && spec == &WorktreeSpec {
+                            new_branch: None,
+                            start: StartPoint::Ref("feat/graph".to_owned()),
+                        }
+            )),
+            "the worktree was created somewhere else, or on the wrong branch: {writes:?}"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_picker_creates_nothing() {
+        let (mut app, fake) = app_with_fake();
+
+        let _ = update_and_drive(
+            &mut app,
+            Message::Repo(
+                0,
+                RepoMessage::WorktreeDestinationPicked("feat/graph".to_owned(), None),
+            ),
+        );
+
+        assert!(
+            fake.writes().is_empty(),
+            "changing your mind in a file dialog is not a request"
+        );
+    }
+}
