@@ -15,7 +15,7 @@ use super::{GitBackend, gix_read};
 use crate::error::{GitError, classify_remote_failure};
 use crate::model::{
     Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, ReflogEntry,
-    Refs, Remote, RepoState, RevSpec, StashEntry, Submodule, WorktreeStatus,
+    Refs, Remote, RepoState, RevSpec, StashEntry, Submodule, Worktree, WorktreeStatus,
 };
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FastForward, FetchOpts, FetchOutcome,
@@ -325,6 +325,10 @@ impl GitBackend for HybridBackend {
 
     fn submodules(&self) -> Result<Vec<Submodule>, GitError> {
         gix_read::submodules(&self.repo())
+    }
+
+    fn worktrees(&self) -> Result<Vec<Worktree>, GitError> {
+        gix_read::worktrees(&self.repo())
     }
 
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError> {

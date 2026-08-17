@@ -15,7 +15,7 @@ use crate::error::GitError;
 use crate::model::{
     Blob, Commit, CommitDetail, Diff, DiffStats, DiffTarget, Divergence, FileChange, Head, LogPage,
     ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState, RevSpec, StashEntry,
-    Submodule, WorktreeStatus,
+    Submodule, Worktree, WorktreeStatus,
 };
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
@@ -140,6 +140,7 @@ pub struct FakeBackend {
     remotes: Vec<Remote>,
     stashes: Vec<StashEntry>,
     submodules: Vec<Submodule>,
+    worktrees: Vec<Worktree>,
     divergence: HashMap<String, Divergence>,
     failure: Option<Failure>,
     /// Applied to writes only, so a test can have reads succeed and the write
@@ -181,6 +182,7 @@ impl Default for FakeBackend {
             remotes: Vec::new(),
             stashes: Vec::new(),
             submodules: Vec::new(),
+            worktrees: Vec::new(),
             divergence: HashMap::new(),
             failure: None,
             write_failure: None,
@@ -257,6 +259,11 @@ impl FakeBackend {
 
     pub fn with_submodules(mut self, submodules: Vec<Submodule>) -> Self {
         self.submodules = submodules;
+        self
+    }
+
+    pub fn with_worktrees(mut self, worktrees: Vec<Worktree>) -> Self {
+        self.worktrees = worktrees;
         self
     }
 
@@ -468,6 +475,11 @@ impl GitBackend for FakeBackend {
     fn submodules(&self) -> Result<Vec<Submodule>, GitError> {
         self.check()?;
         Ok(self.submodules.clone())
+    }
+
+    fn worktrees(&self) -> Result<Vec<Worktree>, GitError> {
+        self.check()?;
+        Ok(self.worktrees.clone())
     }
 
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError> {
