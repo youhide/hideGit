@@ -451,6 +451,14 @@ Two modes, toggleable and remembered per user: **unified** and **side-by-side**.
 - `J`/`K` step between hunks, highlighting the one they land on
 - Word-level intra-line highlighting on modified lines
 - Whitespace-change toggle; large-file and binary-file placeholders rather than a hang
+- **A file stored with Git LFS gets a placeholder too, and says what it can.** What Git stores for an
+  LFS-tracked file *is* the pointer — three lines naming an object and a size — so a diff of one is a
+  diff of the plumbing. hideGit recognises the pointer and reports the size instead: `1.0 KiB →
+  4.0 KiB` when both sides are pointers, `unchanged` when the object is the same, `changed` when two
+  different files happen to be the same length, and "now tracked by LFS" / "no longer tracked by LFS"
+  when a file moves into or out of it — a change of *storage* rather than of content, which a
+  three-line pointer diff would say neither of. This needs no `git-lfs` installed: the pointer is a
+  text file, and recognising it is reading, not tooling
 - Syntax highlighting deferred past M1 — correct diffing first
 
 ## Conflict resolver
