@@ -63,10 +63,18 @@ refused rather than being retried with `--force`.
 | ✅ | GitHub PR alerts + native notifications | [M4](./docs/ROADMAP.md#m4--pull-request-alerts) |
 | ✅ | Merge, rebase, cherry-pick, revert, reset, conflict resolution UI | [M5](./docs/ROADMAP.md#m5--history-operations) |
 | ✅ | Interactive rebase editor, graph drag-and-drop, blame, commit search, light theme, settings | [M6](./docs/ROADMAP.md#m6--polish--release) |
-| 🟡 | Multi-repository tabs, accessibility, signed installers | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| ✅ | Syntax-highlighted diffs, file filter within a commit, update check that never installs | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| ✅ | Multi-repository tabs, command palette, shortcut reference, remappable shortcuts, custom themes | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| 🟡 | Accessibility: focus ring, keyboard routes and contrast are done | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| ⛔ | Screen-reader support — iced 0.14 has no accessibility surface to build on | [M6](./docs/ROADMAP.md#m6--polish--release) |
+| ⛔ | Signed installers — needs a paid certificate. Downloads are unsigned and say so | [M6](./docs/ROADMAP.md#m6--polish--release) |
 | ⬜ | Submodules, worktrees, LFS, PT-BR translation | [Post-1.0](./docs/ROADMAP.md#post-10) |
 
-Legend: ⬜ planned · 🟡 in progress · ✅ shipped
+Legend: ⬜ planned · 🟡 in progress · ⛔ blocked on something outside this repository · ✅ shipped
+
+Nothing here is 🟡 by omission. The two ⛔ rows are not being worked on and will not be until the
+thing they wait for exists: a toolkit that can talk to a screen reader, and a certificate somebody
+has paid for.
 
 ## Requirements
 
