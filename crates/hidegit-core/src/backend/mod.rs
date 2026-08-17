@@ -33,7 +33,7 @@ use std::path::Path;
 use crate::error::GitError;
 use crate::model::{
     Blob, Commit, CommitDetail, Diff, DiffTarget, Divergence, Head, LogPage, ObjectId, ReflogEntry,
-    Refs, Remote, RepoState, RevSpec, StashEntry, WorktreeStatus,
+    Refs, Remote, RepoState, RevSpec, StashEntry, Submodule, WorktreeStatus,
 };
 use crate::ops::{
     Blame, CancelToken, CheckoutTarget, CommitOpts, FetchOpts, FetchOutcome, MergeOpts,
@@ -110,6 +110,18 @@ pub trait GitBackend: Send + Sync + std::fmt::Debug {
     /// An empty vector for a repository that has never stashed — `refs/stash`
     /// simply does not exist, which is not an error.
     fn stashes(&self) -> Result<Vec<StashEntry>, GitError>;
+
+    /// The submodules `.gitmodules` declares, in path order.
+    ///
+    /// An empty vector for the overwhelming majority of repositories, which
+    /// have no `.gitmodules` at all — absence is not an error.
+    ///
+    /// Costs one repository open per submodule, because "where is the nested
+    /// checkout actually at" can only be answered by the nested repository.
+    /// That is why this is its own method rather than part of
+    /// [`GitBackend::refs`], which the filesystem watcher rereads on every
+    /// file save.
+    fn submodules(&self) -> Result<Vec<Submodule>, GitError>;
 
     /// Ahead/behind for every local branch that has an upstream, keyed by the
     /// branch's full ref name.

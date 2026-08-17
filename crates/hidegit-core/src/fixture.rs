@@ -46,6 +46,9 @@ pub struct Fixture {
     /// exercised end to end with no network and no credentials — which is what
     /// keeps the suite hermetic on all three CI platforms.
     remotes: HashMap<String, TempDir>,
+    /// The repositories submodules were cloned from, by submodule path. Held
+    /// so they outlive the checkout that points at them.
+    submodules: HashMap<String, TempDir>,
 }
 
 impl Fixture {
@@ -59,6 +62,7 @@ impl Fixture {
             // recognisable in a failure message.
             clock: 1_577_836_800,
             remotes: HashMap::new(),
+            submodules: HashMap::new(),
         };
 
         this.git(["init", "-b", "main"]);
@@ -337,6 +341,104 @@ impl Fixture {
         self
     }
 
+    /// Adds a real submodule at `path`, checked out and committed.
+    ///
+    /// The source is a separate repository on a local path, for the same reason
+    /// [`Fixture::with_remote`] uses one: `git submodule add` really clones it,
+    /// through the same code any submodule goes through, with no network.
+    ///
+    /// That is also why `protocol.file.allow` appears here. Git has refused the
+    /// `file` transport for submodules since CVE-2022-39253, where a malicious
+    /// `.gitmodules` pointed at a path on the victim's own machine. The
+    /// permission is granted for this one command, on a repository this fixture
+    /// just created, and never by hideGit itself.
+    pub fn with_submodule(mut self, path: &str) -> Self {
+        let source = TempDir::new().expect("a writable temporary directory");
+        let url = source.path().display().to_string();
+        let date = format!("{} +0000", self.clock);
+
+        let run = |args: &[&str], cwd: &Path| {
+            let result = GitCommand::new("--no-pager")
+                .args(args)
+                .cwd(cwd)
+                .takes_locks()
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .env("GIT_EDITOR", "true")
+                .run();
+            if let Err(e) = result {
+                panic!("submodule-side fixture command failed: {e}");
+            }
+        };
+
+        run(&["init", "-b", "main"], source.path());
+        for (key, value) in [
+            ("user.name", "hideGit Fixture"),
+            ("user.email", "fixture@hidegit.invalid"),
+            ("commit.gpgsign", "false"),
+            ("core.autocrlf", "false"),
+        ] {
+            run(&["config", key, value], source.path());
+        }
+        std::fs::write(source.path().join("nested.txt"), "nested\n")
+            .expect("writing a fixture file");
+        run(&["add", "--all"], source.path());
+        run(&["commit", "--message", "Nested"], source.path());
+
+        self.git([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            &url,
+            path,
+        ]);
+        let message = format!("Add submodule {path}");
+        self.git(["commit", "--message", &message]);
+
+        self.submodules.insert(path.to_owned(), source);
+        self.record(&message)
+    }
+
+    /// Commits inside a submodule's own checkout, moving its `HEAD` away from
+    /// the commit the superproject records.
+    ///
+    /// Deliberately leaves the superproject alone: the point of the state is
+    /// that the two disagree, and staging the gitlink here would resolve it.
+    pub fn commit_in_submodule(self, path: &str, message: &str) -> Self {
+        let work = self.dir.path().join(path);
+        let date = format!("{} +0000", self.clock);
+
+        std::fs::write(work.join("nested.txt"), format!("{message}\n"))
+            .expect("writing a fixture file");
+
+        for args in [vec!["add", "--all"], vec!["commit", "--message", message]] {
+            let result = GitCommand::new("--no-pager")
+                .args(&args)
+                .cwd(&work)
+                .takes_locks()
+                .env("GIT_AUTHOR_DATE", &date)
+                .env("GIT_COMMITTER_DATE", &date)
+                .env("GIT_EDITOR", "true")
+                .run();
+            if let Err(e) = result {
+                panic!("submodule-side fixture command failed: {e}");
+            }
+        }
+
+        self
+    }
+
+    /// Removes a submodule's checkout, leaving the `.gitmodules` entry and the
+    /// gitlink in place.
+    ///
+    /// This is the state a fresh clone of the superproject is in — `git clone`
+    /// does not clone submodules — so it is the *common* case, not an edge one.
+    pub fn deinit_submodule(self, path: &str) -> Self {
+        self.git(["submodule", "deinit", "--force", "--", path]);
+        self
+    }
+
     /// Stashes whatever is in the working directory, with Git's own message.
     ///
     /// Needs something to stash: `git stash push` with a clean worktree succeeds
@@ -496,12 +598,20 @@ impl Fixture {
             .map(|(name, dir)| (name.clone(), dir.path().to_path_buf()))
             .collect();
 
+        let submodule_sources = self
+            .submodules
+            .iter()
+            .map(|(path, dir)| (path.clone(), dir.path().to_path_buf()))
+            .collect();
+
         Repo {
             path: self.dir.path().to_path_buf(),
             dir: self.dir,
             commits: self.commits,
             remote_paths: remotes,
             remote_dirs: self.remotes.into_values().collect(),
+            submodule_sources,
+            submodule_dirs: self.submodules.into_values().collect(),
         }
     }
 }
@@ -516,6 +626,9 @@ pub struct Repo {
     remote_paths: HashMap<String, PathBuf>,
     #[expect(dead_code, reason = "held solely to keep the remotes alive")]
     remote_dirs: Vec<TempDir>,
+    submodule_sources: HashMap<String, PathBuf>,
+    #[expect(dead_code, reason = "held solely to keep the submodule sources alive")]
+    submodule_dirs: Vec<TempDir>,
 }
 
 impl Repo {
@@ -545,6 +658,14 @@ impl Repo {
         self.remote_paths
             .get(name)
             .unwrap_or_else(|| panic!("no fixture remote named {name}"))
+    }
+
+    /// The repository a submodule was cloned from, keyed by the path it was
+    /// added at.
+    pub fn submodule_source(&self, path: &str) -> &Path {
+        self.submodule_sources
+            .get(path)
+            .unwrap_or_else(|| panic!("no fixture submodule at {path}"))
     }
 
     /// Runs `git` in a repository and returns its trimmed stdout, for asserting

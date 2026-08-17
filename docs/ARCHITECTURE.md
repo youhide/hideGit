@@ -126,6 +126,7 @@ pub trait GitBackend: Send + Sync + Debug {
     fn status(&self) -> Result<WorktreeStatus, GitError>;
     fn remotes(&self) -> Result<Vec<Remote>, GitError>;
     fn stashes(&self) -> Result<Vec<StashEntry>, GitError>;
+    fn submodules(&self) -> Result<Vec<Submodule>, GitError>;
     fn divergence(&self) -> Result<HashMap<String, Divergence>, GitError>;
     fn blame(&self, path: &Path, at: ObjectId) -> Result<Blame, GitError>;
     fn invalidate(&self);
