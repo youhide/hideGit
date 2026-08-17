@@ -15,9 +15,9 @@ use gix::diff::blob::{Algorithm, InternedInput, UnifiedDiff, sources::byte_lines
 use crate::error::GitError;
 use crate::model::{
     Blob, Branch, ChangeStatus, Commit, CommitDetail, Conflict, ConflictKind, Diff, DiffLine,
-    DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk, LineKind,
-    ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState, RevSpec, Signature,
-    StashEntry, Submodule, Tag, Worktree, WorktreeStatus,
+    DiffStats, DiffTarget, Divergence, FileChange, FileDiff, FileDiffContent, Head, Hunk,
+    LfsPointer, LineKind, ObjectId, RefKind, RefName, ReflogEntry, Refs, Remote, RepoState,
+    RevSpec, Signature, StashEntry, Submodule, Tag, Worktree, WorktreeStatus,
 };
 use crate::ops::{Blame, BlameLine, SearchField, SearchHit, SearchQuery, SearchResults};
 
@@ -1341,6 +1341,18 @@ fn assemble(
             FileDiffContent::TooLarge { bytes: *bytes }
         }
         (Side::Binary, _) | (_, Side::Binary) => FileDiffContent::Binary,
+        // Checked before diffing rather than after. What Git stores for an
+        // LFS-tracked file *is* the pointer, so the alternative is three lines
+        // of `oid sha256:…` presented as though they were the change — which
+        // is showing the plumbing and calling it the content.
+        (Side::Text(old), Side::Text(new))
+            if LfsPointer::parse(old).is_some() || LfsPointer::parse(new).is_some() =>
+        {
+            FileDiffContent::Lfs {
+                old: LfsPointer::parse(old),
+                new: LfsPointer::parse(new),
+            }
+        }
         (Side::Text(old), Side::Text(new)) => FileDiffContent::Text {
             hunks: hunks(old, new)?,
         },

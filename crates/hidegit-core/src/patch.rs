@@ -97,8 +97,9 @@ impl Selection {
 
 /// Builds the patch text for `file`, or `None` if there is nothing to apply.
 ///
-/// `None` covers a binary file, a file too large to diff, and a selection that
-/// resolves to no changed lines at all — in each case there is no patch to
+/// `None` covers a binary file, a file too large to diff, a file stored with
+/// Git LFS — whose hunks would be the pointer's three lines rather than the
+/// file's content — and a selection that resolves to no changed lines at all — in each case there is no patch to
 /// hand to `git apply`, and an empty one is an error rather than a no-op.
 pub fn serialize(file: &FileDiff, selection: &Selection) -> Option<String> {
     let FileDiffContent::Text { hunks } = &file.content else {

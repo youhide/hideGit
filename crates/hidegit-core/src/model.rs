@@ -554,9 +554,22 @@ pub struct FileDiff {
 /// "not shown".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileDiffContent {
-    Text { hunks: Vec<Hunk> },
+    Text {
+        hunks: Vec<Hunk>,
+    },
     Binary,
-    TooLarge { bytes: u64 },
+    TooLarge {
+        bytes: u64,
+    },
+    /// At least one side is a Git LFS pointer.
+    ///
+    /// `None` on a side means that side was not a pointer, which is how a file
+    /// being moved into or out of LFS reads: the content did not change, the
+    /// storage did, and a three-line diff of the pointer would say neither.
+    Lfs {
+        old: Option<LfsPointer>,
+        new: Option<LfsPointer>,
+    },
 }
 
 /// A contiguous run of changed lines with its surrounding context.
@@ -604,6 +617,74 @@ pub struct DiffStats {
     pub deletions: usize,
 }
 
+/// A Git LFS pointer: the three lines Git stores in place of a large file.
+///
+/// Git LFS replaces a tracked file's content with this on the way *into* the
+/// object database, and swaps it back on checkout. hideGit reads the database
+/// through gitoxide, so what it sees for an LFS-tracked file is always the
+/// pointer — whether or not `git-lfs` is installed, and whether or not the real
+/// object has been fetched. Showing those three lines as a diff would be
+/// showing the plumbing.
+///
+/// The format is `git-lfs`'s v1 spec: a `version` line naming the spec, then
+/// keys sorted alphabetically, one per line. `oid` and `size` are the two that
+/// matter; anything else is carried by the spec and ignored here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LfsPointer {
+    /// The object id, with its algorithm prefix — `sha256:…` — kept whole
+    /// because that is how the pointer, the server API and `git lfs` all spell
+    /// it, and dropping the prefix would invent a fourth spelling.
+    pub oid: String,
+    /// The real file's size in bytes. The one number worth showing a person:
+    /// it is what the pointer is standing in for.
+    pub size: u64,
+}
+
+impl LfsPointer {
+    /// The version line every pointer starts with, exactly.
+    const VERSION: &'static str = "version https://git-lfs.github.com/spec/v1";
+
+    /// Reads `bytes` as a pointer, or `None` when it is not one.
+    ///
+    /// Strict about the version line and lenient about everything after it: a
+    /// file that merely *mentions* the spec URL is not a pointer, but a pointer
+    /// carrying keys this does not know about still is one.
+    ///
+    /// Bails on anything large before looking. A pointer is a few hundred bytes
+    /// by construction, and scanning a multi-megabyte file to discover it is
+    /// not one is work with a known answer.
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        /// Generous next to the ~130 bytes a pointer actually takes, and small
+        /// enough that this is never the expensive part of reading a blob.
+        const MAX: usize = 1024;
+
+        if bytes.len() > MAX {
+            return None;
+        }
+        let text = std::str::from_utf8(bytes).ok()?;
+
+        let mut lines = text.lines();
+        if lines.next()? != Self::VERSION {
+            return None;
+        }
+
+        let mut oid = None;
+        let mut size = None;
+        for line in lines {
+            if let Some(value) = line.strip_prefix("oid ") {
+                oid = Some(value.to_owned());
+            } else if let Some(value) = line.strip_prefix("size ") {
+                size = value.parse().ok();
+            }
+        }
+
+        Some(Self {
+            oid: oid?,
+            size: size?,
+        })
+    }
+}
+
 /// Raw object contents, for the diff viewer and future blame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Blob {
@@ -612,6 +693,11 @@ pub struct Blob {
 }
 
 impl Blob {
+    /// The Git LFS pointer this blob is, when it is one.
+    pub fn as_lfs_pointer(&self) -> Option<LfsPointer> {
+        LfsPointer::parse(&self.bytes)
+    }
+
     /// Whether Git would treat this content as binary.
     ///
     /// The same heuristic Git uses: a NUL byte in the first 8000 bytes.
@@ -664,6 +750,9 @@ impl LogPage {
 
 #[cfg(test)]
 mod tests {
+    /// The version line, spelled once so a test cannot drift from the parser.
+    const LFS_VERSION: &str = LfsPointer::VERSION;
+
     use super::*;
 
     #[test]
@@ -751,6 +840,80 @@ mod tests {
         assert!(!RepoState::Clean.is_in_progress());
         assert!(RepoState::Rebasing.is_in_progress());
         assert!(RepoState::Merging.is_in_progress());
+    }
+
+    /// A pointer as `git lfs` writes one.
+    fn pointer(size: u64) -> String {
+        format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {size}\n",
+            "a".repeat(64)
+        )
+    }
+
+    #[test]
+    fn a_pointer_is_read_as_its_oid_and_the_size_it_stands_in_for() {
+        let parsed = LfsPointer::parse(pointer(4_194_304).as_bytes()).expect("a valid pointer");
+
+        assert_eq!(parsed.oid, format!("sha256:{}", "a".repeat(64)));
+        assert_eq!(parsed.size, 4_194_304);
+    }
+
+    #[test]
+    fn a_file_that_merely_mentions_the_spec_url_is_not_a_pointer() {
+        // A README describing how the project uses LFS is a README. The version
+        // line has to be the first line and has to be exactly it.
+        let prose = format!("We use LFS.\n{}\noid sha256:x\nsize 1\n", LFS_VERSION);
+        assert_eq!(LfsPointer::parse(prose.as_bytes()), None);
+    }
+
+    #[test]
+    fn a_pointer_missing_either_field_is_not_one() {
+        // Both are required by the spec, and a pointer with no size cannot be
+        // described to a person at all — which is the only thing this is for.
+        let no_oid = format!("{LFS_VERSION}\nsize 12\n");
+        let no_size = format!("{LFS_VERSION}\noid sha256:abc\n");
+
+        assert_eq!(LfsPointer::parse(no_oid.as_bytes()), None);
+        assert_eq!(LfsPointer::parse(no_size.as_bytes()), None);
+    }
+
+    #[test]
+    fn a_pointer_carrying_keys_this_does_not_know_is_still_a_pointer() {
+        // The spec allows extensions, and refusing to recognise a pointer
+        // because it has one would show its plumbing as a diff.
+        let extended = format!(
+            "{LFS_VERSION}\next-0-sha256 abc\noid sha256:{}\nsize 7\n",
+            "b".repeat(64)
+        );
+
+        assert_eq!(
+            LfsPointer::parse(extended.as_bytes()).map(|p| p.size),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn something_far_too_large_to_be_a_pointer_is_not_scanned() {
+        // A pointer is a few hundred bytes by construction. Reading a
+        // multi-megabyte file to discover it is not one is work with a known
+        // answer, so the length is checked first.
+        let mut huge = pointer(1);
+        huge.push_str(&"x".repeat(2048));
+
+        assert_eq!(LfsPointer::parse(huge.as_bytes()), None);
+    }
+
+    #[test]
+    fn bytes_that_are_not_text_are_not_a_pointer() {
+        assert_eq!(LfsPointer::parse(&[0xff, 0xfe, 0x00]), None);
+
+        // And not only because the version line fails to match. A pointer whose
+        // *body* is not valid text is malformed, and coercing it — reading it
+        // lossily and carrying on — would accept something `git lfs` would not.
+        let mut malformed = pointer(7).into_bytes();
+        malformed.extend_from_slice(b"ext-0-name ");
+        malformed.push(0xff);
+        assert_eq!(LfsPointer::parse(&malformed), None);
     }
 
     #[test]

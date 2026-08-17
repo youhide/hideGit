@@ -1149,3 +1149,115 @@ fn opening_from_a_linked_worktree_still_lists_the_main_one_first() {
         worktrees[1].path
     );
 }
+
+// ---- Git LFS -------------------------------------------------------------
+
+/// A pointer as `git lfs` writes one.
+///
+/// Written by hand rather than by `git lfs`, deliberately: a pointer is a plain
+/// text file, and what hideGit has to recognise is the file — not the tool. The
+/// suite therefore needs no `git-lfs` on any of the three CI platforms, and the
+/// test says the same thing on a machine that has never had it installed.
+fn lfs_pointer(oid: char, size: u64) -> String {
+    format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {size}\n",
+        oid.to_string().repeat(64)
+    )
+}
+
+#[test]
+fn a_diff_between_two_pointers_reports_the_sizes_rather_than_the_pointers() {
+    // What Git stores for an LFS-tracked file *is* the pointer, so the
+    // alternative is three lines of `oid sha256:…` presented as the change.
+    let repo = fixture()
+        .edit("big.bin", &lfs_pointer('a', 1024), "add")
+        .edit("big.bin", &lfs_pointer('b', 4096), "grow")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend
+        .diff(&DiffTarget::Commit(repo.id("grow")))
+        .expect("a diff of a pointer change");
+    let file = &diff.files[0];
+
+    match &file.content {
+        FileDiffContent::Lfs { old, new } => {
+            assert_eq!(old.as_ref().expect("the old side is a pointer").size, 1024);
+            assert_eq!(new.as_ref().expect("the new side is a pointer").size, 4096);
+        }
+        other => panic!("expected an LFS placeholder, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_file_moving_into_lfs_says_so_rather_than_showing_the_pointer_replacing_it() {
+    // The content did not change, the storage did. A three-line diff of the
+    // pointer would say neither.
+    let repo = fixture()
+        .edit("big.bin", "the real contents\n", "add")
+        .edit("big.bin", &lfs_pointer('a', 8192), "track with lfs")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend
+        .diff(&DiffTarget::Commit(repo.id("track with lfs")))
+        .expect("a diff of a file becoming tracked");
+
+    match &diff.files[0].content {
+        FileDiffContent::Lfs { old, new } => {
+            assert_eq!(*old, None, "the old side was ordinary text, not a pointer");
+            assert_eq!(new.as_ref().expect("the new side is a pointer").size, 8192);
+        }
+        other => panic!("expected an LFS placeholder, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_file_leaving_lfs_says_so_too() {
+    let repo = fixture()
+        .edit("big.bin", &lfs_pointer('a', 8192), "add")
+        .edit("big.bin", "the real contents\n", "stop tracking")
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend
+        .diff(&DiffTarget::Commit(repo.id("stop tracking")))
+        .expect("a diff of a file leaving LFS");
+
+    match &diff.files[0].content {
+        FileDiffContent::Lfs { old, new } => {
+            assert_eq!(old.as_ref().expect("the old side was a pointer").size, 8192);
+            assert_eq!(*new, None);
+        }
+        other => panic!("expected an LFS placeholder, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_file_that_only_talks_about_lfs_still_gets_an_ordinary_diff() {
+    // A README describing how the project uses LFS is a README, and hiding its
+    // changes behind a placeholder would be worse than showing a pointer.
+    let repo = fixture()
+        .edit("README.md", "We use Git LFS for assets.\n", "add")
+        // The prose contains the version line *verbatim*, which is the trap: a
+        // check for "does this text mention the spec" rather than "does this
+        // text begin with the spec line" would hide this file's changes.
+        .edit(
+            "README.md",
+            "We use Git LFS for assets.\nA pointer begins \
+             version https://git-lfs.github.com/spec/v1\nand names an oid.\n",
+            "expand",
+        )
+        .build();
+    let backend = repo.backend();
+
+    let diff = backend
+        .diff(&DiffTarget::Commit(repo.id("expand")))
+        .expect("an ordinary diff");
+
+    assert!(
+        matches!(&diff.files[0].content, FileDiffContent::Text { hunks } if !hunks.is_empty()),
+        "expected ordinary hunks, got {:?}",
+        diff.files[0].content
+    );
+}

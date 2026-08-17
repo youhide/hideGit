@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use hidegit_core::model::{Diff, FileDiff, FileDiffContent, Hunk, LineKind};
+use hidegit_core::model::{Diff, FileDiff, FileDiffContent, Hunk, LfsPointer, LineKind};
 use iced::widget::{Space, button, column, container, rich_text, row, scrollable, text};
 use iced::{Center, Fill, Font, Length, Padding};
 
@@ -53,6 +53,34 @@ impl Staging<'_> {
 }
 
 /// Renders one file's diff.
+/// What changed about an LFS-tracked file, in the only terms available.
+///
+/// Both sides being pointers is the ordinary case and reads as a size change.
+/// One side missing is a file moving into or out of LFS, which is a change of
+/// *storage* rather than of content — worth saying plainly, because a diff that
+/// showed nothing would look like nothing happened.
+fn lfs_summary(old: Option<&LfsPointer>, new: Option<&LfsPointer>) -> String {
+    match (old, new) {
+        (Some(old), Some(new)) if old.oid == new.oid => {
+            format!("unchanged, {}", format::bytes(new.size))
+        }
+        // Two different files that happen to be the same length. Rendering
+        // that as "4.0 KiB → 4.0 KiB" would read as a no-op, and deciding
+        // sameness by size rather than by object would call it one.
+        (Some(old), Some(new)) if old.size == new.size => {
+            format!("changed, {}", format::bytes(new.size))
+        }
+        (Some(old), Some(new)) => {
+            format!("{} → {}", format::bytes(old.size), format::bytes(new.size))
+        }
+        (None, Some(new)) => format!("now tracked by LFS, {}", format::bytes(new.size)),
+        (Some(old), None) => format!("no longer tracked by LFS, was {}", format::bytes(old.size)),
+        // Unreachable through `assemble`, which only produces this variant when
+        // a side parsed as a pointer. Stated rather than unwrapped.
+        (None, None) => "no pointer on either side".to_owned(),
+    }
+}
+
 pub fn view<'a>(
     diff: &'a Diff,
     file: usize,
@@ -74,6 +102,17 @@ pub fn view<'a>(
                 "{} is {} — too large to diff without stalling",
                 file.path.display(),
                 format::bytes(*bytes)
+            ),
+            palette,
+        ),
+        // The size, not the pointer. Three lines of `oid sha256:…` are what
+        // Git stores, not what changed — and "4.2 MB → 5.1 MB" is the most a
+        // diff can honestly say about a file whose content it does not have.
+        FileDiffContent::Lfs { old, new } => empty(
+            &format!(
+                "{} is stored with Git LFS — {}",
+                file.path.display(),
+                lfs_summary(old.as_ref(), new.as_ref())
             ),
             palette,
         ),
@@ -606,4 +645,60 @@ fn empty<'a>(message: &str, palette: &Palette) -> Element<'a, RepoMessage> {
         .height(Fill)
         .center(Fill)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pointer(oid: &str, size: u64) -> LfsPointer {
+        LfsPointer {
+            oid: format!("sha256:{}", oid.repeat(64)),
+            size,
+        }
+    }
+
+    #[test]
+    fn two_pointers_read_as_the_size_change_they_stand_for() {
+        // The only thing a diff can honestly say about a file whose content it
+        // does not have.
+        assert_eq!(
+            lfs_summary(Some(&pointer("a", 1024)), Some(&pointer("b", 4096))),
+            "1.0 KiB → 4.0 KiB"
+        );
+    }
+
+    #[test]
+    fn the_same_object_on_both_sides_does_not_read_as_a_change() {
+        // A mode change, or a rename. Showing "4.0 KB → 4.0 KB" would imply
+        // something moved that did not.
+        assert_eq!(
+            lfs_summary(Some(&pointer("a", 4096)), Some(&pointer("a", 4096))),
+            "unchanged, 4.0 KiB"
+        );
+    }
+
+    #[test]
+    fn two_different_files_of_the_same_length_do_not_read_as_a_no_op() {
+        // Sameness is the object, not the size. Judging by size would call this
+        // unchanged, and "4.0 KiB → 4.0 KiB" would read as one too.
+        assert_eq!(
+            lfs_summary(Some(&pointer("a", 4096)), Some(&pointer("b", 4096))),
+            "changed, 4.0 KiB"
+        );
+    }
+
+    #[test]
+    fn a_file_moving_into_or_out_of_lfs_says_which() {
+        // A change of storage rather than of content. A placeholder that showed
+        // nothing would look like nothing happened.
+        assert_eq!(
+            lfs_summary(None, Some(&pointer("a", 8192))),
+            "now tracked by LFS, 8.0 KiB"
+        );
+        assert_eq!(
+            lfs_summary(Some(&pointer("a", 8192)), None),
+            "no longer tracked by LFS, was 8.0 KiB"
+        );
+    }
 }
