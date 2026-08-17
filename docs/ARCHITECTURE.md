@@ -196,6 +196,12 @@ is safe Rust so neither can be left structurally invalid, and the worst a recove
 stale — which is what `invalidate` already exists to clear. The GitHub client handle in
 `hidegit-forge` is recovered the same way and for the same reason.
 
+**The update check is not a forge feature.** It lives in `hidegit-forge` because that is where the
+HTTP client is, but it reads one fixed public repository, unauthenticated, and has nothing to do with
+whether anybody is signed in. It goes through octocrab's generic `get` with hideGit's own three-field
+release type rather than octocrab's `Release`, which carries three dozen fields this does not read
+and every one of which would have to be faked in a test.
+
 **A panic is written down.** `crash::install` sets a panic hook at startup that logs every panic and,
 when `diagnostics.panic_reports` is on, writes a report to the data directory: version, platform,
 message, location, backtrace. Nothing is sent anywhere and nothing names a repository, a branch or a

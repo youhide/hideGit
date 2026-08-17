@@ -314,6 +314,8 @@ pub enum Message {
     ShortcutsDismissed,
     /// Panic reports were switched on or off.
     PanicReportsToggled,
+    /// The update check was switched on or off.
+    UpdateCheckToggled,
     /// The window should — or should no longer — reopen where it was left.
     RememberGeometryToggled,
     RepositoryMuteToggled(String),

@@ -446,6 +446,11 @@ impl Hidegit {
                 Task::none()
             }
 
+            Message::UpdateCheckToggled => {
+                self.app.check_for_updates = !self.app.check_for_updates;
+                Task::none()
+            }
+
             Message::PanicReportsToggled => {
                 self.app.panic_reports = !self.app.panic_reports;
                 Task::none()

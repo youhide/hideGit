@@ -121,6 +121,21 @@ fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
             .size(11.0)
             .color(palette.muted),
     );
+    sections = sections.push(Space::new().height(6));
+    sections = sections.push(
+        checkbox(app.check_for_updates)
+            .label("Check for a newer hideGit")
+            .size(15.0)
+            .text_size(13.0)
+            .on_toggle(|_| Message::UpdateCheckToggled),
+    );
+    sections = sections.push(
+        // Says exactly what it contacts and what it will not do, because an
+        // update check is the one thing here that leaves the machine.
+        text("Asks github.com once a day. Never installs anything.")
+            .size(11.0)
+            .color(palette.muted),
+    );
 
     sections = sections.push(Space::new().height(14));
     sections = sections.push(section("Pull request alerts", palette));

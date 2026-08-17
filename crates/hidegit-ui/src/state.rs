@@ -1300,6 +1300,8 @@ pub struct App {
     /// Held here for the same reason as the geometry switch: the panel shows it,
     /// the shell acts on it. Nothing in this crate reads it.
     pub panic_reports: bool,
+    /// Ask GitHub, at most once a day, whether there is a newer hideGit.
+    pub check_for_updates: bool,
     /// Reopen at the size and position the window was last closed at.
     ///
     /// Held here only so the settings panel can show and change it. The window
@@ -1339,6 +1341,7 @@ impl Default for App {
             alerts: AlertPrefs::default(),
             remember_geometry: true,
             panic_reports: false,
+            check_for_updates: true,
             next_toast_id: 0,
         }
     }
