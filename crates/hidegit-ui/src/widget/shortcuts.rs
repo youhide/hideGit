@@ -183,6 +183,53 @@ pub const REFERENCE: &[Group] = &[
     },
 ];
 
+/// A chord as written — `Cmd+Shift+U` — as a key and its modifiers.
+///
+/// `None` for anything unparseable, which the caller reports. Written here
+/// rather than next to the keymap because this module already owns the spelling
+/// the reference prints, and two spellings of one chord is one too many.
+pub fn parse(chord: &str) -> Option<(iced::keyboard::Key, iced::keyboard::Modifiers)> {
+    use iced::keyboard::key::{Key, Named};
+
+    let mut modifiers = iced::keyboard::Modifiers::default();
+    let mut key = None;
+
+    for part in chord.split('+') {
+        match part {
+            "Cmd" | "Ctrl" => modifiers |= iced::keyboard::Modifiers::COMMAND,
+            "Shift" => modifiers |= iced::keyboard::Modifiers::SHIFT,
+            "Enter" => key = Some(Key::Named(Named::Enter)),
+            "Esc" => key = Some(Key::Named(Named::Escape)),
+            "Space" => key = Some(Key::Named(Named::Space)),
+            "Tab" => key = Some(Key::Named(Named::Tab)),
+            "Backspace" => key = Some(Key::Named(Named::Backspace)),
+            "Up" => key = Some(Key::Named(Named::ArrowUp)),
+            "Down" => key = Some(Key::Named(Named::ArrowDown)),
+            "PageUp" => key = Some(Key::Named(Named::PageUp)),
+            "PageDown" => key = Some(Key::Named(Named::PageDown)),
+            // A single character, held as lower case: with Shift down a layout
+            // reports the shifted character, and comparing case-sensitively
+            // would make a binding depend on the keyboard.
+            one if one.chars().count() == 1 => {
+                key = Some(Key::Character(one.to_lowercase().into()));
+            }
+            _ => return None,
+        }
+    }
+
+    Some((key?, modifiers))
+}
+
+/// Every chord the built-in bindings use, as written.
+pub fn built_in_chords() -> Vec<&'static str> {
+    REFERENCE
+        .iter()
+        .flat_map(|group| group.bindings)
+        .flat_map(|binding| binding.chords)
+        .copied()
+        .collect()
+}
+
 /// `Cmd` on macOS, `Ctrl` everywhere else — as the platform spells it, not as
 /// the source does.
 pub fn chord_label(shown: &str) -> String {
@@ -193,12 +240,12 @@ pub fn chord_label(shown: &str) -> String {
     }
 }
 
-pub fn view<'a>(palette: &'a Palette) -> Element<'a, Message> {
+pub fn view<'a>(keymap: &'a crate::keymap::Keymap, palette: &'a Palette) -> Element<'a, Message> {
     let panel = container(
         column![
             header(palette),
             divider(palette),
-            container(scrollable(body(palette)).height(Fill))
+            container(scrollable(body(keymap, palette)).height(Fill))
                 .height(Fill)
                 .padding([10, 16]),
             divider(palette),
@@ -248,7 +295,7 @@ fn header<'a>(palette: &'a Palette) -> Element<'a, Message> {
     .into()
 }
 
-fn body<'a>(palette: &'a Palette) -> Element<'a, Message> {
+fn body<'a>(keymap: &'a crate::keymap::Keymap, palette: &'a Palette) -> Element<'a, Message> {
     let mut sections = column![].spacing(4);
 
     for group in REFERENCE {
@@ -269,10 +316,14 @@ fn body<'a>(palette: &'a Palette) -> Element<'a, Message> {
                     // Fixed rather than shrink-to-fit, so the descriptions line
                     // up down the panel instead of stepping in and out.
                     container(
-                        text(chord_label(binding.shown))
-                            .size(12.0)
-                            .color(palette.accent)
-                            .font(Font::MONOSPACE)
+                        text(chord_label(
+                            keymap
+                                .shown_instead_of(binding.shown)
+                                .unwrap_or(binding.shown)
+                        ))
+                        .size(12.0)
+                        .color(palette.accent)
+                        .font(Font::MONOSPACE)
                     )
                     .width(Length::Fixed(170.0)),
                     text(binding.what).size(12.0).color(palette.text),

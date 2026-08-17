@@ -49,6 +49,12 @@ pub struct Config {
     /// Defined in `hidegit-forge` rather than here, so there is one definition
     /// rather than a config copy and a UI copy that drift apart.
     pub alerts: hidegit_forge::AlertPrefs,
+    /// `command = "chord"`, overriding the built-in bindings.
+    ///
+    /// Held as plain strings: which command names exist and what a chord may
+    /// say belongs to `hidegit-ui`, which owns the bindings, and validating it
+    /// twice would mean two answers to the same question.
+    pub shortcuts: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

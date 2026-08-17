@@ -1178,6 +1178,11 @@ pub struct App {
     /// is nothing to hold and nothing to discard on close. Settings that only
     /// take effect on OK are settings people are afraid to explore.
     pub settings_open: bool,
+    /// The shortcuts the user remapped, in front of the built-in bindings.
+    ///
+    /// Shared because the key subscription carries it in its identity, and a
+    /// subscription's value is cloned per event.
+    pub keymap: std::sync::Arc<crate::keymap::Keymap>,
     /// A chord prefix waiting for the key that completes it.
     ///
     /// `G` on its own means nothing; `G` then `W` goes to the working
@@ -1237,6 +1242,7 @@ impl Default for App {
             theme: Theme::default(),
             themes: Theme::built_in(),
             settings_open: false,
+            keymap: std::sync::Arc::default(),
             chord: None,
             palette: None,
             shortcuts_open: false,

@@ -217,12 +217,20 @@ fn boot(
         None => hidegit_ui::theme::Custom::default(),
     };
 
+    let keymap = hidegit_ui::keymap::Keymap::parse(
+        config
+            .shortcuts
+            .iter()
+            .map(|(action, chord)| (action.as_str(), chord.as_str())),
+    );
+
     let (mut ui, task) = Hidegit::new(
         initial,
         recents,
         config.alerts.clone(),
         &config.theme.name,
         custom,
+        keymap,
     );
 
     // Known now rather than at the first toggle: with no config directory,
