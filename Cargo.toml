@@ -24,6 +24,10 @@ edition = "2024"
 # `jsonwebtoken`, which reaches `time 0.3.47`, which needs 1.88 — so the
 # effective floor is set by a transitive dependency rather than by anything
 # hideGit writes. Stated here because the number is otherwise unexplainable.
+#
+# Enforced by the `rust 1.88 (the declared floor)` job in CI, which pins that
+# exact patch release and checks the workspace against it. A declared floor
+# nothing compiles against is a number, not a promise.
 rust-version = "1.88"
 license = "GPL-3.0-only"
 repository = "https://github.com/youhide/hideGit"

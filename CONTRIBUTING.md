@@ -65,9 +65,34 @@ Run these locally before pushing; CI runs the same set on Linux, macOS and Windo
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo test --workspace --all-features --locked
 ```
+
+`--locked` because the release workflow uses it. Without it here, CI would pass on whatever the
+resolver picked that afternoon while the release builds `Cargo.lock`, and the first place the two
+could disagree is a tag.
+
+CI runs three more jobs you do not need locally, but which a pull request has to clear:
+
+| Job | What it catches |
+|---|---|
+| `rust 1.88 (the declared floor)` | Code that needs a newer compiler than `Cargo.toml` promises. Clippy's `incompatible_msrv` catches a standard-library call that is too new; it says nothing about whether the crate graph compiles on 1.88 at all |
+| `release build` | `lto = "thin"` and the optimiser, which nothing built until a tag — so a release-only break used to surface at the release |
+| `benchmarks` | See [COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance); a ratio, not a time |
+
+To reproduce the floor:
+
+```sh
+rustup toolchain install 1.88.0
+RUSTUP_TOOLCHAIN=1.88.0 cargo check --workspace --all-targets --all-features --locked
+```
+
+**`RUSTUP_TOOLCHAIN`, not `rustup run`.** `rust-toolchain.toml` at the repository root pins
+`channel = "stable"`, and rustup honours a directory override above both the default *and*
+`rustup run` — so `rustup run 1.88.0 cargo check` quietly compiles with stable and tells you the
+floor is fine. Only the environment variable outranks the file. The CI job sets it for the same
+reason; without that line it installed 1.88, said so, and then checked everything with stable.
 
 Clippy warnings are errors. If a lint is genuinely wrong for a piece of code, `#[allow(...)]` it
 narrowly with a comment explaining why, rather than loosening the workspace configuration.
