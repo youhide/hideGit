@@ -225,8 +225,15 @@ Strategies:
    is carried forward, so scrolling extends an existing layout rather than recomputing one.
 2. **Load commits in pages.** `gix` walks are streamed; scrolling toward older history requests the
    next page rather than blocking on a full traversal.
-3. **Checkpoint lane state.** Snapshot the `lanes` vector every N rows so a jump to an arbitrary
-   scroll position resumes from a nearby checkpoint instead of replaying from `HEAD`.
+3. **Checkpoint lane state.** Snapshot the `lanes` vector every `CHECKPOINT_INTERVAL` rows — 128 —
+   so a jump to an arbitrary scroll position resumes from a nearby checkpoint instead of replaying
+   from `HEAD`. A jump therefore replays fewer than 128 rows whatever its distance, which is
+   asserted at the shipped value rather than at a convenient small one: it is the property the 52 µs
+   above depends on.
+
+   The constant lives in `hidegit-core`, beside `Checkpoints`. It used to live in `hidegit-ui`,
+   where the benchmarks in this crate could not reach it, so they kept a second copy of the number
+   with a comment saying the two had to match.
 
    **Rebuilt when paging stops, not per page.** Lane routing depends on which commits are loaded —
    `layout_row` filters parents through that set — so each page invalidates the checkpoints the page

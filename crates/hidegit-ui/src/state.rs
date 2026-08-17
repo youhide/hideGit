@@ -36,11 +36,6 @@ use crate::theme::Theme;
 /// screenful appears without waiting for a full traversal.
 pub const PAGE_SIZE: usize = 2_000;
 
-/// How often lane state is snapshotted while scanning history.
-///
-/// A jump to an arbitrary scroll position replays at most this many rows.
-pub const CHECKPOINT_INTERVAL: usize = 128;
-
 /// Rows laid out beyond the viewport, so a fast scroll does not reveal a gap
 /// before the next frame.
 pub const OVERSCAN: usize = 16;

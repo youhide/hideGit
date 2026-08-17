@@ -283,6 +283,18 @@ fn layout_row(commit: &Commit, known: &HashSet<ObjectId>, state: &mut LaneState)
     }
 }
 
+/// How often lane state is snapshotted while scanning history.
+///
+/// A jump to an arbitrary scroll position therefore replays fewer than this
+/// many rows. Smaller costs memory, larger costs replay time on a long jump.
+///
+/// **Here rather than in `hidegit-ui`**, where it used to live: the benchmarks
+/// are in this crate and dependencies point downward, so they could not import
+/// it and kept a second copy with a comment saying the two must match. A
+/// comment is not a guarantee, and the number that decides whether scrolling
+/// hits its frame budget is not one to let drift.
+pub const CHECKPOINT_INTERVAL: usize = 128;
+
 /// Saved lane state, so jumping to an arbitrary scroll position resumes from
 /// nearby instead of replaying the layout from `HEAD`.
 #[derive(Debug, Clone)]
@@ -693,6 +705,35 @@ mod tests {
             let mut sorted = roles.clone();
             sorted.sort();
             assert_eq!(roles, sorted, "edges come out in drawing order");
+        }
+    }
+
+    #[test]
+    fn the_shipped_interval_bounds_how_far_a_jump_replays() {
+        // What `CHECKPOINT_INTERVAL` claims, checked at the value that ships
+        // rather than at a convenient small one. This is the number the 52 µs
+        // in COMMIT_GRAPH.md depends on: if a jump could replay more rows than
+        // the interval, the per-frame cost would grow with scroll position
+        // again, which is the whole thing checkpoints exist to stop.
+        let id = |i: usize| ObjectId::from_hex(&format!("{i:040x}")).expect("a valid hash");
+        let history: Vec<Commit> = (0..CHECKPOINT_INTERVAL * 3)
+            .map(|i| Commit {
+                id: id(i),
+                parents: vec![id(i + 1)],
+                ..commit('A', &[])
+            })
+            .collect();
+
+        let checkpoints = Checkpoints::build(&history, CHECKPOINT_INTERVAL);
+
+        for row in 0..history.len() {
+            let (from, _) = checkpoints.resume_at(row);
+            assert!(from <= row, "a resume never starts after the row it is for");
+            assert!(
+                row - from < CHECKPOINT_INTERVAL,
+                "row {row} replays {} rows, and the interval promises fewer than {CHECKPOINT_INTERVAL}",
+                row - from
+            );
         }
     }
 
