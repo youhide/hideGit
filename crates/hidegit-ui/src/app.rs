@@ -168,11 +168,27 @@ impl Hidegit {
         alerts: hidegit_forge::AlertPrefs,
         theme: &str,
         custom: crate::theme::Custom,
+        keymap: crate::keymap::Keymap,
     ) -> (Self, Task<Message>) {
         let mut this = Self::default();
         this.app.recents = recents;
         this.app.alerts = alerts;
         this.app.themes.extend(custom.themes);
+
+        // Same treatment as a theme file that would not load: said on screen,
+        // once, and then ignored. A shortcut line with a typo in it is worth
+        // saying out loud and not worth a window that does not open.
+        for problem in &keymap.problems {
+            this.app.toast(&UiError {
+                summary: format!("The shortcut for “{}” was not used", problem.action),
+                details: format!(
+                    "{}\n\nIt is under `[shortcuts]` in config.toml. Every other \
+                     shortcut still works.",
+                    problem.reason
+                ),
+            });
+        }
+        this.app.keymap = keymap.shared();
 
         // Said before the theme is resolved, so a file that failed to parse is
         // reported as the parse error it is rather than only as the "no theme
@@ -2978,7 +2994,12 @@ impl Hidegit {
         let base = match &self.app.palette {
             Some(palette) => iced::widget::stack![
                 base,
-                widget::palette::view(palette, self.app.active, &self.app.theme.palette)
+                widget::palette::view(
+                    palette,
+                    self.app.active,
+                    &self.app.keymap,
+                    &self.app.theme.palette
+                )
             ]
             .into(),
             None => base,
@@ -2988,7 +3009,11 @@ impl Hidegit {
         // it and the answer to "what was that key" should not be behind
         // anything.
         let base = if self.app.shortcuts_open {
-            iced::widget::stack![base, widget::shortcuts::view(&self.app.theme.palette)].into()
+            iced::widget::stack![
+                base,
+                widget::shortcuts::view(&self.app.keymap, &self.app.theme.palette)
+            ]
+            .into()
         } else {
             base
         };
@@ -3061,6 +3086,7 @@ impl Hidegit {
         // through a message that would arrive a frame late.
         let context = (
             self.modal_keys(),
+            self.app.keymap.clone(),
             KeyContext {
                 active: self.app.active,
                 editing: self
@@ -3082,7 +3108,7 @@ impl Hidegit {
 
         let keys = keyboard::listen()
             .with(context)
-            .map(|((modal, cx), event)| {
+            .map(|((modal, keymap, cx), event)| {
                 let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
                     return Message::ToastDismissed(u64::MAX);
                 };
@@ -3092,7 +3118,7 @@ impl Hidegit {
                 if let Some(modal) = modal {
                     return modal_shortcut(&key, modal);
                 }
-                shortcut(&key, modifiers, cx)
+                bound(&keymap, &key, modifiers, cx)
             });
 
         // One watch per open repository, so a change made in an editor or by a
@@ -3196,7 +3222,59 @@ pub struct KeyContext {
     pub open_repos: usize,
 }
 
+impl KeyContext {
+    /// Whether something on top of the screen has the keyboard, and remapped
+    /// bindings must therefore stay out of the way.
+    fn owns_the_keyboard(&self) -> bool {
+        self.searching.is_some()
+            || self.settings_open
+            || self.shortcuts_open
+            || self.palette_open
+            || self.chord.is_some()
+    }
+}
+
 /// Maps a key press to a message. `Cmd` on macOS, `Ctrl` elsewhere.
+/// What a press means, with the user's own bindings in front of the built-in
+/// ones.
+///
+/// Three steps, in this order: a chord the file names wins, because an explicit
+/// line beats a default; the default chord of a command that has been moved
+/// elsewhere does nothing, or the remap would look ignored while both fired;
+/// everything else is the binding hideGit ships.
+///
+/// A panel that owns the keyboard is not overridable and is checked first —
+/// `Esc` closing a panel is how you get *out*, and a config file that can
+/// strand you inside one can lock you out of the application.
+fn bound(
+    keymap: &crate::keymap::Keymap,
+    key: &keyboard::Key,
+    modifiers: keyboard::Modifiers,
+    cx: KeyContext,
+) -> Message {
+    if cx.owns_the_keyboard() {
+        return shortcut(key, modifiers, cx);
+    }
+
+    // While a text field has focus only modified keys act, which is the rule the
+    // built-in bindings follow and the reason `Cmd+Shift+U` pushes in the middle
+    // of writing a commit message. A remapped binding gets the same treatment,
+    // or rebinding Push to a bare letter would type it instead.
+    if cx.editing && !modifiers.command() {
+        return shortcut(key, modifiers, cx);
+    }
+
+    if let Some(message) = keymap.resolve(key, modifiers, cx.active) {
+        return message;
+    }
+
+    if keymap.moved_away(key, modifiers) {
+        return Message::ToastDismissed(u64::MAX);
+    }
+
+    shortcut(key, modifiers, cx)
+}
+
 fn shortcut(key: &keyboard::Key, modifiers: keyboard::Modifiers, cx: KeyContext) -> Message {
     let KeyContext {
         active,
@@ -4882,6 +4960,7 @@ mod tests {
             hidegit_forge::AlertPrefs::default(),
             "hidegit-solarized",
             crate::theme::Custom::default(),
+            crate::keymap::Keymap::default(),
         );
 
         assert_eq!(
@@ -4914,6 +4993,7 @@ mod tests {
             hidegit_forge::AlertPrefs::default(),
             crate::theme::Theme::LIGHT_NAME,
             crate::theme::Custom::default(),
+            crate::keymap::Keymap::default(),
         );
 
         assert_eq!(app.app.theme.name, crate::theme::Theme::LIGHT_NAME);
@@ -4940,6 +5020,7 @@ mod tests {
             hidegit_forge::AlertPrefs::default(),
             "zinc",
             one_custom_theme(),
+            crate::keymap::Keymap::default(),
         );
 
         assert_eq!(app.app.theme.name, "zinc");
@@ -4980,6 +5061,7 @@ mod tests {
             hidegit_forge::AlertPrefs::default(),
             "zinc",
             custom,
+            crate::keymap::Keymap::default(),
         );
 
         let reported = app
@@ -5163,6 +5245,138 @@ mod tests {
 
         let _ = app.update(Message::SettingsDismissed);
         assert!(!app.app.settings_open);
+    }
+
+    // ---- remapped shortcuts ----------------------------------------------
+
+    #[test]
+    fn a_remapped_chord_reaches_the_keyboard_and_the_old_one_stops() {
+        // The whole feature, at the layer that decides: an explicit line in the
+        // file beats a default, and the default it replaced goes quiet.
+        let keymap = crate::keymap::Keymap::parse([("push", "Cmd+U")]);
+        let cx = KeyContext {
+            active: Some(0),
+            ..KeyContext::default()
+        };
+        let u = keyboard::Key::Character("u".into());
+
+        assert!(matches!(
+            bound(&keymap, &u, keyboard::Modifiers::COMMAND, cx),
+            Message::Repo(0, RepoMessage::PushRequested { .. })
+        ));
+        assert!(matches!(
+            bound(
+                &keymap,
+                &u,
+                keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT,
+                cx
+            ),
+            Message::ToastDismissed(_)
+        ));
+    }
+
+    #[test]
+    fn an_untouched_binding_is_unaffected_by_a_remap_of_something_else() {
+        let keymap = crate::keymap::Keymap::parse([("push", "Cmd+U")]);
+        let cx = KeyContext {
+            active: Some(0),
+            ..KeyContext::default()
+        };
+        let f = keyboard::Key::Character("f".into());
+
+        assert!(matches!(
+            bound(
+                &keymap,
+                &f,
+                keyboard::Modifiers::COMMAND | keyboard::Modifiers::SHIFT,
+                cx
+            ),
+            Message::Repo(0, RepoMessage::FetchRequested)
+        ));
+    }
+
+    #[test]
+    fn a_remap_cannot_take_a_key_a_panel_owns() {
+        // Esc closing a panel is how you get *out*. A config file that can
+        // strand you inside one can lock you out of the application.
+        let keymap = crate::keymap::Keymap::parse([("push", "Esc")]);
+        let escape = keyboard::Key::Named(keyboard::key::Named::Escape);
+
+        for cx in [
+            KeyContext {
+                active: Some(0),
+                settings_open: true,
+                ..KeyContext::default()
+            },
+            KeyContext {
+                active: Some(0),
+                palette_open: true,
+                ..KeyContext::default()
+            },
+            KeyContext {
+                active: Some(0),
+                searching: Some(0),
+                ..KeyContext::default()
+            },
+        ] {
+            assert!(
+                !matches!(
+                    bound(&keymap, &escape, keyboard::Modifiers::default(), cx),
+                    Message::Repo(0, RepoMessage::PushRequested { .. })
+                ),
+                "a panel kept its own Escape"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_remap_does_not_fire_while_a_message_is_being_typed() {
+        // The same rule the built-in bindings follow — and the reason a
+        // modified remap still works mid-message, which is when Push is wanted.
+        let keymap = crate::keymap::Keymap::parse([("push", "Q"), ("pull", "Cmd+Y")]);
+        let cx = KeyContext {
+            active: Some(0),
+            editing: true,
+            ..KeyContext::default()
+        };
+
+        assert!(matches!(
+            bound(
+                &keymap,
+                &keyboard::Key::Character("q".into()),
+                keyboard::Modifiers::default(),
+                cx
+            ),
+            Message::ToastDismissed(_)
+        ));
+        assert!(matches!(
+            bound(
+                &keymap,
+                &keyboard::Key::Character("y".into()),
+                keyboard::Modifiers::COMMAND,
+                cx
+            ),
+            Message::Repo(0, RepoMessage::PullRequested)
+        ));
+    }
+
+    #[test]
+    fn a_shortcut_line_that_could_not_be_used_is_said_on_screen() {
+        let (app, _) = Hidegit::new(
+            Vec::new(),
+            Vec::new(),
+            hidegit_forge::AlertPrefs::default(),
+            crate::theme::Theme::DARK_NAME,
+            crate::theme::Custom::default(),
+            crate::keymap::Keymap::parse([("shove", "Cmd+U")]),
+        );
+
+        let toast = app
+            .app
+            .toasts
+            .first()
+            .expect("a shortcut that was ignored has to be visible");
+        assert!(toast.summary.contains("shove"), "{:?}", toast.summary);
     }
 
     // ---- chords ----------------------------------------------------------
@@ -5763,6 +5977,7 @@ mod tests {
             Default::default(),
             "hidegit-light",
             crate::theme::Custom::default(),
+            crate::keymap::Keymap::default(),
         );
         assert_eq!(app.app.theme.palette, crate::theme::Palette::LIGHT);
 
@@ -5772,6 +5987,7 @@ mod tests {
             Default::default(),
             "hidegit-nope",
             crate::theme::Custom::default(),
+            crate::keymap::Keymap::default(),
         );
         assert_eq!(
             app.app.theme.palette,

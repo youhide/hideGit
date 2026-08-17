@@ -516,7 +516,27 @@ was being typed, and the guard would be worse than useless — it would look lik
 M2 deferred `Space` on the grounds that focus was not observable at all. That was true of the
 `on_input` signal it was reaching for, and not of the widget operation, which is the fix.
 
-Shortcuts are user-remappable at M6. The scheme deliberately avoids fighting muscle memory built
+**Remapping.** `[shortcuts]` in `config.toml` maps a command to a chord:
+
+```toml
+[shortcuts]
+push = "Cmd+U"
+refresh-pull-requests = "Cmd+R"    # a command that ships with no chord at all
+```
+
+The commands are the ones the command palette lists, by name. That boundary is deliberate:
+navigation — the arrows, `Tab`, `J`/`K`, `Space`, the chord prefix and the keys a panel owns while it
+is up — stays fixed, because those are how you get *out* of things, and a file that can strand you
+inside a panel can lock you out of the application.
+
+Rebinding a command **moves** it: its default chord stops working, or both would fire and the remap
+would look ignored. An explicit line beats a built-in binding, and taking one is reported rather than
+done in silence — losing `J` with nothing to connect it to is worse than being told. Two commands
+cannot share a chord; the first wins and the second is told why, so the order of a TOML table is not
+load-bearing. A name that is not a command and a chord that will not parse are reported on screen and
+ignored, never fatal. Both the reference and the palette print the chord a command answers to *now*.
+
+The scheme deliberately avoids fighting muscle memory built
 in terminal Git tools. Rows marked **not built** are bindings this table has promised since M1 and
 that nothing dispatches yet; they are listed rather than removed so the gap is visible.
 

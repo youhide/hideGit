@@ -339,7 +339,9 @@ Everything between "works" and "someone who does not write Rust can install it".
   [UI_SPEC](./UI_SPEC.md#keyboard-shortcuts) rather than left looking implemented: the branch
   switcher `G` `B` would open. **Chords have landed** — `G` arms the next key, `G` `W` goes to the
   working directory, and anything that completes nothing cancels rather than falling through to its
-  ordinary binding.
+  ordinary binding. **Remapping has landed** for the commands the palette names, written as
+  `[shortcuts]` in `config.toml`; navigation and the keys a panel owns stay fixed, because a config
+  file that can strand you inside a panel can lock you out of the application.
   **The command palette has landed** on `Cmd+P`, running the same messages the keyboard does rather
   than a second implementation of each action, and printing each command's chord beside it — so it
   teaches the shortcut instead of replacing it. **The shortcut reference has landed** on `Cmd+/`, as a table the

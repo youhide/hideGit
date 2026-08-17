@@ -235,6 +235,26 @@ fn the_command_palette_says_when_nothing_matches() {
 }
 
 #[test]
+fn the_reference_prints_the_chord_a_command_answers_to_now() {
+    // A reference that still prints Cmd+Shift+U after Push was rebound is the
+    // drift the reference exists to prevent, one config file later.
+    let mut app = app_with(1);
+    app.app.keymap = crate::keymap::Keymap::parse([("push", "Cmd+U")]).shared();
+    let _ = app.update(Message::ShortcutsRequested);
+
+    shows(
+        &app,
+        crate::widget::shortcuts::chord_label("Cmd+U").as_str(),
+    );
+    let mut ui = render(&app);
+    assert!(
+        ui.find(crate::widget::shortcuts::chord_label("Cmd+Shift+U").as_str())
+            .is_err(),
+        "the chord it no longer answers to is gone"
+    );
+}
+
+#[test]
 fn the_shortcut_reference_lays_out_with_its_bindings() {
     let mut app = app_with(1);
     let _ = app.update(Message::ShortcutsRequested);

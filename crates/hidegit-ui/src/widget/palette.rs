@@ -26,6 +26,9 @@ use crate::theme::Palette;
 /// offering a row that does nothing when pressed.
 #[derive(Debug, Clone, Copy)]
 pub struct Command {
+    /// The name this command answers to in `config.toml`. Stable: renaming one
+    /// silently unbinds whatever somebody had mapped to it.
+    pub id: &'static str,
     pub title: &'static str,
     pub section: &'static str,
     /// The chord that also runs it, exactly as the shortcut reference spells
@@ -55,42 +58,49 @@ fn repo(active: Option<usize>, message: RepoMessage) -> Option<Message> {
 
 pub const COMMANDS: &[Command] = &[
     Command {
+        id: "open",
         title: "Open a repository",
         section: "Repositories",
         chord: Some("Cmd+O"),
         message: |_| Some(Message::OpenDialogRequested),
     },
     Command {
+        id: "clone",
         title: "Clone a repository",
         section: "Repositories",
         chord: Some("Cmd+Shift+O"),
         message: |_| Some(clone_prompt()),
     },
     Command {
+        id: "settings",
         title: "Settings",
         section: "Repositories",
         chord: Some("Cmd+,"),
         message: |_| Some(Message::SettingsRequested),
     },
     Command {
+        id: "shortcuts",
         title: "Keyboard shortcuts",
         section: "Repositories",
         chord: Some("Cmd+/"),
         message: |_| Some(Message::ShortcutsRequested),
     },
     Command {
+        id: "fetch",
         title: "Fetch every remote",
         section: "Remotes",
         chord: Some("Cmd+Shift+F"),
         message: |active| repo(active, RepoMessage::FetchRequested),
     },
     Command {
+        id: "pull",
         title: "Pull",
         section: "Remotes",
         chord: Some("Cmd+Shift+P"),
         message: |active| repo(active, RepoMessage::PullRequested),
     },
     Command {
+        id: "push",
         title: "Push",
         section: "Remotes",
         chord: Some("Cmd+Shift+U"),
@@ -104,36 +114,42 @@ pub const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        id: "commit",
         title: "Commit",
         section: "Working directory",
         chord: Some("Cmd+Enter"),
         message: |active| repo(active, RepoMessage::CommitRequested),
     },
     Command {
+        id: "commit-and-push",
         title: "Commit and push",
         section: "Working directory",
         chord: Some("Cmd+Shift+Enter"),
         message: |active| repo(active, RepoMessage::CommitAndPushRequested),
     },
     Command {
+        id: "discard",
         title: "Discard the selected changes",
         section: "Working directory",
         chord: Some("Cmd+Backspace"),
         message: |active| repo(active, RepoMessage::DiscardSelectedRequested),
     },
     Command {
+        id: "search",
         title: "Search commits",
         section: "History",
         chord: Some("Cmd+F"),
         message: |active| repo(active, RepoMessage::SearchRequested),
     },
     Command {
+        id: "diff-mode",
         title: "Toggle unified and side-by-side diff",
         section: "History",
         chord: Some("Cmd+D"),
         message: |active| repo(active, RepoMessage::DiffModeToggled),
     },
     Command {
+        id: "continue",
         title: "Continue the operation in progress",
         section: "History",
         chord: Some("Cmd+Shift+."),
@@ -145,12 +161,14 @@ pub const COMMANDS: &[Command] = &[
         },
     },
     Command {
+        id: "refresh-pull-requests",
         title: "Refresh pull requests",
         section: "Pull requests",
         chord: None,
         message: |active| repo(active, RepoMessage::PrsRefreshRequested),
     },
     Command {
+        id: "connect",
         title: "Connect to GitHub",
         section: "Pull requests",
         chord: None,
@@ -177,6 +195,7 @@ pub fn matching(query: &str, active: Option<usize>) -> Vec<&'static Command> {
 pub fn view<'a>(
     state: &'a CommandPalette,
     active: Option<usize>,
+    keymap: &'a crate::keymap::Keymap,
     palette: &'a Palette,
 ) -> Element<'a, Message> {
     let matches = matching(&state.query, active);
@@ -193,7 +212,7 @@ pub fn view<'a>(
             )
             .padding([8, 10]),
             divider(palette),
-            container(results(&matches, state.selected, palette)).height(Fill),
+            container(results(&matches, state.selected, keymap, palette)).height(Fill),
         ]
         .height(Fill),
     )
@@ -227,6 +246,7 @@ pub fn view<'a>(
 fn results<'a>(
     matches: &[&'static Command],
     selected: usize,
+    keymap: &'a crate::keymap::Keymap,
     palette: &'a Palette,
 ) -> Element<'a, Message> {
     if matches.is_empty() {
@@ -260,7 +280,9 @@ fn results<'a>(
             .align_y(Center)
             .spacing(8);
 
-        if let Some(chord) = command.chord {
+        // The chord it answers to now, which is not its default if the file
+        // moved it — or gave it one it never had.
+        if let Some(chord) = keymap.chord_for(command) {
             line = line.push(Space::new().width(Fill));
             line = line.push(
                 text(crate::widget::shortcuts::chord_label(chord))
