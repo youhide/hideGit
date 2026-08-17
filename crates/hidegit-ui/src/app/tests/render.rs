@@ -581,3 +581,65 @@ fn a_screen_with_no_repository_open_still_lays_out() {
     assert!(app.app.repos.is_empty(), "the fixture closed the only tab");
     let _ = render(&app);
 }
+
+/// A submodule at `vendor/lib`, in whichever of the three states is asked for.
+fn submodule(recorded: Option<&str>, checked_out: Option<&str>) -> hidegit_core::model::Submodule {
+    let id = |hex: &str| ObjectId::from_hex(&hex.repeat(40)).expect("valid hex");
+
+    hidegit_core::model::Submodule {
+        name: "vendor/lib".to_owned(),
+        path: PathBuf::from("vendor/lib"),
+        url: "https://example.invalid/lib.git".to_owned(),
+        branch: None,
+        recorded: recorded.map(id),
+        checked_out: checked_out.map(id),
+    }
+}
+
+#[test]
+fn a_repository_with_no_submodules_has_no_submodules_section() {
+    // Almost every repository. An empty heading would read as "you have none",
+    // which is a different claim from "this does not apply to you".
+    let app = app_with(3);
+
+    let mut ui = render(&app);
+    assert!(
+        ui.find("SUBMODULES").is_err(),
+        "a heading with nothing behind it is chrome"
+    );
+}
+
+#[test]
+fn a_submodule_appears_with_its_path_and_the_commit_the_superproject_records() {
+    let mut app = app_with(3);
+    app.app.repos[0].submodules = vec![submodule(Some("a"), Some("a"))];
+
+    shows(&app, "SUBMODULES");
+    shows(&app, "vendor/lib");
+    shows(&app, "aaaaaaa");
+}
+
+#[test]
+fn a_submodule_that_moved_shows_both_commits_rather_than_one() {
+    // Which pointer is wrong is the only question a submodule ever raises, and
+    // a single hash leaves the user asking which of the two it was.
+    let mut app = app_with(3);
+    app.app.repos[0].submodules = vec![submodule(Some("a"), Some("b"))];
+
+    shows(&app, "aaaaaaa → bbbbbbb");
+}
+
+#[test]
+fn a_submodule_that_was_never_checked_out_says_so_rather_than_showing_a_hash() {
+    // The state a fresh clone leaves every submodule in. A hash here would say
+    // "here is what you have", when the answer is that there is nothing there.
+    let mut app = app_with(3);
+    app.app.repos[0].submodules = vec![submodule(Some("a"), None)];
+
+    shows(&app, "not initialised");
+    let mut ui = render(&app);
+    assert!(
+        ui.find("aaaaaaa").is_err(),
+        "the recorded commit is not what is checked out, and showing it implies it is"
+    );
+}

@@ -535,7 +535,7 @@ Breadth, once the core is solid. Not ordered.
 
 | Area | Notes |
 |---|---|
-| **Submodules** | Status, update, init. Common enough to matter, awkward enough to deserve its own milestone. **The read half has landed**: `GitBackend::submodules` reports each entry's path, URL, the commit the superproject records and the commit the nested checkout is actually on — the three states `git submodule status` prints as `-`, ` ` and `+`. Nothing shows it yet, and nothing writes: `update` and `init` are still to come. |
+| **Submodules** | Status, update, init. Common enough to matter, awkward enough to deserve its own milestone. **Read and shown**: `GitBackend::submodules` reports each entry's path, URL, the commit the superproject records and the commit the nested checkout is actually on — the three states `git submodule status` prints as `-`, ` ` and `+` — and the sidebar has a `SUBMODULES` section that names both commits when they disagree. Nothing writes yet: `update` and `init` are still to come, which is why the row is the one in the sidebar that is not a button. |
 | **Worktrees** | Growing in use; fits naturally alongside multi-repo tabs. |
 | **Git LFS** | Largely inherited from shelling out to `git`, but needs UI for pointer files and fetch state. |
 | **Interactive rebase editor** | A richer one than M6's: a plan the graph itself can be dragged into, and `--autosquash`. |

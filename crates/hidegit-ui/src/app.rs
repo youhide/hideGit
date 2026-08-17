@@ -1091,6 +1091,7 @@ impl Hidegit {
             status: opened.status,
             stashes: opened.stashes,
             remotes: opened.remotes,
+            submodules: opened.submodules,
             divergence: HashMap::new(),
             pending: None,
             graph,
@@ -2890,6 +2891,7 @@ impl Hidegit {
                 // restarting.
                 repo.prs.repo = forge::detect(&refreshed.remotes);
                 repo.remotes = refreshed.remotes;
+                repo.submodules = refreshed.submodules;
 
                 // Restored by commit id rather than row index: a new commit at
                 // HEAD shifts every row down, and a refresh must not silently
@@ -3707,6 +3709,7 @@ fn open_repository(
     let status = backend.status()?;
     let stashes = backend.stashes()?;
     let remotes = backend.remotes()?;
+    let submodules = backend.submodules()?;
 
     say(OpenPhase::Counting);
     let total = backend.commit_count(&RevSpec::All)?;
@@ -3723,6 +3726,7 @@ fn open_repository(
         status,
         stashes,
         remotes,
+        submodules,
         total,
         first_page,
     })
@@ -3907,6 +3911,12 @@ fn reread(backend: &dyn GitBackend) -> Result<Refreshed, GitError> {
         // Read here rather than in its own task: it is a config read, not a walk,
         // and a remote that was just added has to appear at once.
         remotes: backend.remotes()?,
+        // Free for the overwhelming majority of repositories, which have no
+        // `.gitmodules` at all and stop at that one lookup. Where there are
+        // submodules it costs a repository open each, which is the price of
+        // knowing where the nested checkouts actually are — and a submodule
+        // that moved has to stop looking current the moment it does.
+        submodules: backend.submodules()?,
         total: backend.commit_count(&RevSpec::All)?,
         first_page: backend.log(&RevSpec::All, LogPage::first(PAGE_SIZE))?,
     })
@@ -3991,6 +4001,7 @@ mod tests {
             status: WorktreeStatus::default(),
             stashes: Vec::new(),
             remotes: Vec::new(),
+            submodules: Vec::new(),
             total: count,
             first_page: history,
         }
@@ -4321,6 +4332,7 @@ mod tests {
             status: WorktreeStatus::default(),
             stashes: Vec::new(),
             remotes: Vec::new(),
+            submodules: Vec::new(),
             total: survivors.len(),
             first_page: survivors,
         };
@@ -4357,6 +4369,7 @@ mod tests {
             status: WorktreeStatus::default(),
             stashes: Vec::new(),
             remotes: Vec::new(),
+            submodules: Vec::new(),
             // More history exists than arrived, so the graph is still loading.
             total: 5_000,
             first_page: commits(2),
@@ -7360,6 +7373,7 @@ mod tests {
                 status: dirty(),
                 stashes: Vec::new(),
                 remotes: Vec::new(),
+                submodules: Vec::new(),
                 total: 100,
                 first_page: commits(100),
             }))),
@@ -7406,6 +7420,7 @@ mod tests {
                 status: WorktreeStatus::default(),
                 stashes: Vec::new(),
                 remotes: Vec::new(),
+                submodules: Vec::new(),
                 total: 101,
                 first_page: grown,
             }))),
@@ -8463,6 +8478,7 @@ mod tests {
                 status: WorktreeStatus::default(),
                 stashes: vec![stash_entry(0, "fresh")],
                 remotes: Vec::new(),
+                submodules: Vec::new(),
                 total: 1,
                 first_page: commits(1),
             }))),
@@ -8471,6 +8487,50 @@ mod tests {
         let stashes = &app.app.repos[0].stashes;
         assert_eq!(stashes.len(), 1);
         assert_eq!(stashes[0].message, "fresh");
+    }
+
+    #[test]
+    fn a_refresh_replaces_the_submodule_list_too() {
+        // A submodule that moved has to stop looking current the moment the
+        // watcher notices, which means the refresh path has to carry them and
+        // not only the open path.
+        let mut app = app_with(1);
+        let stale = hidegit_core::model::Submodule {
+            name: "vendor/lib".to_owned(),
+            path: PathBuf::from("vendor/lib"),
+            url: "https://example.invalid/lib.git".to_owned(),
+            branch: None,
+            recorded: ObjectId::from_hex(&"a".repeat(40)),
+            checked_out: ObjectId::from_hex(&"a".repeat(40)),
+        };
+        app.app.repos[0].submodules = vec![stale.clone()];
+
+        let moved = hidegit_core::model::Submodule {
+            checked_out: ObjectId::from_hex(&"b".repeat(40)),
+            ..stale
+        };
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Refreshed(Box::new(Ok(Refreshed {
+                head: opened(1).head,
+                refs: Refs::default(),
+                state: RepoState::Clean,
+                status: WorktreeStatus::default(),
+                stashes: Vec::new(),
+                remotes: Vec::new(),
+                submodules: vec![moved],
+                total: 1,
+                first_page: commits(1),
+            }))),
+        ));
+
+        let submodules = &app.app.repos[0].submodules;
+        assert_eq!(submodules.len(), 1);
+        assert_eq!(
+            submodules[0].state(),
+            hidegit_core::model::SubmoduleState::Moved,
+            "the refresh brought the new checkout, not the one the open read"
+        );
     }
 
     // ---- remotes, tags and clone ----
