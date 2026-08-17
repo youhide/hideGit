@@ -27,6 +27,9 @@ pub struct Paths {
     /// Panic reports. Beside the state rather than the config: hideGit writes
     /// these, nobody edits them.
     pub crashes: PathBuf,
+    /// Translations, one file per language. Next to `themes/` because they are
+    /// the same kind of thing: a TOML file somebody wrote.
+    pub locales: PathBuf,
 }
 
 impl Paths {
@@ -38,6 +41,7 @@ impl Paths {
             state: dirs.data_dir().join("state.toml"),
             themes: dirs.config_dir().join("themes"),
             crashes: dirs.data_dir().join("crashes"),
+            locales: dirs.config_dir().join("locales"),
         })
     }
 }

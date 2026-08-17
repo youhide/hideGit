@@ -539,7 +539,7 @@ Breadth, once the core is solid. Not ordered.
 | **Worktrees** | Growing in use; fits naturally alongside multi-repo tabs. |
 | **Git LFS** | Largely inherited from shelling out to `git`, but needs UI for pointer files and fetch state. |
 | **Interactive rebase editor** | A richer one than M6's: a plan the graph itself can be dragged into, and `--autosquash`. |
-| **Internationalisation** | Scaffolding lands before 1.0 so this is not a retrofit; **PT-BR** is the first translation. |
+| **Internationalisation** | **The scaffolding has landed** ([ADR-0008](./adr/0008-translations-as-toml-catalogues.md)): keys in the code, strings in a TOML catalogue, no i18n runtime. English is `locales/en.toml`, compiled in; a translation is the same file in a `locales` directory beside `config.toml`. Proven on the settings panel — the other ~690 strings are still inline literals, and moving them is the work that remains. **PT-BR** is the first translation. |
 | **Migrate operations back to `gix`** | As gitoxide lands `push` and a complete rebase workflow, methods move off the CLI one at a time, guarded by the `GitBackend` test suite. Conditions in [ADR-0002](./adr/0002-git-backend-hybrid.md). |
 | **Plugin or scripting surface** | Only if a real need appears. A plugin API is a permanent compatibility commitment. |
 

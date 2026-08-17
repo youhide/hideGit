@@ -279,6 +279,17 @@ fn boot(
         None => hidegit_ui::theme::Custom::default(),
     };
 
+    // From the environment, the way every other application on the machine
+    // decides: `LC_ALL`, `LC_MESSAGES`, `LANG`. There is no setting for it —
+    // an application that disagrees with the system about its own language is
+    // a bug report nobody can reproduce.
+    let text = match &paths {
+        Some(paths) => {
+            hidegit_ui::i18n::Catalogue::load(&paths.locales, &hidegit_ui::i18n::from_environment())
+        }
+        None => hidegit_ui::i18n::Catalogue::default(),
+    };
+
     let keymap = hidegit_ui::keymap::Keymap::parse(
         config
             .shortcuts
@@ -293,6 +304,7 @@ fn boot(
         &config.theme.name,
         custom,
         keymap,
+        text,
     );
 
     // Known now rather than at the first toggle: with no config directory,
@@ -697,6 +709,7 @@ mod tests {
             state: dir.path().join("state.toml"),
             themes: dir.path().join("themes"),
             crashes: dir.path().join("crashes"),
+            locales: dir.path().join("locales"),
         });
 
         let _ = update(
@@ -736,6 +749,7 @@ mod tests {
             state: dir.path().join("state.toml"),
             themes: dir.path().join("themes"),
             crashes: dir.path().join("crashes"),
+            locales: dir.path().join("locales"),
         });
 
         let _ = update(
@@ -840,6 +854,7 @@ mod tests {
             state: dir.path().join("state.toml"),
             themes: dir.path().join("themes"),
             crashes: dir.path().join("crashes"),
+            locales: dir.path().join("locales"),
         });
 
         let _ = update(&mut shell, ShellMessage::Ui(Message::PanicReportsToggled));

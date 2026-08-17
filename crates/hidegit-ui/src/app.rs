@@ -237,11 +237,25 @@ impl Hidegit {
         theme: &str,
         custom: crate::theme::Custom,
         keymap: crate::keymap::Keymap,
+        text: crate::i18n::Catalogue,
     ) -> (Self, Task<Message>) {
         let mut this = Self::default();
         this.app.recents = recents;
         this.app.alerts = alerts;
         this.app.themes.extend(custom.themes);
+
+        // Said the same way a theme file that would not load is: once, on
+        // screen, and then the interface carries on in English.
+        for problem in &text.problems {
+            this.app.toast(&UiError {
+                summary: format!("The {} translation is incomplete", problem.locale),
+                details: format!(
+                    "{}\n\nIt is in the locales directory next to config.toml.",
+                    problem.reason
+                ),
+            });
+        }
+        this.app.text = text;
 
         // Same treatment as a theme file that would not load: said on screen,
         // once, and then ignored. A shortcut line with a typo in it is worth
@@ -5125,6 +5139,7 @@ mod tests {
             "hidegit-solarized",
             crate::theme::Custom::default(),
             crate::keymap::Keymap::default(),
+            crate::i18n::Catalogue::default(),
         );
 
         assert_eq!(
@@ -5158,6 +5173,7 @@ mod tests {
             crate::theme::Theme::LIGHT_NAME,
             crate::theme::Custom::default(),
             crate::keymap::Keymap::default(),
+            crate::i18n::Catalogue::default(),
         );
 
         assert_eq!(app.app.theme.name, crate::theme::Theme::LIGHT_NAME);
@@ -5185,6 +5201,7 @@ mod tests {
             "zinc",
             one_custom_theme(),
             crate::keymap::Keymap::default(),
+            crate::i18n::Catalogue::default(),
         );
 
         assert_eq!(app.app.theme.name, "zinc");
@@ -5226,6 +5243,7 @@ mod tests {
             "zinc",
             custom,
             crate::keymap::Keymap::default(),
+            crate::i18n::Catalogue::default(),
         );
 
         let reported = app
@@ -5829,6 +5847,7 @@ mod tests {
             crate::theme::Theme::DARK_NAME,
             crate::theme::Custom::default(),
             crate::keymap::Keymap::parse([("shove", "Cmd+U")]),
+            crate::i18n::Catalogue::default(),
         );
 
         let toast = app
@@ -6438,6 +6457,7 @@ mod tests {
             "hidegit-light",
             crate::theme::Custom::default(),
             crate::keymap::Keymap::default(),
+            crate::i18n::Catalogue::default(),
         );
         assert_eq!(app.app.theme.palette, crate::theme::Palette::LIGHT);
 
@@ -6448,6 +6468,7 @@ mod tests {
             "hidegit-nope",
             crate::theme::Custom::default(),
             crate::keymap::Keymap::default(),
+            crate::i18n::Catalogue::default(),
         );
         assert_eq!(
             app.app.theme.palette,

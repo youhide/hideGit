@@ -1239,6 +1239,11 @@ pub struct App {
     /// is nothing to hold and nothing to discard on close. Settings that only
     /// take effect on OK are settings people are afraid to explore.
     pub settings_open: bool,
+    /// Every user-facing string, in the language this session is running in.
+    ///
+    /// Held here so a widget reaches it the way it reaches the palette: through
+    /// `App`, with no global and no macro that hides where the text came from.
+    pub text: crate::i18n::Catalogue,
     /// The shortcuts the user remapped, in front of the built-in bindings.
     ///
     /// Shared because the key subscription carries it in its identity, and a
@@ -1316,6 +1321,7 @@ impl Default for App {
             theme: Theme::default(),
             themes: Theme::built_in(),
             settings_open: false,
+            text: crate::i18n::Catalogue::default(),
             opening: Vec::new(),
             next_opening: 0,
             keymap: std::sync::Arc::default(),

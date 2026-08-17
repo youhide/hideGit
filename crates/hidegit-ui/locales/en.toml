@@ -1,0 +1,63 @@
+# hideGit's user-facing text, in English.
+#
+# This is the source: the code carries keys, this file carries strings, and it
+# is compiled into the binary as the fallback for every other language. To
+# translate, copy it to `locales/pt-BR.toml` beside your `config.toml`, replace
+# the values, and leave the keys alone. Anything you have not translated shows
+# in English rather than as a key, and hideGit says how many are left.
+#
+# See docs/adr/0008-translations-as-toml-catalogues.md.
+#
+# **Not everything the interface shows is here, yet.** The catalogue was added
+# in M6 with the settings panel converted to prove it; the rest of the screens
+# still carry their strings inline. New user-facing text goes here.
+#
+# What never belongs here: Git's own output, which reaches the user verbatim on
+# purpose, and anything that came out of a repository — branch names, paths,
+# remote URLs, commit messages.
+
+# ---- The settings panel --------------------------------------------------
+
+"settings.title" = "Settings"
+"settings.done" = "Done"
+
+# The footer says whether the last change reached config.toml. Both halves
+# matter: a toggle that flips while the file refused the write is the bug the
+# footer exists to make visible.
+"settings.saved" = "Saved to config.toml as you change it."
+"settings.not-saved" = "Not saved — "
+
+"settings.section.appearance" = "Appearance"
+"settings.section.window" = "Window"
+"settings.section.diagnostics" = "Diagnostics"
+"settings.section.alerts" = "Pull request alerts"
+"settings.section.muted" = "Muted repositories"
+
+"settings.window.remember" = "Reopen at the last size and position"
+# Says what "off" means, which is otherwise a guess: not "wherever the window
+# manager feels like", but a fixed default.
+"settings.window.remember.off" = "Off, hideGit opens at its default size, centred."
+
+"settings.diagnostics.reports" = "Write a report when something goes wrong"
+"settings.diagnostics.reports.note" = "Saved on this machine. Nothing is ever sent anywhere."
+"settings.diagnostics.updates" = "Check for a newer hideGit"
+"settings.diagnostics.updates.note" = "Asks github.com once a day. Never installs anything."
+
+"settings.quiet.title" = "Quiet hours"
+"settings.quiet.from" = "from"
+"settings.quiet.to" = "to"
+# Shown when the two ends are equal, because that window covers nothing — which
+# is the only reading that does not silence either everything or nothing.
+"settings.quiet.empty" = "A window that starts and ends at the same hour silences nothing."
+
+# Shown when no repository can be named yet, so the list is not an empty box.
+"settings.muted.none" = "Repositories appear here once one is open with a GitHub remote, or is muted in config.toml."
+
+# ---- Themes --------------------------------------------------------------
+#
+# The two that ship are labelled rather than keyed: `hidegit-dark` is a config
+# name nobody chose. A custom theme is shown by its file name, untranslated,
+# because somebody chose that.
+
+"theme.dark" = "Dark"
+"theme.light" = "Light"
