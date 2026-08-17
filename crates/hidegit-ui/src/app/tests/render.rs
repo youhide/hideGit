@@ -234,6 +234,98 @@ fn the_command_palette_says_when_nothing_matches() {
     shows(&app, "Nothing matches that.");
 }
 
+/// A commit whose diff is one file, with one hunk of the given lines.
+fn app_showing_a_diff(name: &str) -> Hidegit {
+    use hidegit_core::model::{
+        ChangeStatus, CommitDetail, Diff, DiffLine, DiffStats, FileChange, FileDiff,
+        FileDiffContent, Hunk, LineKind,
+    };
+
+    let mut app = app_with(2);
+    let repo = app.app.repos.get_mut(0).unwrap();
+    let line = |kind, text: &str| DiffLine {
+        kind,
+        old_lineno: Some(1),
+        new_lineno: Some(1),
+        text: text.to_owned(),
+        no_newline: false,
+    };
+
+    repo.detail = crate::state::DetailPane::Commit {
+        detail: Box::new(CommitDetail {
+            commit: repo.graph.commits[0].clone(),
+            changes: vec![FileChange {
+                path: std::path::PathBuf::from(name),
+                status: ChangeStatus::Modified,
+            }],
+            stats: DiffStats {
+                files_changed: 1,
+                insertions: 1,
+                deletions: 1,
+            },
+        }),
+        diff: Box::new(Diff {
+            files: vec![FileDiff {
+                path: std::path::PathBuf::from(name),
+                status: ChangeStatus::Modified,
+                content: FileDiffContent::Text {
+                    hunks: vec![Hunk {
+                        old_start: 1,
+                        old_lines: 1,
+                        new_start: 1,
+                        new_lines: 1,
+                        header: "@@ -1 +1 @@".to_owned(),
+                        lines: vec![
+                            line(LineKind::Removed, "let answer = 41;"),
+                            line(LineKind::Added, "let answer = 42;"),
+                            line(LineKind::Context, "// unchanged"),
+                        ],
+                    }],
+                },
+            }],
+            stats: DiffStats {
+                files_changed: 1,
+                insertions: 1,
+                deletions: 1,
+            },
+        }),
+        file: 0,
+    };
+    app
+}
+
+#[test]
+fn a_highlighted_diff_lays_out_in_both_modes() {
+    // Both views execute, and the line arrives split rather than whole — the
+    // render harness sees `text` widgets and not the insides of rich ones, so
+    // a line that is no longer findable is a line that was highlighted. What
+    // the pieces are coloured is checked in `crate::highlight`.
+    let mut app = app_showing_a_diff("src/main.rs");
+
+    {
+        let mut ui = render(&app);
+        assert!(ui.find("@@ -1 +1 @@").is_ok(), "the hunk header is plain");
+        assert!(
+            ui.find("let answer = 42;").is_err(),
+            "the line was not highlighted at all"
+        );
+    }
+
+    let _ = app.update(Message::Repo(0, RepoMessage::DiffModeToggled));
+    let mut ui = render(&app);
+    assert!(ui.find("@@ -1 +1 @@").is_ok(), "side by side");
+    assert!(ui.find("let answer = 42;").is_err());
+}
+
+#[test]
+fn a_diff_of_a_file_nothing_can_highlight_still_shows_its_lines() {
+    // The fallback the whole feature has to have: an extension syntect does not
+    // know renders the line whole rather than failing.
+    let app = app_showing_a_diff("notes.wibble");
+
+    shows(&app, "let answer = 42;");
+}
+
 #[test]
 fn a_filter_narrows_the_file_list_and_says_how_much_it_hid() {
     // "2 file(s)" over a commit that touched four is a quiet lie, so the count

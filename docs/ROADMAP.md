@@ -61,7 +61,7 @@ nested path. Both are fixed; the regression test uses a nested path deliberately
 - Open a repository via native picker; recent-repository list
 - **Commit graph** — virtualised, lanes, refs shown on their commits
 - Commit detail: metadata, full message, changed files
-- Diff viewer: unified and side-by-side, syntax-uncoloured to start
+- Diff viewer: unified and side-by-side, syntax-uncoloured to start — coloured in M6
 - Branch/tag/remote sidebar (read-only)
 - Dark theme; window geometry persistence
 
@@ -332,6 +332,13 @@ Everything between "works" and "someone who does not write Rust can install it".
   file; an unknown key is refused rather than ignored, because a silently dropped `acccent` is the
   same failure as the one above. A file that cannot be used is skipped with its reason on screen and
   never prevents startup
+- Syntax highlighting in the diff. **Landed**, as syntect through `iced::highlighter` driven a line
+  at a time with **two parsers, one per side** — feeding one parser a removed line and then the added
+  line replacing it leaves both wrong. Every colour is lifted to WCAG AA against the row it sits on:
+  the worst colour in each of the five syntect themes measures between 2.33:1 and 2.62:1 against
+  these backgrounds, and dropping the contrast guarantee for the pane people read longest was the
+  wrong trade. Approximate at the top of a hunk on purpose, since fixing that means reading every
+  blob of every commit anyone clicks on
 - Complete keyboard navigation; a discoverable shortcut reference. **Partly landed**: `Tab`, `Space`,
   `Cmd+Shift+Enter`, `Cmd+]` / `Cmd+[` and `Cmd+Shift+.` are bound, which closes the `Space` debt M2
   wrote down — focus turned out to be observable through a `find_focused` widget operation, which is
