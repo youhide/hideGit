@@ -643,3 +643,89 @@ fn a_submodule_that_was_never_checked_out_says_so_rather_than_showing_a_hash() {
         "the recorded commit is not what is checked out, and showing it implies it is"
     );
 }
+
+/// A worktree at `path`, on `branch` unless it is `None`.
+fn worktree(path: &str, branch: Option<&str>, is_current: bool) -> hidegit_core::model::Worktree {
+    hidegit_core::model::Worktree {
+        path: PathBuf::from(path),
+        head: branch.map(|short| Head::Branch {
+            name: RefName {
+                kind: RefKind::LocalBranch,
+                full: format!("refs/heads/{short}"),
+                short: short.to_owned(),
+            },
+            target: ObjectId::from_hex(&"0".repeat(40)).expect("valid hex"),
+        }),
+        is_current,
+        is_main: is_current,
+        locked: None,
+        prunable: false,
+    }
+}
+
+#[test]
+fn a_repository_with_only_its_own_worktree_has_no_worktrees_section() {
+    // Every repository has one. A section listing exactly the checkout being
+    // looked at is a heading over a line the whole window already says.
+    let mut app = app_with(3);
+    app.app.repos[0].worktrees = vec![worktree("/repo", Some("main"), true)];
+
+    let mut ui = render(&app);
+    assert!(ui.find("WORKTREES").is_err());
+}
+
+#[test]
+fn a_second_worktree_appears_with_the_branch_it_is_holding() {
+    // The load-bearing half: a branch checked out in one worktree cannot be
+    // checked out in another, so the branch is the answer to a refused
+    // checkout.
+    let mut app = app_with(3);
+    app.app.repos[0].worktrees = vec![
+        worktree("/repo", Some("main"), true),
+        worktree("/elsewhere/side", Some("feat/graph"), false),
+    ];
+
+    shows(&app, "WORKTREES");
+    shows(&app, "side");
+    shows(&app, "feat/graph");
+}
+
+#[test]
+fn a_worktree_whose_directory_is_gone_says_so_instead_of_naming_a_branch() {
+    // It still holds its branch, but "gone" is what the user has to act on —
+    // and a row that looked ordinary would leave the refused checkout it causes
+    // unexplained.
+    let mut app = app_with(3);
+    let mut stale = worktree("/elsewhere/side", Some("feat/graph"), false);
+    stale.prunable = true;
+    app.app.repos[0].worktrees = vec![worktree("/repo", Some("main"), true), stale];
+
+    shows(&app, "gone");
+    let mut ui = render(&app);
+    assert!(
+        ui.find("feat/graph").is_err(),
+        "the branch column is where the state has to go, or the state is invisible"
+    );
+}
+
+#[test]
+fn a_locked_worktree_says_locked_rather_than_naming_its_branch() {
+    let mut app = app_with(3);
+    let mut locked = worktree("/elsewhere/side", Some("feat/graph"), false);
+    locked.locked = Some("on the external drive".to_owned());
+    app.app.repos[0].worktrees = vec![worktree("/repo", Some("main"), true), locked];
+
+    shows(&app, "locked");
+}
+
+#[test]
+fn a_detached_worktree_uses_gits_own_words_for_it() {
+    let mut app = app_with(3);
+    let mut detached = worktree("/elsewhere/side", None, false);
+    detached.head = Some(Head::Detached {
+        target: ObjectId::from_hex(&"a".repeat(40)).expect("valid hex"),
+    });
+    app.app.repos[0].worktrees = vec![worktree("/repo", Some("main"), true), detached];
+
+    shows(&app, "detached at aaaaaaa");
+}

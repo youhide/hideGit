@@ -399,31 +399,47 @@ pub(crate) fn worktrees(repo: &gix::Repository) -> Result<Vec<Worktree>, GitErro
         }
     }
 
+    /// The main worktree, and whether it is the one in hand.
+    ///
+    /// `main_repo` opens a repository — config parse, ref store and all — and
+    /// this runs on every file save through the watcher, so it is skipped when
+    /// the repository in hand already *is* the main one, which is the case for
+    /// every repository that has never had `git worktree add` run in it. The
+    /// two directories being the same is exactly what "this is the main
+    /// worktree" means.
+    fn main_of(repo: &gix::Repository) -> Option<(gix::Repository, bool)> {
+        if same_dir(repo.git_dir(), repo.common_dir()) {
+            return Some((repo.clone(), true));
+        }
+        match repo.main_repo() {
+            Ok(main) => Some((main, false)),
+            // Not fatal: the linked worktrees are still worth listing, and a
+            // repository whose main one cannot be opened is exactly the case
+            // where knowing what else exists helps.
+            Err(e) => {
+                tracing::warn!(error = %e, "the main worktree would not open");
+                None
+            }
+        }
+    }
+
     let mut out = Vec::new();
     let here = repo.git_dir();
 
-    // `main_repo` works from a linked worktree too, so this is the main one
-    // whichever checkout hideGit was opened from.
-    match repo.main_repo() {
-        Ok(main) => {
-            if let Some(workdir) = main.workdir() {
-                let path = workdir.to_path_buf();
-                out.push(Worktree {
-                    is_current: same_dir(main.git_dir(), here),
-                    head: head(&main).ok(),
-                    prunable: !path.is_dir(),
-                    path,
-                    is_main: true,
-                    // The main worktree cannot be locked. `git worktree lock`
-                    // refuses it, so `None` is the only honest answer.
-                    locked: None,
-                });
-            }
-        }
-        // Not fatal: the linked worktrees are still worth listing, and a
-        // repository whose main one cannot be opened is exactly the case where
-        // knowing what else exists helps.
-        Err(e) => tracing::warn!(error = %e, "the main worktree would not open"),
+    if let Some((main, is_current)) = main_of(repo)
+        && let Some(workdir) = main.workdir()
+    {
+        let path = workdir.to_path_buf();
+        out.push(Worktree {
+            is_current,
+            head: head(&main).ok(),
+            prunable: !path.is_dir(),
+            path,
+            is_main: true,
+            // The main worktree cannot be locked. `git worktree lock` refuses
+            // it, so `None` is the only honest answer.
+            locked: None,
+        });
     }
 
     let linked = repo

@@ -152,7 +152,7 @@ rather than each operation remembering which views it invalidated.
 ```
 
 **Sidebar** — one tree, one mental model for "places I can jump to": working directory, local
-branches, remotes, tags, stashes, submodules, pull requests. Counts on section headers.
+branches, remotes, tags, stashes, submodules, worktrees, pull requests. Counts on section headers.
 
 Every row carries its own controls, revealed as a glyph rather than hidden behind a menu bar — the
 same idiom the staging rows use for `+`, `−` and `✕` — plus a `⋯` that opens its action sheet.
@@ -174,6 +174,26 @@ a stash is made out of the working directory rather than from a heading, so stas
 the working-directory row instead, and only when there is something to stash. `SUBMODULES` follows
 the same rule, for the same reason — a submodule comes from a `.gitmodules` somebody committed, not
 from a heading — and it is absent on the overwhelming majority of repositories.
+
+**`WORKTREES` appears only when there is more than one**, which is not the `STASHES` rule with a
+different number. Every repository has a worktree — the one being looked at — so a section listing
+exactly it would be a heading over a line the whole window already says. A *second* checkout is the
+fact worth showing.
+
+**The branch a worktree holds is the load-bearing half of that row.** A branch checked out in one
+worktree cannot be checked out in another, so the row is the answer to a checkout that is being
+refused. The right-hand column carries that branch — or Git's own `detached at <hash>` — except when
+the worktree is locked or its directory is gone, which are states to act on and take the column
+instead. Both reasons are in the tooltip along with the full path; the row shows the directory name,
+because a path does not fit in 230px and its useful end is the last component.
+
+A worktree whose directory is gone is **listed, not hidden**. It still holds its branch until
+somebody runs `git worktree prune`, so hiding it would leave the refusal it causes with no visible
+cause anywhere. `▸` marks the checkout being looked at, the same marker the local-branch row uses
+for the branch `HEAD` is on.
+
+Neither worktree rows nor submodule rows are selectable: another checkout, like another repository,
+is not a place in *this* history to jump to.
 
 **A submodule row says which of the two pointers is wrong.** A submodule is two commits that can
 disagree: the one the superproject's index records, and the one the nested checkout is actually on.

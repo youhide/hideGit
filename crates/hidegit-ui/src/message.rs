@@ -13,7 +13,7 @@ use hidegit_core::conflict::{ConflictFile, Resolution};
 use hidegit_core::graph::Checkpoints;
 use hidegit_core::model::{
     Commit, CommitDetail, Diff, Divergence, Head, ObjectId, Refs, Remote, RepoState, StashEntry,
-    Submodule, WorktreeStatus,
+    Submodule, Worktree, WorktreeStatus,
 };
 use hidegit_core::ops::{
     BlameLine, CheckoutTarget, FetchOutcome, ForceMode, MergeOutcome, ProgressUpdate, PullOutcome,
@@ -207,6 +207,7 @@ pub struct OpenedRepository {
     pub stashes: Vec<StashEntry>,
     pub remotes: Vec<Remote>,
     pub submodules: Vec<Submodule>,
+    pub worktrees: Vec<Worktree>,
     pub total: usize,
     pub first_page: Vec<Commit>,
 }
@@ -757,6 +758,7 @@ pub struct Refreshed {
     pub stashes: Vec<StashEntry>,
     pub remotes: Vec<Remote>,
     pub submodules: Vec<Submodule>,
+    pub worktrees: Vec<Worktree>,
     pub total: usize,
     pub first_page: Vec<Commit>,
 }
