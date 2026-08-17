@@ -9,6 +9,8 @@
 //! the `.ico` at build time and contributors should not have to run a task to
 //! get a compiling checkout.
 
+mod bench;
+
 use std::{
     error::Error,
     fs::{self, File},
@@ -27,7 +29,8 @@ usage: cargo run -p xtask -- <task>
 
 tasks:
   icons          regenerate assets/generated/ from assets/icon.png
-  bundle-macos   assemble target/release/bundle/hideGit.app";
+  bundle-macos   assemble target/release/bundle/hideGit.app
+  bench-check    read target/criterion and fail if checkpoints stopped paying";
 
 /// Sizes packed into the Windows `.ico`.
 const ICO_SIZES: [u32; 7] = [16, 24, 32, 48, 64, 128, 256];
@@ -73,6 +76,9 @@ fn main() -> ExitCode {
     let result = match task.as_deref() {
         Some("icons") => icons(&root),
         Some("bundle-macos") => bundle_macos(&root),
+        // Its failure is a sentence, not an `io::Error`: what went wrong is a
+        // number, and the message is the whole report.
+        Some("bench-check") => bench::check(&root).map_err(Into::into),
         other => {
             if let Some(name) = other {
                 eprintln!("xtask: unknown task `{name}`\n");

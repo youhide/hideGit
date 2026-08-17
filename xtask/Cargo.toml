@@ -17,5 +17,8 @@ icns = "0.4"
 ico = "0.5"
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

@@ -77,10 +77,18 @@ benchmarks, which build a 100,000-commit repository and time the layout:
 
 ```sh
 cargo bench -p hidegit-core
+cargo run -p xtask -- bench-check
 ```
 
-The numbers to beat are recorded in [COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance). CI gains
-a regression gate at M6; until then it is on you to look.
+The numbers to beat are recorded in [COMMIT_GRAPH.md](./docs/COMMIT_GRAPH.md#performance), measured
+on a known machine — comparing your laptop against them says as much about your laptop as about your
+change.
+
+CI runs the benchmarks too, and gates a **ratio** rather than a time: `bench-check` fails if laying
+out a visible window with checkpoints is less than 50× faster than laying it out without them. Two
+benchmarks from the same run divide the machine out, which is what makes them worth failing a build
+over. Absolute times are not gated, because a shared runner is two to three times slower on a bad
+minute and a gate that trips on noise is one people learn to re-run until it passes.
 
 If you change `assets/icon.png`, regenerate everything derived from it and commit the result — the
 Windows build reads the generated `.ico` at build time, so a checkout has to contain it:
