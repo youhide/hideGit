@@ -127,7 +127,7 @@ pub fn view<'a>(
             palette,
         ));
         for submodule in &repo.submodules {
-            sections = sections.push(submodule_row(submodule, palette));
+            sections = sections.push(submodule_row(submodule, index, palette));
         }
     }
 
@@ -709,12 +709,19 @@ fn stash_row<'a>(
 /// A submodule: where it sits, and whether its checkout agrees with the
 /// superproject.
 ///
-/// The only row in the sidebar that is not a button, because there is nothing
-/// yet to press: reading submodules landed before initialising or updating them
-/// did, and a row that opens an empty action sheet would be worse than a row
-/// that admits it is informational. The tooltip carries the URL and what the
-/// state means; the glyph is Git's own `-`, ` ` and `+`.
-fn submodule_row<'a>(submodule: &Submodule, palette: &Palette) -> Element<'a, Message> {
+/// It carries a `⋯` only when there is something to do — a submodule already at
+/// the recorded commit has no action that would change anything, and offering
+/// one would be a control that does nothing. There is still no *selection*: a
+/// submodule is not a place in this repository's history to jump to, it is a
+/// pointer at another repository's.
+///
+/// The tooltip carries the URL and what the state means; the glyph is Git's own
+/// `-`, ` ` and `+`.
+fn submodule_row<'a>(
+    submodule: &Submodule,
+    index: usize,
+    palette: &Palette,
+) -> Element<'a, Message> {
     let palette = *palette;
     let state = submodule.state();
 
@@ -766,14 +773,76 @@ fn submodule_row<'a>(submodule: &Submodule, palette: &Palette) -> Element<'a, Me
         format!("{} — {explanation}", submodule.url)
     };
 
-    hinted(
+    let row = hinted(
         container(label)
             .width(Fill)
             .padding(Padding::from([3, 12]))
             .into(),
         tip,
         palette,
-    )
+    );
+
+    let path = submodule.path.clone();
+    let Some(sheet) = submodule_sheet(submodule, index) else {
+        return row;
+    };
+
+    row![
+        row,
+        action_button(
+            "⋯",
+            format!("Actions for {}", path.display()),
+            sheet,
+            palette
+        ),
+    ]
+    .align_y(Center)
+    .into()
+}
+
+/// What a submodule row offers, or `None` when it has nothing to offer.
+///
+/// Separate from the row so the decision is a value a test can read rather than
+/// a widget tree it would have to click through.
+///
+/// A submodule already at the recorded commit gets nothing: `git submodule
+/// update` would run and change nothing, and a control that does nothing is
+/// worse than no control.
+fn submodule_sheet(submodule: &Submodule, index: usize) -> Option<ActionSheet> {
+    let path = submodule.path.clone();
+    let request = |init| {
+        Message::Repo(
+            index,
+            RepoMessage::SubmoduleUpdateRequested {
+                path: path.clone(),
+                init,
+            },
+        )
+    };
+
+    match submodule.state() {
+        SubmoduleState::Current => None,
+        SubmoduleState::Uninitialised => Some(
+            ActionSheet::new(format!(
+                "{} is declared but not checked out",
+                path.display()
+            ))
+            // `--init`, because there is nothing set up to update.
+            .item("Set up and check out", request(true)),
+        ),
+        // Not destructive: `git submodule update` refuses rather than
+        // discarding when the nested checkout has uncommitted work, and the
+        // commits it moves off stay in the nested repository's own reflog. No
+        // `--init` either — a submodule that moved is already set up, and
+        // asking for it anyway would be asking for something the user did not.
+        SubmoduleState::Moved => Some(
+            ActionSheet::new(format!(
+                "{} is not at the commit the superproject records",
+                path.display()
+            ))
+            .item("Return it to the recorded commit", request(false)),
+        ),
+    }
 }
 
 /// The `⋯` on a row, which opens its action sheet.
@@ -927,6 +996,68 @@ pub(crate) fn item_style(
 mod tests {
     use super::*;
     use hidegit_core::model::{RefKind, RefName};
+    use std::path::PathBuf;
+
+    fn submodule(recorded: Option<&str>, checked_out: Option<&str>) -> Submodule {
+        let id = |hex: &str| hidegit_core::ObjectId::from_hex(&hex.repeat(40)).unwrap();
+
+        Submodule {
+            name: "vendor/lib".to_owned(),
+            path: PathBuf::from("vendor/lib"),
+            url: "https://example.invalid/lib.git".to_owned(),
+            branch: None,
+            recorded: recorded.map(id),
+            checked_out: checked_out.map(id),
+        }
+    }
+
+    #[test]
+    fn a_submodule_already_at_the_recorded_commit_offers_nothing() {
+        // An update would run and change nothing. A control that does nothing
+        // is worse than no control.
+        assert!(submodule_sheet(&submodule(Some("a"), Some("a")), 0).is_none());
+    }
+
+    #[test]
+    fn a_submodule_with_no_checkout_offers_to_set_one_up() {
+        let sheet =
+            submodule_sheet(&submodule(Some("a"), None), 0).expect("there is something to do here");
+
+        assert!(
+            sheet.title.contains("vendor/lib"),
+            "the sheet names what it acts on: {}",
+            sheet.title
+        );
+        assert!(matches!(
+            sheet.items.as_slice(),
+            [item] if matches!(
+                &item.message,
+                Message::Repo(0, RepoMessage::SubmoduleUpdateRequested { path, init: true })
+                    if path == &PathBuf::from("vendor/lib")
+            )
+        ));
+    }
+
+    #[test]
+    fn a_submodule_that_moved_offers_to_return_it_without_asking_for_init() {
+        // It is already set up, so `--init` would be asking for something the
+        // user did not.
+        let sheet = submodule_sheet(&submodule(Some("a"), Some("b")), 0)
+            .expect("there is something to do here");
+
+        assert!(matches!(
+            sheet.items.as_slice(),
+            [item] if matches!(
+                &item.message,
+                Message::Repo(0, RepoMessage::SubmoduleUpdateRequested { init: false, .. })
+            )
+        ));
+        assert!(
+            !sheet.items[0].destructive,
+            "git refuses rather than discarding uncommitted work, and the commits stay in the \
+             nested reflog"
+        );
+    }
 
     fn branch(short: &str, upstream: Option<&str>) -> Branch {
         Branch {

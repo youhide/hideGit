@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use hidegit_core::conflict::Resolution;
 use hidegit_core::graph::Checkpoints;
-use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RepoState, RevSpec};
+use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RepoState, RevSpec, SubmoduleState};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, MergeOpts, Patch, ProgressSink,
     ProgressUpdate, PullOpts, PullOutcome, PushSpec, RebasePlan, ResetMode, SearchQuery,
-    SequenceControl, SequenceOutcome, StartPoint, StashOp, TagSpec,
+    SequenceControl, SequenceOutcome, StartPoint, StashOp, SubmoduleUpdate, TagSpec,
 };
 use hidegit_core::patch::Selection as PatchSelection;
 use hidegit_core::watch::Change;
@@ -126,37 +126,59 @@ where
         + Send
         + 'static,
 {
-    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
-    let worker = tokio::task::spawn_blocking(move || {
-        let sink = ChannelSink(sender);
-        f(&sink, &cancel)
-    });
+    /// Not started, or started and reporting.
+    ///
+    /// The work is spawned on the stream's first poll rather than when the
+    /// `Task` is built, for the same reason `opening` below does it: a `Task`
+    /// is constructed inside `update`, which is not a runtime, and
+    /// `spawn_blocking` needs one. Spawning eagerly here also put every
+    /// streaming operation out of reach of the test harness, which cannot call
+    /// `update` from inside a runtime.
+    enum Step<F> {
+        Start(F, CancelToken),
+        Running(
+            iced::futures::channel::mpsc::UnboundedReceiver<ProgressUpdate>,
+            tokio::task::JoinHandle<Result<OperationOutcome, GitError>>,
+        ),
+    }
 
-    let stream = iced::futures::stream::unfold(Some((receiver, worker)), move |state| async move {
-        use iced::futures::StreamExt as _;
-        let (mut receiver, worker) = state?;
+    let stream =
+        iced::futures::stream::unfold(Some(Step::Start(f, cancel)), move |state| async move {
+            use iced::futures::StreamExt as _;
 
-        match receiver.next().await {
-            Some(update) => Some((
-                Message::Repo(index, RepoMessage::OperationProgress(id, update)),
-                Some((receiver, worker)),
-            )),
-            // Every sender is gone, so the work has returned.
-            None => {
-                let result = match worker.await {
-                    Ok(result) => result.map_err(UiError::from),
-                    Err(join) => Err(UiError {
-                        summary: "a background Git operation panicked".to_owned(),
-                        details: join.to_string(),
-                    }),
-                };
-                Some((
-                    Message::Repo(index, RepoMessage::OperationFinished(id, Box::new(result))),
-                    None,
-                ))
+            let (mut receiver, worker) = match state? {
+                Step::Start(f, cancel) => {
+                    let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+                    let worker = tokio::task::spawn_blocking(move || {
+                        let sink = ChannelSink(sender);
+                        f(&sink, &cancel)
+                    });
+                    (receiver, worker)
+                }
+                Step::Running(receiver, worker) => (receiver, worker),
+            };
+
+            match receiver.next().await {
+                Some(update) => Some((
+                    Message::Repo(index, RepoMessage::OperationProgress(id, update)),
+                    Some(Step::Running(receiver, worker)),
+                )),
+                // Every sender is gone, so the work has returned.
+                None => {
+                    let result = match worker.await {
+                        Ok(result) => result.map_err(UiError::from),
+                        Err(join) => Err(UiError {
+                            summary: "a background Git operation panicked".to_owned(),
+                            details: join.to_string(),
+                        }),
+                    };
+                    Some((
+                        Message::Repo(index, RepoMessage::OperationFinished(id, Box::new(result))),
+                        None,
+                    ))
+                }
             }
-        }
-    });
+        });
 
     Task::stream(stream)
 }
@@ -1753,6 +1775,43 @@ impl Hidegit {
                 write_task(index, move || backend.delete_branch(&name, force))
             }
 
+            // ---- submodules ----
+            RepoMessage::SubmoduleUpdateRequested { path, init } => {
+                let backend = Arc::clone(&repo.backend);
+                let label = if init {
+                    format!("Setting up {}", path.display())
+                } else {
+                    format!("Updating {}", path.display())
+                };
+                let opts = SubmoduleUpdate {
+                    init,
+                    // Not recursive. A submodule's own submodules are its
+                    // business, and pulling in a tree of them from one row is
+                    // more than the row said it would do.
+                    recursive: false,
+                };
+
+                // Whether it settled is decided here rather than in the message
+                // handler, because only this closure knows which path was asked
+                // for: `update_submodules` answers with every submodule, not
+                // only the one it was pointed at.
+                let wanted = path.clone();
+                self.start_operation(index, label, move |progress, cancel| {
+                    backend
+                        .update_submodules(&[&wanted], opts, progress, cancel)
+                        .map(|after| {
+                            let settled = after
+                                .iter()
+                                .find(|s| s.path == wanted)
+                                .is_some_and(|s| s.state() == SubmoduleState::Current);
+                            OperationOutcome::SubmodulesUpdated {
+                                path: wanted,
+                                settled,
+                            }
+                        })
+                })
+            }
+
             // ---- remotes ----
             RepoMessage::FetchRequested => {
                 let backend = Arc::clone(&repo.backend);
@@ -1865,6 +1924,23 @@ impl Hidegit {
                                 details: format!(
                                     "Updated: {}\nRefused: {rejected}",
                                     push.updated.join(", ")
+                                ),
+                            });
+                        }
+                        // The same principle as a partly refused push: an
+                        // operation that reported success and changed nothing
+                        // must not look like one that worked.
+                        if let OperationOutcome::SubmodulesUpdated {
+                            path,
+                            settled: false,
+                        } = &outcome
+                        {
+                            self.app.toast(&UiError {
+                                summary: format!("{} did not move", path.display()),
+                                details: format!(
+                                    "git reported no error, and {} is still not at the commit \
+                                     the superproject records.",
+                                    path.display()
                                 ),
                             });
                         }

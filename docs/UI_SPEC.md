@@ -182,9 +182,21 @@ and then names the commits. In sync it shows one hash; moved, it shows `recorded
 because a single hash would leave the reader asking which of the two it was; never checked out, it
 says "not initialised" rather than showing the recorded hash, which would claim something is there.
 
-It is the one sidebar row that is **not** a button. Reading submodules landed before initialising or
-updating them did, and a row that opens an empty action sheet is worse than a row that admits it is
-informational. Its tooltip carries the URL and what the state means.
+It carries a `⋯` **only when there is something to do**. A submodule already at the recorded commit
+has no action that would change anything, and a control that does nothing is worse than no control —
+so that row is informational, with its URL and state behind the tooltip. The other two offer one
+action each: "Set up and check out" for the one with no checkout, "Return it to the recorded commit"
+for the one that moved. Neither is marked destructive: `git submodule update` refuses rather than
+discarding when the nested checkout has uncommitted work, and the commits it moves off stay in the
+nested repository's own reflog.
+
+There is still no *selection*. A submodule is not a place in this repository's history to jump to; it
+is a pointer at another repository's, and clicking one has nothing to show in the detail pane.
+
+**An update that succeeded and changed nothing is reported.** `git submodule update` exits 0 for a
+submodule it left exactly as it found it, so "the operation succeeded" is not the same claim as "the
+submodule is now current". The second one is what the user is owed, and a toast says so by name when
+it is not true.
 
 **Graph** — the centre. Virtualised: only visible rows are laid out and drawn. Refs are rendered as
 badges on their commits. Selecting a row updates the detail pane. Full rendering rules in
