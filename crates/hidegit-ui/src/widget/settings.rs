@@ -16,7 +16,7 @@ use iced::{Center, Fill, Font, Length};
 use crate::Element;
 use crate::message::{AlertToggle, Message, QuietBound};
 use crate::state::App;
-use crate::theme::{Palette, Theme};
+use crate::theme::Palette;
 
 pub fn view<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     let panel = container(
@@ -71,16 +71,20 @@ fn header<'a>(palette: &'a Palette) -> Element<'a, Message> {
 fn body<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     let mut sections = column![section("Appearance", palette)].spacing(6);
 
-    for (name, label) in [(Theme::DARK_NAME, "Dark"), (Theme::LIGHT_NAME, "Light")] {
-        let chosen = app.theme.name == name;
+    // The two that ship, then whatever was found in the themes directory. A
+    // custom theme that could be selected only by typing its name into the file
+    // it came from would be a theme most people never reach.
+    for theme in &app.themes {
+        let chosen = app.theme.name == theme.name;
+        let name = theme.name.clone();
         sections = sections.push(
             // A radio in behaviour if not in widget: exactly one theme is
             // active, and picking one is what unpicks the other.
             checkbox(chosen)
-                .label(label)
+                .label(theme.label())
                 .size(15.0)
                 .text_size(13.0)
-                .on_toggle(move |_| Message::ThemeChosen(name.to_owned())),
+                .on_toggle(move |_| Message::ThemeChosen(name.clone())),
         );
     }
 

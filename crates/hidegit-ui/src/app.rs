@@ -167,10 +167,25 @@ impl Hidegit {
         recents: Vec<PathBuf>,
         alerts: hidegit_forge::AlertPrefs,
         theme: &str,
+        custom: crate::theme::Custom,
     ) -> (Self, Task<Message>) {
         let mut this = Self::default();
         this.app.recents = recents;
         this.app.alerts = alerts;
+        this.app.themes.extend(custom.themes);
+
+        // Said before the theme is resolved, so a file that failed to parse is
+        // reported as the parse error it is rather than only as the "no theme
+        // called that" that follows from it.
+        for problem in &custom.problems {
+            this.app.toast(&UiError {
+                summary: format!("Theme “{}” was not loaded", problem.file),
+                details: format!(
+                    "{}\n\nIt is in the themes directory next to config.toml.                      Every other theme still works.",
+                    problem.reason
+                ),
+            });
+        }
 
         // An unknown name falls back rather than refusing to start: a typo in a
         // config file is not a reason to have no window.
@@ -179,7 +194,7 @@ impl Hidegit {
         // applying reads as the setting being ignored, and the person it reads
         // that way to is looking at a window — not at stderr under
         // `HIDEGIT_LOG`, which is where the warning used to go and stop.
-        match crate::theme::Theme::by_name(theme) {
+        match this.app.themes.iter().find(|t| t.name == theme).cloned() {
             Some(theme) => this.app.theme = theme,
             None => {
                 tracing::warn!(
@@ -187,14 +202,14 @@ impl Hidegit {
                     falling_back_to = crate::theme::Theme::DARK_NAME,
                     "unknown theme name"
                 );
+                let known: Vec<&str> = this.app.themes.iter().map(|t| t.name.as_str()).collect();
                 this.app.toast(&UiError {
                     summary: format!("No theme called “{theme}”"),
                     details: format!(
                         "`theme.name` in config.toml is set to “{theme}”, which is not a theme \
-                         hideGit knows. Using {} instead.\n\nThe themes that ship are {} and {}.",
+                         hideGit knows. Using {} instead.\n\nThe themes available are {}.",
                         crate::theme::Theme::DARK_NAME,
-                        crate::theme::Theme::DARK_NAME,
-                        crate::theme::Theme::LIGHT_NAME,
+                        known.join(", "),
                     ),
                 });
             }
@@ -238,7 +253,7 @@ impl Hidegit {
             Message::ThemeChosen(name) => {
                 // Applied immediately: a theme you have to restart to see is a
                 // theme you cannot choose between.
-                match crate::theme::Theme::by_name(&name) {
+                match self.app.themes.iter().find(|t| t.name == name).cloned() {
                     Some(theme) => {
                         self.app.theme = theme;
                         for cache in self.caches.values() {
@@ -4695,6 +4710,7 @@ mod tests {
             Vec::new(),
             hidegit_forge::AlertPrefs::default(),
             "hidegit-solarized",
+            crate::theme::Custom::default(),
         );
 
         assert_eq!(
@@ -4726,10 +4742,86 @@ mod tests {
             Vec::new(),
             hidegit_forge::AlertPrefs::default(),
             crate::theme::Theme::LIGHT_NAME,
+            crate::theme::Custom::default(),
         );
 
         assert_eq!(app.app.theme.name, crate::theme::Theme::LIGHT_NAME);
         assert!(app.app.toasts.is_empty(), "nothing went wrong to report");
+    }
+
+    /// A theme directory with one usable file in it.
+    fn one_custom_theme() -> crate::theme::Custom {
+        crate::theme::Custom {
+            themes: vec![
+                crate::theme::Theme::from_toml("zinc", "based_on = \"hidegit-light\"").unwrap(),
+            ],
+            problems: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_custom_theme_can_be_the_one_the_config_file_names() {
+        // The point of the feature: a file dropped in the themes directory is
+        // selectable the same way the two that ship are.
+        let (app, _) = Hidegit::new(
+            Vec::new(),
+            Vec::new(),
+            hidegit_forge::AlertPrefs::default(),
+            "zinc",
+            one_custom_theme(),
+        );
+
+        assert_eq!(app.app.theme.name, "zinc");
+        assert_eq!(
+            app.app.theme.palette.background,
+            crate::theme::Palette::LIGHT.background,
+            "and it is the palette from the file, not the default"
+        );
+        assert!(app.app.toasts.is_empty(), "nothing went wrong to report");
+    }
+
+    #[test]
+    fn a_custom_theme_can_be_chosen_from_the_panel() {
+        let mut app = app_with(1);
+        app.app.themes.extend(one_custom_theme().themes);
+
+        let _ = app.update(Message::ThemeChosen("zinc".to_owned()));
+
+        assert_eq!(app.app.theme.name, "zinc");
+    }
+
+    #[test]
+    fn a_theme_file_that_failed_to_parse_says_why_rather_than_only_that_it_is_missing() {
+        // Without this the only signal is "no theme called zinc", which is true
+        // and useless: the file is right there, and the reason it was skipped
+        // is the one thing the person editing it needs.
+        let custom = crate::theme::Custom {
+            themes: Vec::new(),
+            problems: vec![crate::theme::Problem {
+                file: "zinc.toml".to_owned(),
+                reason: "`accent` is not a colour".to_owned(),
+            }],
+        };
+
+        let (app, _) = Hidegit::new(
+            Vec::new(),
+            Vec::new(),
+            hidegit_forge::AlertPrefs::default(),
+            "zinc",
+            custom,
+        );
+
+        let reported = app
+            .app
+            .toasts
+            .iter()
+            .find(|toast| toast.summary.contains("zinc.toml"))
+            .expect("the file that failed is named");
+        assert!(
+            reported.details.contains("`accent` is not a colour"),
+            "and says why: {:?}",
+            reported.details
+        );
     }
 
     #[test]
@@ -4970,10 +5062,22 @@ mod tests {
     fn the_configured_theme_is_applied_and_a_typo_falls_back() {
         // The config has carried a theme name since M1 and nothing read it, so
         // setting one did nothing at all.
-        let (app, _) = Hidegit::new(Vec::new(), Vec::new(), Default::default(), "hidegit-light");
+        let (app, _) = Hidegit::new(
+            Vec::new(),
+            Vec::new(),
+            Default::default(),
+            "hidegit-light",
+            crate::theme::Custom::default(),
+        );
         assert_eq!(app.app.theme.palette, crate::theme::Palette::LIGHT);
 
-        let (app, _) = Hidegit::new(Vec::new(), Vec::new(), Default::default(), "hidegit-nope");
+        let (app, _) = Hidegit::new(
+            Vec::new(),
+            Vec::new(),
+            Default::default(),
+            "hidegit-nope",
+            crate::theme::Custom::default(),
+        );
         assert_eq!(
             app.app.theme.palette,
             crate::theme::Palette::DARK,

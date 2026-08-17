@@ -210,7 +210,20 @@ fn boot(
     config: Config,
     geometry: Geometry,
 ) -> (Shell, Task<ShellMessage>) {
-    let (mut ui, task) = Hidegit::new(initial, recents, config.alerts.clone(), &config.theme.name);
+    // Off disk once, here, rather than every time the panel is opened: a theme
+    // is a file somebody wrote, not something that changes while hideGit runs.
+    let custom = match &paths {
+        Some(paths) => hidegit_ui::theme::Theme::load_dir(&paths.themes),
+        None => hidegit_ui::theme::Custom::default(),
+    };
+
+    let (mut ui, task) = Hidegit::new(
+        initial,
+        recents,
+        config.alerts.clone(),
+        &config.theme.name,
+        custom,
+    );
 
     // Known now rather than at the first toggle: with no config directory,
     // nothing persists for the whole session, and the panel should say that the
@@ -519,6 +532,7 @@ mod tests {
         shell.paths = Some(config::Paths {
             config: dir.path().join("config.toml"),
             state: dir.path().join("state.toml"),
+            themes: dir.path().join("themes"),
         });
 
         let _ = update(
@@ -556,6 +570,7 @@ mod tests {
         shell.paths = Some(config::Paths {
             config: dir.path().join("config.toml"),
             state: dir.path().join("state.toml"),
+            themes: dir.path().join("themes"),
         });
 
         let _ = update(
