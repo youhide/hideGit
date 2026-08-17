@@ -308,3 +308,125 @@ mod submodules {
         );
     }
 }
+
+/// Removing and pruning worktrees, from the row to the backend.
+#[cfg(test)]
+mod worktrees {
+    use hidegit_core::backend::WriteCall;
+    use hidegit_core::model::Worktree;
+
+    use super::*;
+
+    fn linked(name: &str) -> Worktree {
+        Worktree {
+            path: PathBuf::from(format!("/elsewhere/{name}")),
+            head: Some(Head::Branch {
+                name: RefName {
+                    kind: RefKind::LocalBranch,
+                    full: format!("refs/heads/{name}"),
+                    short: name.to_owned(),
+                },
+                target: ObjectId::from_hex(&"0".repeat(40)).expect("valid hex"),
+            }),
+            is_current: false,
+            is_main: false,
+            locked: None,
+            prunable: false,
+        }
+    }
+
+    fn app_with_worktrees(worktrees: Vec<Worktree>) -> (Hidegit, Arc<FakeBackend>) {
+        let fake = Arc::new(
+            FakeBackend::new()
+                .with_commits(commits(3))
+                .with_worktrees(worktrees.clone()),
+        );
+        let mut app = Hidegit::default();
+        let mut opened = opened(3);
+        opened.backend = Arc::clone(&fake) as Arc<dyn GitBackend>;
+        opened.worktrees = worktrees;
+        let _ = app.update(Message::RepositoryOpened(Box::new(Ok(opened))));
+        (app, fake)
+    }
+
+    #[test]
+    fn removing_a_worktree_asks_first_and_says_the_branch_comes_back() {
+        // The branch is the thing the user is likely to want afterwards, and
+        // "it stays" is the reassurance that makes this safe to accept.
+        let (mut app, fake) = app_with_worktrees(vec![linked("side")]);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::WorktreeRemoveRequested {
+                path: PathBuf::from("/elsewhere/side"),
+            },
+        ));
+
+        assert!(fake.writes().is_empty(), "nothing has happened yet");
+        let confirmation = app.app.confirming.as_ref().expect("removing confirms");
+        assert!(
+            confirmation.body.contains("side"),
+            "it names the branch that comes back: {}",
+            confirmation.body
+        );
+        assert_eq!(confirmation.confirm_label, "Remove");
+    }
+
+    #[test]
+    fn the_confirmed_removal_reaches_the_backend_unforced() {
+        // Force exists on the backend and is never true from here: the safe
+        // form runs and Git's own refusal is what reaches the user.
+        //
+        // Driven through the confirmation rather than by dispatching the
+        // confirmed message directly, because the flag is decided *by* the
+        // confirmation — sending it by hand would assert nothing about what the
+        // dialog actually carries.
+        let (mut app, fake) = app_with_worktrees(vec![linked("side")]);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::WorktreeRemoveRequested {
+                path: PathBuf::from("/elsewhere/side"),
+            },
+        ));
+        for message in update_and_drive(&mut app, Message::ConfirmationAccepted) {
+            let _ = update_and_drive(&mut app, message);
+        }
+
+        let writes = fake.writes();
+        assert!(
+            writes.iter().any(|call| matches!(
+                call,
+                WriteCall::RemoveWorktree { path, force: false }
+                    if path == &PathBuf::from("/elsewhere/side")
+            )),
+            "the removal never reached the backend, or forced: {writes:?}"
+        );
+    }
+
+    #[test]
+    fn pruning_reaches_the_backend_without_asking_first() {
+        // There is nothing left to lose: pruning clears registrations whose
+        // directory is already gone, and a locked one survives it regardless.
+        let mut stale = linked("side");
+        stale.prunable = true;
+        let (mut app, fake) = app_with_worktrees(vec![stale]);
+
+        let _ = update_and_drive(
+            &mut app,
+            Message::Repo(0, RepoMessage::WorktreePruneRequested),
+        );
+
+        assert!(
+            app.app.confirming.is_none(),
+            "a directory that is already gone is not worth a dialog"
+        );
+        let writes = fake.writes();
+        assert!(
+            writes
+                .iter()
+                .any(|call| matches!(call, WriteCall::PruneWorktrees)),
+            "the prune never reached the backend: {writes:?}"
+        );
+    }
+}

@@ -465,6 +465,31 @@ pub enum RepoMessage {
         force: bool,
     },
 
+    // ---- worktrees ----
+    /// Remove a linked worktree: the checkout and its registration.
+    ///
+    /// Raises a confirmation first. The directory has files in it that are not
+    /// in any other checkout only if the user left them there, but it is still
+    /// a directory disappearing, and that is not something to do on one click.
+    WorktreeRemoveRequested {
+        path: PathBuf,
+    },
+    /// The confirmation was accepted.
+    ///
+    /// `force` exists on the backend and is never true from here: the safe form
+    /// runs and Git's own refusal is what reaches the user, the same shape
+    /// branch deletion uses.
+    WorktreeRemoveConfirmed {
+        path: PathBuf,
+        force: bool,
+    },
+    /// Clear registrations whose directory is gone.
+    ///
+    /// Offered from the stale row rather than from the heading, because that
+    /// row is the reason to run it and a heading control would be a button
+    /// whose effect is invisible until it has one.
+    WorktreePruneRequested,
+
     // ---- submodules ----
     /// Brings one submodule to the commit the superproject records.
     ///

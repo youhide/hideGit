@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use hidegit_core::conflict::Resolution;
 use hidegit_core::graph::Checkpoints;
-use hidegit_core::model::{DiffTarget, LogPage, ObjectId, RepoState, RevSpec, SubmoduleState};
+use hidegit_core::model::{
+    DiffTarget, Head, LogPage, ObjectId, RepoState, RevSpec, SubmoduleState,
+};
 use hidegit_core::ops::{
     CancelToken, CheckoutTarget, CommitOpts, FetchOpts, ForceMode, MergeOpts, Patch, ProgressSink,
     ProgressUpdate, PullOpts, PullOutcome, PushSpec, RebasePlan, ResetMode, SearchQuery,
@@ -1774,6 +1776,54 @@ impl Hidegit {
             RepoMessage::BranchDeleteConfirmed { name, force } => {
                 let backend = Arc::clone(&repo.backend);
                 write_task(index, move || backend.delete_branch(&name, force))
+            }
+
+            // ---- worktrees ----
+            RepoMessage::WorktreeRemoveRequested { path } => {
+                let name = path.display().to_string();
+                let held = repo
+                    .worktrees
+                    .iter()
+                    .find(|w| w.path == path)
+                    .and_then(|w| match &w.head {
+                        Some(Head::Branch { name, .. }) => Some(name.short.clone()),
+                        _ => None,
+                    });
+
+                self.app.confirming = Some(Confirmation {
+                    title: format!("Remove the worktree at {name}?"),
+                    // Says what comes back as well as what goes: the branch is
+                    // the thing the user is likely to want, and "it stays" is
+                    // the reassurance that makes this safe to accept.
+                    body: match held {
+                        Some(branch) => format!(
+                            "The directory and its registration go. {branch} stays, and becomes \
+                             checkoutable here again."
+                        ),
+                        None => "The directory and its registration go.".to_owned(),
+                    },
+                    confirm_label: "Remove".to_owned(),
+                    action: Box::new(Message::Repo(
+                        index,
+                        // Never forced from here: the safe form runs first, and
+                        // Git's own refusal is what reaches the user.
+                        RepoMessage::WorktreeRemoveConfirmed { path, force: false },
+                    )),
+                });
+                Task::none()
+            }
+
+            RepoMessage::WorktreeRemoveConfirmed { path, force } => {
+                let backend = Arc::clone(&repo.backend);
+                write_task(index, move || backend.remove_worktree(&path, force))
+            }
+
+            RepoMessage::WorktreePruneRequested => {
+                let backend = Arc::clone(&repo.backend);
+                // No confirmation. Pruning removes registrations whose directory
+                // is already gone — there is nothing left to lose — and a
+                // locked one is left alone whatever this asks for.
+                write_task(index, move || backend.prune_worktrees())
             }
 
             // ---- submodules ----
