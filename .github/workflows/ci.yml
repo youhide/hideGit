@@ -68,8 +68,81 @@ jobs:
 
         # --workspace, because the workspace sets default-members to exclude
         # xtask from ordinary builds — and dev tooling still has to lint.
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
+        #
+        # --locked, because `release.yml` uses it: without it here, CI passes on
+        # a dependency set resolved fresh that afternoon while the release
+        # builds `Cargo.lock`, and the first place they can disagree is a tag.
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+
+  # The floor `Cargo.toml` declares. Nothing else checks it: clippy's
+  # `incompatible_msrv` catches a standard-library call that is too new — it
+  # caught one in the panic hook — but it says nothing about whether the crate
+  # graph resolves and compiles on 1.88 at all.
+  #
+  # `cargo check` rather than `test`: what is under test is the toolchain
+  # accepting the code, and the suite already runs three times over on stable.
+  msrv:
+    name: rust 1.88 (the declared floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux windowing and font dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev
+
+      # Pinned exactly, not `1.88` — a patch release of the same minor can
+      # stabilise something, and then this job stops meaning what it says.
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      # No cache here, deliberately. This job takes two minutes from cold, and a
+      # restored `target/` is the one variable that could let it report a pass
+      # on something it never compiled — which is the only failure mode a
+      # version gate has.
+      #
+      # `RUSTUP_TOOLCHAIN` is not belt-and-braces: `rust-toolchain.toml` at the
+      # repository root pins `channel = "stable"`, and rustup honours a
+      # directory override *above* the default this action just set. Without
+      # this line the job installs 1.88, reports installing 1.88, and then
+      # compiles everything with stable — a green check proving nothing. Only
+      # the environment variable outranks the file.
+      - run: cargo check --workspace --all-targets --all-features --locked
+        env:
+          RUSTUP_TOOLCHAIN: "1.88.0"
+
+  # The profile people actually download, which nothing built until a tag.
+  # `lto = "thin"` and the optimiser are a different compilation entirely, and
+  # `release.yml` only runs on `v*` — so the first sign of a release-only break
+  # was the release.
+  #
+  # One platform: what this catches is optimisation and LTO, which are not
+  # platform-specific. The three-way matrix stays on the debug build, where it
+  # is testing the subprocess boundary and the windowing stack instead.
+  release-profile:
+    name: release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux windowing and font dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libfontconfig1-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --workspace --release --locked
 
   # Benchmarks, on Linux only: the numbers are not compared between platforms
   # and running the 100,000-commit fixture three times over buys nothing.
