@@ -18,12 +18,12 @@ use hidegit_core::model::{ChangeStatus, Conflict, Diff, FileChange, RepoState, W
 
 use crate::Element;
 use crate::message::RepoMessage;
+use crate::metrics;
 use crate::state::{COMPOSER_FIELD_IDS, DiffMode, Draft, Resolver, Section, StagingRow};
 use crate::theme::Palette;
 use crate::widget::diff;
 use crate::widget::sidebar::{heading, item_style};
 
-const ITEM_SIZE: f32 = 13.0;
 const LIST_WIDTH: f32 = 280.0;
 
 #[allow(clippy::too_many_arguments)]
@@ -190,7 +190,7 @@ fn file_row<'a>(
     // The glyph carries the status independently of the colour, so the list
     // reads the same without hue.
     let glyph = text(change.status.code().to_string())
-        .size(ITEM_SIZE)
+        .size(metrics::text::BODY)
         .font(Font::MONOSPACE)
         .color(accent);
 
@@ -222,9 +222,12 @@ fn file_row<'a>(
     row![
         button(
             container(
-                row![glyph, text(label).size(ITEM_SIZE).color(palette.text)]
-                    .spacing(8)
-                    .align_y(Center),
+                row![
+                    glyph,
+                    text(label).size(metrics::text::BODY).color(palette.text)
+                ]
+                .spacing(8)
+                .align_y(Center),
             )
             .padding(Padding::from([3, 12])),
         )
@@ -250,7 +253,8 @@ fn action_button<'a>(
     palette: Palette,
 ) -> Element<'a, RepoMessage> {
     let control = button(
-        container(text(glyph).size(ITEM_SIZE).font(Font::MONOSPACE)).padding(Padding::from([3, 8])),
+        container(text(glyph).size(metrics::text::BODY).font(Font::MONOSPACE))
+            .padding(Padding::from([3, 8])),
     )
     .padding(0)
     .style(move |_, status| item_style(palette, false, status))
@@ -258,7 +262,7 @@ fn action_button<'a>(
 
     tooltip(
         control,
-        container(text(label).size(11.0).color(palette.text))
+        container(text(label).size(metrics::text::LABEL).color(palette.text))
             .padding(Padding::from([3, 6]))
             .style(move |_| container::Style {
                 background: Some(palette.surface.into()),
@@ -293,11 +297,11 @@ fn untracked_row<'a>(
             container(
                 row![
                     text("?")
-                        .size(ITEM_SIZE)
+                        .size(metrics::text::BODY)
                         .font(Font::MONOSPACE)
                         .color(palette.muted),
                     text(path.display().to_string())
-                        .size(ITEM_SIZE)
+                        .size(metrics::text::BODY)
                         .color(palette.muted),
                 ]
                 .spacing(8)
@@ -340,14 +344,16 @@ fn conflict_row<'a>(
         container(
             row![
                 text("!")
-                    .size(ITEM_SIZE)
+                    .size(metrics::text::BODY)
                     .font(Font::MONOSPACE)
                     .color(palette.danger),
                 text(conflict.path.display().to_string())
-                    .size(ITEM_SIZE)
+                    .size(metrics::text::BODY)
                     .color(palette.text),
                 Space::new().width(Fill),
-                text(describe(conflict)).size(11.0).color(palette.muted),
+                text(describe(conflict))
+                    .size(metrics::text::LABEL)
+                    .color(palette.muted),
             ]
             .spacing(8)
             .align_y(Center),
@@ -381,9 +387,11 @@ fn clean<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
     let palette = *palette;
     container(
         column![
-            text("Nothing to commit").size(15.0).color(palette.text),
+            text("Nothing to commit")
+                .size(metrics::text::LEAD)
+                .color(palette.text),
             text("The working directory matches the last commit.")
-                .size(13.0)
+                .size(metrics::text::BODY)
                 .color(palette.muted),
         ]
         .spacing(6)
@@ -396,7 +404,7 @@ fn clean<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
 
 fn placeholder<'a>(message: &'a str, palette: &Palette) -> Element<'a, RepoMessage> {
     let muted = palette.muted;
-    container(text(message).size(13.0).color(muted))
+    container(text(message).size(metrics::text::BODY).color(muted))
         .center_x(Fill)
         .center_y(Fill)
         .into()
@@ -437,13 +445,13 @@ fn composer<'a>(
         // `Enter` in the subject commits, the way it does in every other
         // one-line message field.
         .on_submit(RepoMessage::CommitRequested)
-        .size(13.0)
+        .size(metrics::text::BODY)
         .padding(Padding::from([6, 8]));
 
     let body = text_input("Description (optional)", &draft.body)
         .id(COMPOSER_FIELD_IDS[1])
         .on_input(RepoMessage::BodyChanged)
-        .size(13.0)
+        .size(metrics::text::BODY)
         .padding(Padding::from([6, 8]));
 
     // Why the button is unavailable is stated rather than left to be guessed.
@@ -463,7 +471,7 @@ fn composer<'a>(
         "Commit"
     };
     let mut commit = button(
-        container(text(label).size(13.0))
+        container(text(label).size(metrics::text::BODY))
             .center_x(Fill)
             .padding(Padding::from([6, 12])),
     )
@@ -493,7 +501,9 @@ fn composer<'a>(
     .spacing(8);
 
     if let Some(reason) = blocker {
-        stack = stack.push(container(text(reason).size(11.0).color(palette.muted)).center_x(Fill));
+        stack = stack.push(
+            container(text(reason).size(metrics::text::LABEL).color(palette.muted)).center_x(Fill),
+        );
     }
 
     // iced 0.14 keeps text-input focus inside the widget and does not report
@@ -530,10 +540,12 @@ fn toggle<'a>(
     button(
         container(
             row![
-                text(glyph)
-                    .size(ITEM_SIZE)
-                    .color(if on { palette.accent } else { palette.muted }),
-                text(label).size(11.0).color(palette.muted),
+                text(glyph).size(metrics::text::BODY).color(if on {
+                    palette.accent
+                } else {
+                    palette.muted
+                }),
+                text(label).size(metrics::text::LABEL).color(palette.muted),
             ]
             .spacing(5)
             .align_y(Center),

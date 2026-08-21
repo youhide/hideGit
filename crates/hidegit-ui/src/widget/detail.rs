@@ -7,6 +7,7 @@ use iced::{Center, Fill, Font, Length, Padding};
 use crate::Element;
 use crate::format;
 use crate::message::{RepoMessage, UiError};
+use crate::metrics;
 use crate::state::{DetailPane, DiffMode, FILE_FILTER_ID, OpenRepo, Selection};
 use crate::theme::Palette;
 
@@ -96,7 +97,7 @@ fn commit<'a>(
         };
         header = header.push(
             text(where_from)
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .font(Font::MONOSPACE)
                 .color(palette.warning),
         );
@@ -109,20 +110,27 @@ fn commit<'a>(
         None => c.summary.clone(),
     };
 
-    header = header.push(text(title).size(15.0).color(palette.text).font(Font {
-        weight: iced::font::Weight::Semibold,
-        ..Font::DEFAULT
-    }));
+    header = header.push(
+        text(title)
+            .size(metrics::text::LEAD)
+            .color(palette.text)
+            .font(Font {
+                weight: iced::font::Weight::Semibold,
+                ..Font::DEFAULT
+            }),
+    );
     let mut identity = row![
         text(c.id.short(10))
-            .size(12.0)
+            .size(metrics::text::CODE)
             .font(Font::MONOSPACE)
             .color(palette.muted),
-        text("·").size(12.0).color(palette.muted),
-        text(c.author.name.clone()).size(12.0).color(palette.muted),
-        text("·").size(12.0).color(palette.muted),
+        text("·").size(metrics::text::CODE).color(palette.muted),
+        text(c.author.name.clone())
+            .size(metrics::text::CODE)
+            .color(palette.muted),
+        text("·").size(metrics::text::CODE).color(palette.muted),
         text(format::timestamp(c.time))
-            .size(12.0)
+            .size(metrics::text::CODE)
             .color(palette.muted),
     ]
     .spacing(8)
@@ -138,7 +146,7 @@ fn commit<'a>(
         let surface = palette.surface;
         identity = identity.push(Space::new().width(Fill));
         identity = identity.push(
-            button(text("⋯").size(12.0).color(muted))
+            button(text("⋯").size(metrics::text::CODE).color(muted))
                 .padding([1, 6])
                 .style(move |_, status| button::Style {
                     background: Some(
@@ -171,7 +179,7 @@ fn commit<'a>(
                 c.committer.name,
                 format::timestamp(c.committer.time)
             ))
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.muted),
         );
     }
@@ -180,7 +188,7 @@ fn commit<'a>(
         header = header.push(Space::new().height(6));
         header = header.push(
             text(body.clone())
-                .size(13.0)
+                .size(metrics::text::BODY)
                 .font(Font::MONOSPACE)
                 .color(palette.text),
         );
@@ -198,7 +206,7 @@ fn commit<'a>(
                     .collect::<Vec<_>>()
                     .join(", ")
             ))
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .font(Font::MONOSPACE)
             .color(palette.muted),
         );
@@ -253,9 +261,12 @@ fn commit<'a>(
         let row_button = button(
             container(
                 row![
-                    text(glyph).size(12.0).font(Font::MONOSPACE).color(colour),
+                    text(glyph)
+                        .size(metrics::text::CODE)
+                        .font(Font::MONOSPACE)
+                        .color(colour),
                     text(label)
-                        .size(12.0)
+                        .size(metrics::text::CODE)
                         .font(Font::MONOSPACE)
                         .color(palette.text),
                 ]
@@ -289,7 +300,7 @@ fn commit<'a>(
         let mut entry = row![row_button].align_y(Center);
         if blamable {
             entry = entry.push(
-                button(text("blame").size(10.0))
+                button(text("blame").size(metrics::text::MICRO))
                     .padding([2, 6])
                     .style(move |_, status| button::Style {
                         background: Some(
@@ -325,7 +336,7 @@ fn commit<'a>(
     let listing: Element<'a, RepoMessage> = if shown.is_empty() {
         container(
             text("No file matches that.")
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .color(palette.muted),
         )
         .padding(10)
@@ -340,7 +351,7 @@ fn commit<'a>(
                 text_input("Filter files…", filter)
                     .id(FILE_FILTER_ID)
                     .on_input(RepoMessage::FileFilterChanged)
-                    .size(11.0)
+                    .size(metrics::text::LABEL)
                     .padding(Padding::from([4, 6]))
             )
             .padding(Padding::from([6, 8])),
@@ -363,7 +374,7 @@ fn commit<'a>(
         "{counted}   {}",
         format::diff_stat(detail.stats.insertions, detail.stats.deletions)
     ))
-    .size(11.0)
+    .size(metrics::text::LABEL)
     .color(palette.muted);
 
     column![
@@ -412,11 +423,15 @@ fn divider<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
 }
 
 fn placeholder<'a>(message: &str, palette: &Palette) -> Element<'a, RepoMessage> {
-    container(text(message.to_owned()).size(13.0).color(palette.muted))
-        .width(Fill)
-        .height(Fill)
-        .center(Fill)
-        .into()
+    container(
+        text(message.to_owned())
+            .size(metrics::text::BODY)
+            .color(palette.muted),
+    )
+    .width(Fill)
+    .height(Fill)
+    .center(Fill)
+    .into()
 }
 
 /// A failure shown where the action was attempted, with Git's own words rather
@@ -424,9 +439,11 @@ fn placeholder<'a>(message: &str, palette: &Palette) -> Element<'a, RepoMessage>
 fn failure<'a>(error: &UiError, palette: &Palette) -> Element<'a, RepoMessage> {
     container(
         column![
-            text(error.summary.clone()).size(13.0).color(palette.danger),
+            text(error.summary.clone())
+                .size(metrics::text::BODY)
+                .color(palette.danger),
             text(error.details.clone())
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .font(Font::MONOSPACE)
                 .color(palette.muted),
         ]

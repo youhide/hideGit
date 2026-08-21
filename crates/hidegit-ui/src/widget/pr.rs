@@ -14,11 +14,9 @@ use iced::{Center, Color, Fill, Font, Padding};
 use crate::Element;
 use crate::format;
 use crate::message::{Message, RepoMessage};
+use crate::metrics;
 use crate::state::{App, OpenRepo, PrState, Prompt, PromptField, PromptKind, Selection};
 use crate::theme::Palette;
-
-const HEADING_SIZE: f32 = 11.0;
-const ITEM_SIZE: f32 = 13.0;
 
 /// The `PULL REQUESTS` section.
 ///
@@ -126,7 +124,7 @@ fn footer<'a>(app: &App, index: usize, palette: Palette) -> Element<'a, Message>
 
     container(
         row![
-            text(who).size(HEADING_SIZE).color(palette.muted),
+            text(who).size(metrics::text::LABEL).color(palette.muted),
             Space::new().width(Fill),
             link(
                 "Refresh",
@@ -143,7 +141,7 @@ fn footer<'a>(app: &App, index: usize, palette: Palette) -> Element<'a, Message>
 }
 
 fn link<'a>(label: &'a str, message: Message, palette: Palette) -> Element<'a, Message> {
-    button(text(label).size(HEADING_SIZE).color(palette.accent))
+    button(text(label).size(metrics::text::LABEL).color(palette.accent))
         .padding(0)
         .style(move |_, status| crate::widget::sidebar::item_style(palette, false, status))
         .on_press(message)
@@ -198,7 +196,7 @@ fn create_action(app: &App, repo: &OpenRepo) -> Option<(&'static str, Message)> 
 fn role_heading<'a>(role: PrRole, palette: Palette) -> Element<'a, Message> {
     container(
         text(role.heading())
-            .size(HEADING_SIZE - 1.0)
+            .size(metrics::text::LABEL - 1.0)
             .color(palette.muted),
     )
     .padding(Padding::from([4, 12]))
@@ -229,9 +227,13 @@ fn row_for<'a>(
     };
 
     let mut label = row![
-        text(check_glyph).size(ITEM_SIZE).color(check_colour),
-        text(review_glyph).size(ITEM_SIZE).color(review_colour),
-        text(title).size(ITEM_SIZE).color(if pr.draft {
+        text(check_glyph)
+            .size(metrics::text::BODY)
+            .color(check_colour),
+        text(review_glyph)
+            .size(metrics::text::BODY)
+            .color(review_colour),
+        text(title).size(metrics::text::BODY).color(if pr.draft {
             palette.muted
         } else {
             palette.text
@@ -245,7 +247,7 @@ fn row_for<'a>(
     // acts on.
     if pr.merge == MergeState::Conflicting {
         label = label.push(Space::new().width(Fill));
-        label = label.push(text("⚠").size(ITEM_SIZE).color(palette.warning));
+        label = label.push(text("⚠").size(metrics::text::BODY).color(palette.warning));
     }
 
     row![
@@ -265,7 +267,8 @@ fn row_for<'a>(
 
 fn open_button<'a>(index: usize, number: u64, palette: Palette) -> Element<'a, Message> {
     let control = button(
-        container(text("↗").size(ITEM_SIZE).font(Font::MONOSPACE)).padding(Padding::from([3, 8])),
+        container(text("↗").size(metrics::text::BODY).font(Font::MONOSPACE))
+            .padding(Padding::from([3, 8])),
     )
     .padding(0)
     .style(move |_, status| crate::widget::sidebar::item_style(palette, false, status))
@@ -317,23 +320,31 @@ fn review_marks(state: ReviewState, palette: Palette) -> (&'static str, Color) {
 }
 
 fn note<'a>(message: &'a str, palette: Palette) -> Element<'a, Message> {
-    container(text(message).size(ITEM_SIZE - 1.0).color(palette.muted))
-        .padding(Padding::from([4, 12]))
-        .into()
+    container(
+        text(message)
+            .size(metrics::text::BODY - 1.0)
+            .color(palette.muted),
+    )
+    .padding(Padding::from([4, 12]))
+    .into()
 }
 
 /// The stale marker: a status indicator, never a dialog.
 fn stale<'a>(why: &str, palette: Palette) -> Element<'a, Message> {
     let label = format!("Showing the last known state — {why}");
-    container(text(label).size(HEADING_SIZE).color(palette.warning))
-        .padding(Padding::from([4, 12]))
-        .into()
+    container(
+        text(label)
+            .size(metrics::text::LABEL)
+            .color(palette.warning),
+    )
+    .padding(Padding::from([4, 12]))
+    .into()
 }
 
 /// A row that reads as the next action rather than as an absence.
 fn action_row<'a>(label: &'a str, message: Message, palette: Palette) -> Element<'a, Message> {
     button(
-        container(text(label).size(ITEM_SIZE).color(palette.accent))
+        container(text(label).size(metrics::text::BODY).color(palette.accent))
             .padding(Padding::from([4, 12])),
     )
     .width(Fill)
@@ -402,7 +413,11 @@ pub fn detail<'a>(detail: &'a PullRequestDetail, palette: &'a Palette) -> Elemen
 
     let mut reviews = column![].spacing(4);
     if !detail.reviews.is_empty() {
-        reviews = reviews.push(text("REVIEWS").size(HEADING_SIZE).color(palette.muted));
+        reviews = reviews.push(
+            text("REVIEWS")
+                .size(metrics::text::LABEL)
+                .color(palette.muted),
+        );
         for review in &detail.reviews {
             reviews = reviews.push(
                 text(format!("{} — {}", review.author, verdict(review.verdict)))

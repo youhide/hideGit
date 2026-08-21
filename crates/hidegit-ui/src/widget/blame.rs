@@ -14,10 +14,10 @@ use iced::{Center, Fill, Font, Length};
 use crate::Element;
 use crate::format;
 use crate::message::RepoMessage;
+use crate::metrics;
 use crate::state::BlameView;
 use crate::theme::Palette;
 
-const CODE_SIZE: f32 = 12.0;
 /// Wide enough for a short hash, a name and a relative date without wrapping.
 const GUTTER_WIDTH: f32 = 250.0;
 
@@ -69,11 +69,11 @@ pub fn view<'a>(blame: &'a BlameView, palette: &'a Palette) -> Element<'a, RepoM
         let body = row![
             gutter,
             text(format!("{:>5}", line.lineno))
-                .size(CODE_SIZE)
+                .size(metrics::text::CODE)
                 .font(Font::MONOSPACE)
                 .color(palette.muted),
             text(line.text.clone())
-                .size(CODE_SIZE)
+                .size(metrics::text::CODE)
                 .font(Font::MONOSPACE)
                 .color(palette.text),
         ]
@@ -106,17 +106,17 @@ fn attribution<'a>(
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
     let hash = text(id.short(7))
-        .size(11.0)
+        .size(metrics::text::LABEL)
         .font(Font::MONOSPACE)
         .color(palette.accent);
 
     let rest: Element<'_, RepoMessage> = match commit {
         Some(commit) => row![
             text(format::truncate(&commit.author.name, 110.0))
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .color(palette.muted),
             text(format::relative_time(commit.time))
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .color(palette.muted),
         ]
         .spacing(8)
@@ -124,7 +124,7 @@ fn attribution<'a>(
         // A commit that could not be read costs its own gutter entry, not the
         // view — the hash is still enough to look it up by hand.
         None => text("(commit not read)")
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.muted)
             .into(),
     };
@@ -138,17 +138,17 @@ fn header<'a>(blame: &'a BlameView, palette: &'a Palette) -> Element<'a, RepoMes
     container(
         row![
             text(blame.path.display().to_string())
-                .size(12.0)
+                .size(metrics::text::CODE)
                 .color(palette.text),
             // The revision is named because blame answers a different question
             // at every one of them, and a view that hid which it used would be
             // showing an answer to a question nobody asked.
             text(format!("blamed at {}", blame.at.short(7)))
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .font(Font::MONOSPACE)
                 .color(palette.muted),
             Space::new().width(Fill),
-            button(text("Close").size(11.0))
+            button(text("Close").size(metrics::text::LABEL))
                 .padding([3, 9])
                 .style(move |_, status| button::Style {
                     background: Some(

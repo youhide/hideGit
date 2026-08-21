@@ -16,6 +16,7 @@ use iced::{Color, Font, Pixels, Point, Rectangle, Renderer, Size, Vector, mouse}
 
 use crate::format;
 use crate::message::RepoMessage;
+use crate::metrics;
 use crate::state::{GraphView, ROW_HEIGHT, Selection};
 use crate::theme::Palette;
 
@@ -65,11 +66,24 @@ fn badge_width(label: &str) -> f32 {
     label.chars().count() as f32 * META_SIZE * CHAR_WIDTH + 12.0
 }
 
-const SUMMARY_SIZE: f32 = 13.0;
-const META_SIZE: f32 = 12.0;
+const SUMMARY_SIZE: f32 = metrics::text::BODY;
+const META_SIZE: f32 = metrics::text::CODE;
 /// Rough advance width per character, for laying out badges without a text
 /// measurement pass. Deliberately generous, so a badge never clips its label.
-const CHAR_WIDTH: f32 = 0.58;
+///
+/// Borrowed from `format` rather than kept here. Both estimate the same thing —
+/// a character of the default font — and they disagreed: 0.58 here against 0.62
+/// there. `badge_width` above warns that two copies of its arithmetic would
+/// drift, and the ratio was quietly the second copy.
+const CHAR_WIDTH: f32 = crate::format::CHAR_WIDTH_RATIO;
+
+// `format::truncate` decides how many characters fit a width; `badge_width`
+// decides how wide a badge holding them must be. If the graph's estimate is the
+// smaller of the two, a badge clips a label truncation had already called short
+// enough — which is what 0.58 against 0.62 bought. Checked at compile time
+// rather than in a test, because both sides are constants: a wrong value here
+// should fail the build, not a run.
+const _: () = assert!(CHAR_WIDTH >= crate::format::CHAR_WIDTH_RATIO);
 
 /// A drawable view of loaded history.
 #[derive(Debug)]
@@ -636,6 +650,7 @@ pub fn row_offset(row: usize, scroll: f32) -> Vector {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use hidegit_core::model::{Commit, ObjectId, Signature};
     use time::OffsetDateTime;

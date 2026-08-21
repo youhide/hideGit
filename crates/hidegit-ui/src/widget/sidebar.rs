@@ -18,11 +18,9 @@ use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
 use crate::message::{Message, RepoMessage};
+use crate::metrics;
 use crate::state::{ActionSheet, App, OpenRepo, Prompt, PromptField, PromptKind, Selection};
 use crate::theme::Palette;
-
-const HEADING_SIZE: f32 = 11.0;
-const ITEM_SIZE: f32 = 13.0;
 
 /// The sidebar emits both kinds of message.
 ///
@@ -204,16 +202,21 @@ fn heading_row<'a, M: 'a>(
 ) -> iced::widget::Row<'a, M> {
     let muted = palette.muted;
     let count = if count > 0 {
-        text(count.to_string()).size(HEADING_SIZE).color(muted)
+        text(count.to_string())
+            .size(metrics::text::LABEL)
+            .color(muted)
     } else {
-        text("").size(HEADING_SIZE)
+        text("").size(metrics::text::LABEL)
     };
 
     row![
-        text(label).size(HEADING_SIZE).color(muted).font(Font {
-            weight: iced::font::Weight::Semibold,
-            ..Font::DEFAULT
-        }),
+        text(label)
+            .size(metrics::text::LABEL)
+            .color(muted)
+            .font(Font {
+                weight: iced::font::Weight::Semibold,
+                ..Font::DEFAULT
+            }),
         Space::new().width(Fill),
         count,
     ]
@@ -236,7 +239,7 @@ pub(crate) fn section_heading<'a>(
             button(
                 container(
                     text("+")
-                        .size(ITEM_SIZE)
+                        .size(metrics::text::BODY)
                         .font(Font::MONOSPACE)
                         .color(palette.muted),
                 )
@@ -274,15 +277,15 @@ fn working_directory<'a>(repo: &OpenRepo, index: usize, palette: &Palette) -> El
     let count = repo.status.change_count();
     let badge = if count > 0 {
         text(count.to_string())
-            .size(HEADING_SIZE)
+            .size(metrics::text::LABEL)
             .color(palette.accent)
     } else {
-        text("").size(HEADING_SIZE)
+        text("").size(metrics::text::LABEL)
     };
 
     let label = row![
         text("WORKING DIRECTORY")
-            .size(HEADING_SIZE)
+            .size(metrics::text::LABEL)
             .color(palette.muted),
         Space::new().width(Fill),
         badge,
@@ -372,7 +375,7 @@ fn local_branch_row<'a>(
     let short = branch.name.short.clone();
 
     let name = text(short.clone())
-        .size(ITEM_SIZE)
+        .size(metrics::text::BODY)
         .color(if is_head { palette.text } else { palette.muted })
         .font(if is_head {
             Font {
@@ -386,13 +389,13 @@ fn local_branch_row<'a>(
     // The current branch is marked with a glyph as well as with weight and
     // colour, so it is identifiable without relying on either.
     let marker = text(if is_head { "▸" } else { " " })
-        .size(ITEM_SIZE)
+        .size(metrics::text::BODY)
         .color(palette.accent);
 
     let mut label = row![marker, name].spacing(6).align_y(Center);
     if let Some(drift) = divergence_label(repo.divergence_of(&branch.name.full)) {
         label = label.push(Space::new().width(Fill));
-        label = label.push(text(drift).size(HEADING_SIZE).color(palette.muted));
+        label = label.push(text(drift).size(metrics::text::LABEL).color(palette.muted));
     }
 
     // A detached HEAD has no branch to merge *into*, so those two actions are
@@ -622,8 +625,10 @@ fn remote_row<'a>(
     // The URL is what distinguishes two remotes with similar names, and it is the
     // thing people check when a push goes somewhere unexpected.
     let label = row![
-        text("☁").size(ITEM_SIZE).color(palette.muted),
-        text(name.clone()).size(ITEM_SIZE).color(palette.text),
+        text("☁").size(metrics::text::BODY).color(palette.muted),
+        text(name.clone())
+            .size(metrics::text::BODY)
+            .color(palette.text),
         Space::new().width(Fill),
         // A remote that has never been fetched has no branches, and saying so is
         // more useful than an empty space.
@@ -632,7 +637,7 @@ fn remote_row<'a>(
         } else {
             branch_count.to_string()
         })
-        .size(HEADING_SIZE)
+        .size(metrics::text::LABEL)
         .color(palette.muted),
     ]
     .spacing(6)
@@ -672,8 +677,10 @@ fn remote_branch_row<'a>(branch: &Branch, index: usize, palette: &Palette) -> El
     // function and were indistinguishable, which mattered as soon as clicking one
     // did something different.
     let label = row![
-        text("⇢").size(ITEM_SIZE).color(palette.muted),
-        text(short.clone()).size(ITEM_SIZE).color(palette.muted),
+        text("⇢").size(metrics::text::BODY).color(palette.muted),
+        text(short.clone())
+            .size(metrics::text::BODY)
+            .color(palette.muted),
     ]
     .spacing(6)
     .align_y(Center);
@@ -725,14 +732,14 @@ fn stash_row<'a>(
     // Git's own vocabulary: `stash@{0}` is what the user would type, so it is what
     // they are shown, rather than an invented ordinal.
     let position = text(format!("{{{at}}}"))
-        .size(HEADING_SIZE)
+        .size(metrics::text::LABEL)
         .font(Font::MONOSPACE)
         .color(palette.muted);
 
     let label = row![
         position,
         text(entry.message.clone())
-            .size(ITEM_SIZE)
+            .size(metrics::text::BODY)
             .color(palette.text),
     ]
     .spacing(6)
@@ -814,15 +821,15 @@ fn submodule_row<'a>(
 
     let label = row![
         text(glyph)
-            .size(ITEM_SIZE)
+            .size(metrics::text::BODY)
             .font(Font::MONOSPACE)
             .color(colour),
         text(submodule.path.display().to_string())
-            .size(ITEM_SIZE)
+            .size(metrics::text::BODY)
             .color(palette.text),
         Space::new().width(Fill),
         text(at)
-            .size(HEADING_SIZE)
+            .size(metrics::text::LABEL)
             .font(Font::MONOSPACE)
             .color(colour),
     ]
@@ -884,7 +891,7 @@ fn worktree_row<'a>(worktree: &Worktree, index: usize, palette: &Palette) -> Ele
     // marker for the branch `HEAD` is on: both mean "this is the one you are
     // standing in".
     let marker = text(if worktree.is_current { "▸" } else { " " })
-        .size(ITEM_SIZE)
+        .size(metrics::text::BODY)
         .color(palette.accent);
 
     // The directory name rather than the whole path, which does not fit in
@@ -908,13 +915,15 @@ fn worktree_row<'a>(worktree: &Worktree, index: usize, palette: &Palette) -> Ele
 
     let label = row![
         marker,
-        text(name).size(ITEM_SIZE).color(if worktree.is_current {
-            palette.text
-        } else {
-            palette.muted
-        }),
+        text(name)
+            .size(metrics::text::BODY)
+            .color(if worktree.is_current {
+                palette.text
+            } else {
+                palette.muted
+            }),
         Space::new().width(Fill),
-        text(state).size(HEADING_SIZE).color(colour),
+        text(state).size(metrics::text::LABEL).color(colour),
     ]
     .spacing(6)
     .align_y(Center);
@@ -1065,7 +1074,8 @@ fn action_button<'a>(
     palette: Palette,
 ) -> Element<'a, Message> {
     let control = button(
-        container(text(glyph).size(ITEM_SIZE).font(Font::MONOSPACE)).padding(Padding::from([3, 8])),
+        container(text(glyph).size(metrics::text::BODY).font(Font::MONOSPACE))
+            .padding(Padding::from([3, 8])),
     )
     .padding(0)
     .style(move |_, status| item_style(palette, false, status))
@@ -1082,7 +1092,7 @@ fn hinted<'a>(
 ) -> Element<'a, Message> {
     tooltip(
         control,
-        container(text(label).size(11.0).color(palette.text))
+        container(text(label).size(metrics::text::LABEL).color(palette.text))
             .padding(Padding::from([4, 6]))
             .style(move |_| container::Style {
                 background: Some(palette.background.into()),
@@ -1110,8 +1120,10 @@ fn tag_row<'a>(
     let short = tag.name.short.clone();
 
     let label = row![
-        text(glyph).size(ITEM_SIZE).color(palette.warning),
-        text(short.clone()).size(ITEM_SIZE).color(palette.muted),
+        text(glyph).size(metrics::text::BODY).color(palette.warning),
+        text(short.clone())
+            .size(metrics::text::BODY)
+            .color(palette.muted),
     ]
     .spacing(6)
     .align_y(Center);

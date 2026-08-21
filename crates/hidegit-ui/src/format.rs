@@ -10,8 +10,8 @@ use time::macros::format_description;
 /// pass per row per frame — is exactly the cost virtualisation exists to avoid.
 /// Deliberately generous, so truncation errs toward cutting a character early
 /// rather than overflowing into the next column.
-const CHAR_WIDTH_RATIO: f32 = 0.62;
-const NOMINAL_SIZE: f32 = 13.0;
+pub const CHAR_WIDTH_RATIO: f32 = 0.62;
+const NOMINAL_SIZE: f32 = crate::metrics::text::BODY;
 
 /// Shortens `text` to fit `width` logical pixels, with an ellipsis.
 pub fn truncate(text: &str, width: f32) -> String {
