@@ -152,6 +152,59 @@ pub fn focus_ring(focused: bool, palette: &Palette) -> iced::Border {
     }
 }
 
+/// How much of the screen a modal hides behind it.
+///
+/// One value for every modal. Five of the six already agreed on it; the sixth
+/// is the reason this is a constant now.
+pub const SCRIM: f32 = 0.75;
+
+/// A control under the pointer, or being pressed.
+pub const HOVERED: f32 = 0.85;
+
+/// A control that is present but cannot be used yet.
+///
+/// Dimmed rather than removed: a disabled primary button says "not yet", not
+/// "gone", and taking it out of the layout moves everything else as the user
+/// types.
+pub const DISABLED: f32 = 0.35;
+
+// Checked at compile time rather than in a test: all three are constants, so a
+// runtime assertion over them proves nothing about a run — and a wrong value
+// here should fail the build. Each states a relation that has to hold whatever
+// the numbers become.
+const _: () = assert!(
+    DISABLED < HOVERED,
+    "hovering must not look more off than being disabled"
+);
+const _: () = assert!(HOVERED < 1.0, "a hover that changes nothing is not a hover");
+const _: () = assert!(
+    DISABLED > 0.0,
+    "a disabled control stays in place; removing it would move the layout"
+);
+const _: () = assert!(
+    SCRIM > DISABLED,
+    "the screen behind a modal is hidden further than a control is dimmed"
+);
+
+/// The wash a modal lays over the screen behind it.
+///
+/// **Built from the palette, never from black.** `Palette::selection` records
+/// the general form of this lesson — an alpha tuned on a dark background does
+/// not transfer to a light one — and the scrim was the case that had not
+/// learned it. Five modals dimmed the screen with `palette.background`; the
+/// sixth used `Color::BLACK`, and that sixth is `overlay`, which draws every
+/// confirmation, action sheet, prompt and device-code dialog. On the light
+/// theme those were the only things on screen dimmed with black.
+///
+/// There is no elevation system here to belong to. hideGit draws no shadows —
+/// a modal is told apart by the scrim and its own surface colour, not by depth.
+pub fn scrim(palette: &Palette) -> Color {
+    Color {
+        a: SCRIM,
+        ..palette.background
+    }
+}
+
 /// The active theme.
 ///
 /// A struct rather than an enum because custom themes are TOML files dropped in
@@ -622,6 +675,35 @@ mod tests {
         let (a, b) = (luminance(a), luminance(b));
         let (light, dark) = if a > b { (a, b) } else { (b, a) };
         (light + 0.05) / (dark + 0.05)
+    }
+
+    #[test]
+    fn the_scrim_follows_the_theme_rather_than_being_black() {
+        // The defect this replaced: five modals dimmed the screen with
+        // `palette.background` and the sixth used `Color::BLACK`. That sixth
+        // draws every confirmation, action sheet and prompt, so on the light
+        // theme those were the only things on screen dimmed with black.
+        for (name, palette) in palettes() {
+            let scrim = scrim(&palette);
+            assert_eq!(
+                (scrim.r, scrim.g, scrim.b),
+                (
+                    palette.background.r,
+                    palette.background.g,
+                    palette.background.b
+                ),
+                "{name}: a scrim is the page dimmed, not a colour laid over it"
+            );
+            assert_eq!(scrim.a, SCRIM, "{name}");
+        }
+
+        let dark = scrim(&Palette::DARK);
+        let light = scrim(&Palette::LIGHT);
+        assert_ne!(
+            (dark.r, dark.g, dark.b),
+            (light.r, light.g, light.b),
+            "a scrim that is the same colour in both themes is one that ignores the theme"
+        );
     }
 
     #[test]

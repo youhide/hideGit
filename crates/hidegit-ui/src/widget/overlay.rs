@@ -437,13 +437,7 @@ fn scrim<'a>(card: iced::widget::Container<'a, Message>, palette: Palette) -> El
         .center_x(Fill)
         .center_y(Fill)
         .style(move |_| container::Style {
-            background: Some(
-                iced::Color {
-                    a: 0.55,
-                    ..iced::Color::BLACK
-                }
-                .into(),
-            ),
+            background: Some(crate::theme::scrim(&palette).into()),
             ..container::Style::default()
         })
         .into()
@@ -566,10 +560,16 @@ fn quiet_style(palette: Palette, status: button::Status) -> button::Style {
 fn accent_style(palette: Palette, status: button::Status) -> button::Style {
     let base = palette.accent;
     let background = match status {
-        button::Status::Hovered | button::Status::Pressed => iced::Color { a: 0.85, ..base },
+        button::Status::Hovered | button::Status::Pressed => iced::Color {
+            a: crate::theme::HOVERED,
+            ..base
+        },
         // A disabled primary says "not yet", not "gone": it stays in place,
         // dimmed, so the shape of the dialog does not shift as the user types.
-        button::Status::Disabled => iced::Color { a: 0.35, ..base },
+        button::Status::Disabled => iced::Color {
+            a: crate::theme::DISABLED,
+            ..base
+        },
         button::Status::Active => base,
     };
 
@@ -587,7 +587,10 @@ fn accent_style(palette: Palette, status: button::Status) -> button::Style {
 fn danger_style(palette: Palette, status: button::Status) -> button::Style {
     let base = palette.danger;
     let background = match status {
-        button::Status::Hovered | button::Status::Pressed => iced::Color { a: 0.85, ..base },
+        button::Status::Hovered | button::Status::Pressed => iced::Color {
+            a: crate::theme::HOVERED,
+            ..base
+        },
         _ => base,
     };
 
