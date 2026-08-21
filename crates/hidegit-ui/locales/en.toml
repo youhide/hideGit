@@ -70,3 +70,15 @@
 
 "theme.dark" = "Dark"
 "theme.light" = "Light"
+
+# ---- Empty states --------------------------------------------------------
+#
+# `UI_SPEC.md` asks an empty state to carry the next action rather than only
+# describing the absence, so these come in pairs: what is true, and the button
+# that does something about it.
+
+"empty.nothing-to-commit" = "Nothing to commit — the working directory matches the last commit."
+"empty.show-last-commit" = "Show the last commit"
+
+"empty.no-file-matches" = "No file matches that."
+"empty.clear-filter" = "Clear the filter"

@@ -80,7 +80,7 @@ pub fn view<'a>(
                 common::divider(palette).map(repo_message),
                 container(ring(
                     Pane::Detail,
-                    detail::view(repo, palette).map(repo_message)
+                    detail::view(repo, palette, &app.text).map(repo_message)
                 ))
                 .height(Length::FillPortion(4))
                 .width(Fill),

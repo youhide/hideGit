@@ -40,12 +40,14 @@ pub fn view<'a>(
     state: RepoState,
     resolver: Option<&'a Resolver>,
     palette: &'a Palette,
+    text_catalogue: &'a crate::i18n::Catalogue,
+    head: Option<hidegit_core::model::ObjectId>,
 ) -> Element<'a, RepoMessage> {
     // Even a clean tree gets the composer: amending the last commit is a real
     // thing to want, and it needs nothing staged.
     if status.is_clean() && !draft.amend {
         return column![
-            container(clean(palette)).height(Fill),
+            container(clean(palette, text_catalogue, head)).height(Fill),
             common::divider(palette),
             container(composer(status, draft, state, palette)).width(Length::Fixed(LIST_WIDTH)),
         ]
@@ -383,24 +385,31 @@ fn describe(conflict: &Conflict) -> &'static str {
     }
 }
 
-/// A clean working directory says what it means, and what to do next.
-fn clean<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
-    let palette = *palette;
-    container(
-        column![
-            text("Nothing to commit")
-                .size(metrics::text::LEAD)
-                .color(palette.text),
-            text("The working directory matches the last commit.")
-                .size(metrics::text::BODY)
-                .color(palette.muted),
-        ]
-        .spacing(6)
-        .align_x(Center),
-    )
-    .center_x(Fill)
-    .center_y(Fill)
-    .into()
+/// A clean working directory says what it means, and offers the commit it
+/// matches.
+///
+/// The old wording — "the working directory matches the last commit" — was a
+/// description standing in for an action nobody could take from here.
+/// `UI_SPEC.md` asks an empty state to carry the next one, and the next one is
+/// reading that commit.
+///
+/// An unborn branch has no commit to offer, so it keeps the sentence alone.
+fn clean<'a>(
+    palette: &Palette,
+    text_catalogue: &'a crate::i18n::Catalogue,
+    head: Option<hidegit_core::model::ObjectId>,
+) -> Element<'a, RepoMessage> {
+    let message = text_catalogue.get("empty.nothing-to-commit");
+
+    match head {
+        Some(id) => common::empty_offering(
+            message,
+            text_catalogue.get("empty.show-last-commit"),
+            RepoMessage::Selected(crate::state::Selection::Commit(id)),
+            palette,
+        ),
+        None => common::empty(message, palette),
+    }
 }
 
 /// The commit message editor, and the button that acts on it.

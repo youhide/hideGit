@@ -49,3 +49,11 @@
 
 "theme.dark" = "Escuro"
 "theme.light" = "Claro"
+
+# ---- Telas vazias ----------------------------------------------------------
+
+"empty.nothing-to-commit" = "Nada para commitar — o diretório de trabalho está igual ao último commit."
+"empty.show-last-commit" = "Mostrar o último commit"
+
+"empty.no-file-matches" = "Nenhum arquivo corresponde."
+"empty.clear-filter" = "Limpar o filtro"
