@@ -22,6 +22,14 @@ Layout sketches are structural, not visual design.
 
 1. **The graph is the application.** History is what people reason about, so it gets the centre of
    the window and the most pixels. Everything else is support.
+
+   Concretely: **six parts graph to four parts detail**, and that ratio is now asserted rather than
+   merely asked for. It was asked for from M1 and never delivered — the graph rendered at 20% of the
+   window because its `FillPortion` sat *inside* the focus ring, and `ring` wraps its child in a
+   container with no height, which in iced is `Shrink`. A portion inside a `Shrink` never reaches
+   the column meant to divide the space, so the detail pane — whose portion was on the outside — was
+   the only child asking for a share and took everything left over. Nothing caught it for five
+   milestones because every test asserted *text*, and this is a question about *pixels*.
 2. **Git's own vocabulary.** `stash`, `rebase`, `ref`, `HEAD`. Renaming Git concepts teaches people
    something they cannot use anywhere else.
 3. **Never lie about state.** A repository mid-rebase does not offer "commit" as though nothing is
