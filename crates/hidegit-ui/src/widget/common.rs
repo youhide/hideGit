@@ -19,7 +19,7 @@
 //! a real obstacle and is not: a rule emits nothing, so the message type is
 //! free and these are generic over it.
 
-use iced::widget::{Space, container};
+use iced::widget::{Space, container, text};
 use iced::{Fill, Length};
 
 use crate::Element;
@@ -48,6 +48,42 @@ fn rule<'a, M: 'a>(palette: &Palette, width: Length, height: Length) -> Element<
             background: Some(colour.into()),
             ..container::Style::default()
         })
+        .into()
+}
+
+/// What a pane shows when it holds nothing yet.
+///
+/// Three of these existed — `empty` in the diff, `placeholder` in the detail
+/// pane and a third `placeholder` in staging — rendering the same centred muted
+/// line three ways.
+///
+/// `UI_SPEC.md` asks empty states to "carry the next action, not just an
+/// absence", and most of these do not yet. Giving them one is a separate change;
+/// what this does is make there be one place to give it to.
+pub fn empty<'a, M: 'a>(message: impl text::IntoFragment<'a>, palette: &Palette) -> Element<'a, M> {
+    centred(message, palette)
+}
+
+/// What a pane shows while it is still reading.
+///
+/// The same picture as [`empty`] and deliberately not the same function. A pane
+/// with nothing in it and a pane that has not finished looking are different
+/// states, and the difference is about to matter: an empty state is getting the
+/// next action, and "Loading…" has no next action to offer. Two of the seven
+/// call sites this replaced were this state wearing the other one's name.
+pub fn loading<'a, M: 'a>(
+    message: impl text::IntoFragment<'a>,
+    palette: &Palette,
+) -> Element<'a, M> {
+    centred(message, palette)
+}
+
+fn centred<'a, M: 'a>(message: impl text::IntoFragment<'a>, palette: &Palette) -> Element<'a, M> {
+    let muted = palette.muted;
+    container(text(message).size(metrics::text::BODY).color(muted))
+        .width(Fill)
+        .height(Fill)
+        .center(Fill)
         .into()
 }
 
@@ -202,6 +238,7 @@ mod tests {
                 "fn divider",
                 "fn vertical_rule",
                 "fn horizontal_rule",
+                "fn placeholder",
                 "fn accent_style",
                 "fn danger_style",
                 "fn quiet_style",

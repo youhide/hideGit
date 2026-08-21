@@ -143,7 +143,7 @@ fn pane<'a>(
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
     let Some(row) = selected else {
-        return placeholder("Select a file to see its changes", palette);
+        return common::empty("Select a file to see its changes", palette);
     };
 
     let staging = |is_staged: bool| {
@@ -159,7 +159,7 @@ fn pane<'a>(
         Section::Unstaged => diff::view(unstaged, row.index, mode, palette, staging(false)),
         // An untracked file has no diff to show: nothing in the repository has
         // ever seen it, so every line would be an addition against nothing.
-        Section::Untracked => placeholder("Untracked — stage it to see it as a diff", palette),
+        Section::Untracked => common::empty("Untracked — stage it to see it as a diff", palette),
         // The resolver loads its file asynchronously, so between selecting the
         // row and the file arriving there is genuinely nothing to show. Saying
         // so beats an empty pane that looks broken.
@@ -167,7 +167,7 @@ fn pane<'a>(
             Some(resolver) => {
                 crate::widget::resolver::view(resolver, state, conflicted_paths, palette)
             }
-            None => placeholder("Reading the conflicted file…", palette),
+            None => common::loading("Reading the conflicted file…", palette),
         },
     }
 }
@@ -401,14 +401,6 @@ fn clean<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
     .center_x(Fill)
     .center_y(Fill)
     .into()
-}
-
-fn placeholder<'a>(message: &'a str, palette: &Palette) -> Element<'a, RepoMessage> {
-    let muted = palette.muted;
-    container(text(message).size(metrics::text::BODY).color(muted))
-        .center_x(Fill)
-        .center_y(Fill)
-        .into()
 }
 
 /// The commit message editor, and the button that acts on it.
