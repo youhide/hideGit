@@ -93,13 +93,7 @@ pub fn view<'a>(
     .center(Fill)
     .style(move |_| container::Style {
         // A scrim, because the plan owns the screen until it is run or closed.
-        background: Some(
-            iced::Color {
-                a: 0.75,
-                ..palette.background
-            }
-            .into(),
-        ),
+        background: Some(crate::theme::scrim(palette).into()),
         ..container::Style::default()
     });
 

@@ -569,7 +569,7 @@ fn commit_style(palette: Palette, status: button::Status) -> button::Style {
         ),
         button::Status::Hovered | button::Status::Pressed => (
             iced::Color {
-                a: 0.85,
+                a: crate::theme::HOVERED,
                 ..palette.accent
             },
             iced::Color::WHITE,

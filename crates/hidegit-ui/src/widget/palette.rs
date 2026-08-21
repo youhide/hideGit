@@ -231,13 +231,7 @@ pub fn view<'a>(
     container(panel)
         .center(Fill)
         .style(move |_| container::Style {
-            background: Some(
-                iced::Color {
-                    a: 0.75,
-                    ..palette.background
-                }
-                .into(),
-            ),
+            background: Some(crate::theme::scrim(palette).into()),
             ..container::Style::default()
         })
         .into()

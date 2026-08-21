@@ -777,7 +777,16 @@ What "not inverted" means concretely, since it is easy to say and easy to skip:
 - **The brand orange is darkened for light.** As drawn it reaches only 3.21:1 on light's near-white
   panel, below the bar for the text it is used for. Dark uses it as drawn *because it clears the bar
   there*; light applies the same rule and gets a different hex.
-- **A panel stays raised in both.** Light is a grey page with near-white panels, not a white page
+- **There is no elevation system, and the scrim is not black.** hideGit draws no shadows anywhere — a
+modal is told apart from the screen by the scrim and its own surface colour, not by depth. The scrim
+is `palette.background` at 0.75, from `theme::scrim`, so it dims *the page*. It used to be built by
+hand in six places, and five of them agreed; the sixth used `Color::BLACK`, and that sixth was
+`overlay` — every confirmation, action sheet, prompt and device-code dialog. On the light theme
+those were the only things on screen dimmed with black. Hover and disabled are named too
+(`theme::HOVERED`, `theme::DISABLED`), because a control dimmed differently in two dialogs is the
+same drift one step smaller.
+
+**A panel stays raised in both.** Light is a grey page with near-white panels, not a white page
   with grey ones — inverting that relationship makes every panel read as sunken.
 - **Selection colours live in the palette, not as an alpha over the accent.** An alpha tuned on a
   dark background does not transfer: the wash that reads as a glow over near-black reads as a stain
