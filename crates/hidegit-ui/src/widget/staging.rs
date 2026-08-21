@@ -467,7 +467,7 @@ fn composer<'a>(
     )
     .width(Fill)
     .padding(0)
-    .style(move |_, s| commit_style(palette_copy, s));
+    .style(move |_, s| common::button::primary(palette_copy, s));
 
     if blocker.is_none() {
         commit = commit.on_press(RepoMessage::CommitRequested);
@@ -546,34 +546,4 @@ fn toggle<'a>(
     .style(move |_, status| item_style(palette, false, status))
     .on_press(message(!on))
     .into()
-}
-
-fn commit_style(palette: Palette, status: button::Status) -> button::Style {
-    let (background, text_color) = match status {
-        button::Status::Disabled => (
-            iced::Color {
-                a: 0.25,
-                ..palette.accent
-            },
-            palette.muted,
-        ),
-        button::Status::Hovered | button::Status::Pressed => (
-            iced::Color {
-                a: crate::theme::HOVERED,
-                ..palette.accent
-            },
-            iced::Color::WHITE,
-        ),
-        _ => (palette.accent, iced::Color::WHITE),
-    };
-
-    button::Style {
-        background: Some(background.into()),
-        text_color,
-        border: iced::Border {
-            radius: 6.0.into(),
-            ..iced::Border::default()
-        },
-        ..button::Style::default()
-    }
 }

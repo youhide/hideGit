@@ -739,6 +739,14 @@ Eight steps — `NONE HAIR TIGHT SNUG BASE ROOMY WIDE LOOSE`, 0 to 16 — and th
 decision about how much room a repository name needs, and it belongs beside the tab as a named local
 constant. Only the numbers a reader compares without meaning to are shared.
 
+**A button is drawn by what pressing it does.** `widget/common::button` has three: `primary`,
+`danger` and `quiet`. There were four competing designs for "the primary button" alone, disagreeing
+about the text colour, the radius and the hover alpha. The text was the part that mattered: three of
+them used `Color::WHITE`, which measures **3.21:1 on the dark theme's accent** and **3.35:1 on its
+danger**, under the 4.5:1 a button label needs. `palette.background` clears it in both themes, and a
+test now asserts it for every filled button in every state whose text has to be readable. Nothing
+checked this before, because the contrast bars covered text *as* a colour and never a label *on* one.
+
 **A rule between two things belongs to nobody.** `widget/common.rs` owns the horizontal and vertical
 hairlines. Before it there were twelve: nine horizontal under three different names, three vertical,
 six of them identical character for character. They could not simply be shared because they

@@ -51,6 +51,105 @@ fn rule<'a, M: 'a>(palette: &Palette, width: Length, height: Length) -> Element<
         .into()
 }
 
+/// How a button is drawn, by what pressing it does.
+///
+/// Four designs for "the primary button" existed at once and disagreed about
+/// every part of it: the text was `Color::WHITE` in three places and
+/// `palette.background` in two, the radius was 6 in three and 3 in two, hover
+/// was 0.85, 0.9 or the border colour depending where you looked.
+///
+/// The white text was not merely inconsistent. Measured against WCAG 2.1, white
+/// on the dark theme's accent is **3.21:1** and on its danger **3.35:1** —
+/// under the 4.5:1 that button labels need — while `palette.background` clears
+/// it in both themes. That is the whole argument for naming these: the contrast
+/// tests covered body text, secondary text, the semantic colours as text and
+/// the graph lanes, but nothing checked the text *on* a filled button, because
+/// no palette slot describes it.
+///
+/// These take `Palette` by value rather than by reference, unlike everything
+/// else here. A style is a closure the widget keeps, so it has to own what it
+/// paints with; that is where the crate's two argument conventions come from.
+pub mod button {
+    use iced::widget::button;
+
+    use crate::metrics;
+    use crate::theme::{self, Palette};
+
+    /// The button that does the thing the screen is about.
+    pub fn primary(palette: Palette, status: button::Status) -> button::Style {
+        filled(palette, palette.accent, status)
+    }
+
+    /// The button that destroys something.
+    ///
+    /// Separate from [`primary`] because `UI_SPEC.md` requires destructive
+    /// actions to be distinguishable, which only works if creating a branch
+    /// does not wear the same colour as deleting one.
+    pub fn danger(palette: Palette, status: button::Status) -> button::Style {
+        filled(palette, palette.danger, status)
+    }
+
+    /// The button that is not the answer: Cancel, and the toolbar.
+    ///
+    /// Outlined rather than bare. `UI_SPEC.md` wants Cancel unemphasised, which
+    /// an outline does not undo — it only makes the target visible before the
+    /// pointer is over it.
+    pub fn quiet(palette: Palette, status: button::Status) -> button::Style {
+        let background = match status {
+            button::Status::Hovered | button::Status::Pressed => Some(
+                iced::Color {
+                    a: 0.10,
+                    ..palette.text
+                }
+                .into(),
+            ),
+            _ => None,
+        };
+
+        button::Style {
+            background,
+            text_color: match status {
+                button::Status::Disabled => palette.muted,
+                _ => palette.text,
+            },
+            border: iced::Border {
+                color: palette.border,
+                width: metrics::HAIR,
+                radius: metrics::radius::SMALL.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+
+    /// A button filled with `base`, in every state it can be in.
+    fn filled(palette: Palette, base: iced::Color, status: button::Status) -> button::Style {
+        // Disabled is an opaque pair rather than the fill at an alpha: what an
+        // alpha lands on depends on whatever is behind the button, so its
+        // contrast cannot be stated, let alone asserted.
+        let (background, text_color) = match status {
+            button::Status::Disabled => (palette.border, palette.muted),
+            button::Status::Hovered | button::Status::Pressed => (
+                iced::Color {
+                    a: theme::HOVERED,
+                    ..base
+                },
+                palette.background,
+            ),
+            button::Status::Active => (base, palette.background),
+        };
+
+        button::Style {
+            background: Some(background.into()),
+            text_color,
+            border: iced::Border {
+                radius: metrics::radius::SMALL.into(),
+                ..iced::Border::default()
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// Every view file, so the guard below cannot be outrun by a new one.
@@ -82,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn no_view_file_draws_its_own_rule() {
+    fn no_view_file_draws_its_own_rule_or_button() {
         // Nine horizontal rules and three vertical ones existed before this
         // module, six of them identical character for character. Deleting them
         // is easy; keeping them deleted is what needs a test, because the next
@@ -94,7 +193,23 @@ mod tests {
         let mut offenders = Vec::new();
 
         for (name, source) in view_sources() {
-            for shape in ["fn divider", "fn vertical_rule", "fn horizontal_rule"] {
+            // The rules, the five button roles that were duplicated, and the
+            // two hardcoded colours. `Color::WHITE` earned its place here: it
+            // was the label colour on three primary buttons, at 3.21:1 on the
+            // dark theme, and it was also painted *over* two of them from the
+            // button's content where the style could not correct it.
+            for shape in [
+                "fn divider",
+                "fn vertical_rule",
+                "fn horizontal_rule",
+                "fn accent_style",
+                "fn danger_style",
+                "fn quiet_style",
+                "fn primary_style",
+                "fn secondary_style",
+                "Color::WHITE",
+                "Color::BLACK",
+            ] {
                 if source.contains(shape) {
                     offenders.push(format!("{name} defines its own `{shape}`"));
                 }
@@ -103,8 +218,65 @@ mod tests {
 
         assert!(
             offenders.is_empty(),
-            "a rule belongs to `widget::common`: {offenders:#?}"
+            "a rule, a button role and a colour all belong to the palette or to \
+             `widget::common`: {offenders:#?}"
         );
+    }
+
+    /// Every filled button, in the states whose text has to be readable.
+    fn readable_states() -> [iced::widget::button::Status; 3] {
+        use iced::widget::button::Status;
+        [Status::Active, Status::Hovered, Status::Pressed]
+    }
+
+    #[test]
+    fn a_button_label_is_readable_on_the_button() {
+        // The gap this closes. Contrast was asserted for body text, secondary
+        // text, the semantic colours used *as* text, and the graph lanes —
+        // never for a label on a filled button, because no palette slot
+        // describes that pairing.
+        //
+        // It was failing. `Color::WHITE` on the dark theme's accent is 3.21:1
+        // and on its danger 3.35:1, both under the 4.5:1 a button label needs,
+        // and three of the five primary buttons used it.
+        use super::button;
+
+        for (name, palette) in crate::theme::tests::palettes() {
+            for status in readable_states() {
+                for (role, style) in [
+                    ("primary", button::primary(palette, status)),
+                    ("danger", button::danger(palette, status)),
+                ] {
+                    let background = match style.background {
+                        Some(iced::Background::Color(colour)) => colour,
+                        other => panic!("{name}/{role}: expected a filled button, got {other:?}"),
+                    };
+                    let ratio = crate::theme::tests::contrast(style.text_color, background);
+                    assert!(
+                        ratio >= 4.5,
+                        "{name}/{role} in {status:?} is {ratio:.2}:1, under the 4.5:1 a label needs"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_destructive_button_never_wears_the_ordinary_one_s_colour() {
+        // `UI_SPEC.md` requires destructive actions to be distinguishable, and
+        // nothing checked it: painting `danger` with `accent` passed every test
+        // in the crate.
+        use super::button;
+        use iced::widget::button::Status;
+
+        for (name, palette) in crate::theme::tests::palettes() {
+            let ordinary = button::primary(palette, Status::Active).background;
+            let destructive = button::danger(palette, Status::Active).background;
+            assert_ne!(
+                ordinary, destructive,
+                "{name}: deleting a branch must not look like creating one"
+            );
+        }
     }
 
     #[test]

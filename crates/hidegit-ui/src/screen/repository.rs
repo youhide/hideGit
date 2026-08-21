@@ -290,7 +290,7 @@ fn action<'a>(
         .padding(Padding::from([4, 9])),
     )
     .padding(0)
-    .style(move |_, status| toolbar_style(palette, status));
+    .style(move |_, status| common::button::quiet(palette, status));
 
     if let Some(message) = message {
         control = control.on_press(message);
@@ -312,30 +312,6 @@ fn action<'a>(
         tooltip::Position::Bottom,
     )
     .into()
-}
-
-fn toolbar_style(palette: Palette, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => Some(
-            iced::Color {
-                a: 0.10,
-                ..palette.text
-            }
-            .into(),
-        ),
-        _ => None,
-    };
-
-    button::Style {
-        background,
-        text_color: palette.text,
-        border: iced::Border {
-            color: palette.border,
-            width: 1.0,
-            radius: 5.0.into(),
-        },
-        ..button::Style::default()
-    }
 }
 
 /// What is happening, in a real unit, with the only action that applies.
@@ -398,7 +374,7 @@ fn progress_banner<'a>(
                     .padding(Padding::from([3, 10]))
             )
             .padding(0)
-            .style(move |_, status| toolbar_style(palette_copy, status))
+            .style(move |_, status| common::button::quiet(palette_copy, status))
             .on_press(RepoMessage::OperationCancelled),
         ]
         .spacing(10)

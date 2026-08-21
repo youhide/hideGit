@@ -384,7 +384,7 @@ fn footer<'a>(
 
     let abort = button(text(format!("Abort {verb}")).size(metrics::text::LABEL))
         .padding([5, 10])
-        .style(move |_, status| danger_style(status, palette))
+        .style(move |_, status| common::button::danger(*palette, status))
         .on_press(RepoMessage::SequenceControlRequested(
             hidegit_core::ops::SequenceControl::Abort,
         ));
@@ -401,7 +401,7 @@ fn footer<'a>(
 
     let mut carry_on = button(text(format!("Continue {verb}")).size(metrics::text::LABEL))
         .padding([5, 10])
-        .style(move |_, status| accent_style(status, palette));
+        .style(move |_, status| common::button::primary(*palette, status));
     // Continue stays disabled until nothing anywhere is conflicted. This file
     // being done is not the same as the operation being ready to finish, and a
     // Continue that Git would refuse is worse than one that is visibly not yet
@@ -475,49 +475,6 @@ fn preset_style(active: bool, status: button::Status, palette: &Palette) -> butt
         },
         border: iced::Border {
             color: palette.border,
-            width: 1.0,
-            radius: 3.0.into(),
-        },
-        ..button::Style::default()
-    }
-}
-
-fn accent_style(status: button::Status, palette: &Palette) -> button::Style {
-    button::Style {
-        background: Some(
-            match status {
-                button::Status::Disabled => palette.border,
-                _ => palette.accent,
-            }
-            .into(),
-        ),
-        text_color: match status {
-            button::Status::Disabled => palette.muted,
-            _ => palette.background,
-        },
-        border: iced::Border {
-            radius: 3.0.into(),
-            ..iced::Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-fn danger_style(status: button::Status, palette: &Palette) -> button::Style {
-    button::Style {
-        background: Some(
-            match status {
-                button::Status::Hovered => palette.danger,
-                _ => palette.surface,
-            }
-            .into(),
-        ),
-        text_color: match status {
-            button::Status::Hovered => palette.background,
-            _ => palette.danger,
-        },
-        border: iced::Border {
-            color: palette.danger,
             width: 1.0,
             radius: 3.0.into(),
         },
