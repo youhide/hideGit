@@ -745,8 +745,27 @@ padding, spacing or a radius. A file joins that list in the change that converts
 regress afterwards. This is the same shape as the bidirectional shortcut-reference test and
 `xtask bench-check`: an assertion about the source, for an invariant no ordinary test can reach.
 
-Type sizes are not on a scale yet. Six file-local constants currently duplicate each other —
-`ITEM_SIZE = 13.0` appears three times — and that is its own step.
+### Type
+
+Six steps, named for the job: `MICRO LABEL CODE BODY LEAD DISPLAY`. `LABEL` carries structure —
+section headings and secondary text, the commonest size in the interface — and `BODY` carries
+content. `CODE` is anything monospaced and the dense metadata beside it.
+
+Before the scale there were eight sizes across 249 call sites and six file-local constants
+duplicating each other: `ITEM_SIZE = 13.0` written out three separate times, `CODE_SIZE = 12.0`
+three more.
+
+**Two sizes are deliberately absent.** `14.0` and `16.0` are each a third spelling of "the title of
+something", a pixel away from `LEAD`. The settings panel shows why that is a hierarchy question
+rather than a rename: its header is 14 while the option labels beneath it are 15, so the heading is
+*smaller than what it heads*. Those sites keep their literals until that is decided, and the guard's
+type list names only the files where the mapping changes nothing.
+
+**There is one estimate of how wide a character is.** `format::CHAR_WIDTH_RATIO` — the canvas has no
+cheap text measurement, so both truncation and ref-badge sizing estimate rather than measure. They
+used to estimate differently, 0.62 against 0.58 for the same font, and the smaller one is what
+clips a label that truncation had already called short enough. A compile-time assertion in
+`widget/graph.rs` keeps the badge estimate from falling below the truncation one again.
 
 ## Theming
 

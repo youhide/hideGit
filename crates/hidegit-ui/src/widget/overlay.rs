@@ -16,6 +16,7 @@ use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
 use crate::message::Message;
+use crate::metrics;
 use crate::state::{ActionSheet, Confirmation, PROMPT_FIELD_IDS, Prompt, SheetItem, Toast};
 use crate::theme::Palette;
 use hidegit_forge::DeviceCode;
@@ -78,29 +79,29 @@ fn device_code_dialog<'a>(code: &'a DeviceCode, palette: &'a Palette) -> Element
 
     let card = column![
         text("Sign in to GitHub")
-            .size(15.0)
+            .size(metrics::text::LEAD)
             .color(palette.text)
             .font(Font {
                 weight: iced::font::Weight::Semibold,
                 ..Font::DEFAULT
             }),
         text("Open the page below and enter this code:")
-            .size(13.0)
+            .size(metrics::text::BODY)
             .color(palette.muted),
         // Monospace and large: it is read off the screen and typed into
         // another device, sometimes another machine entirely.
         container(
             text(code.user_code.as_str())
-                .size(28.0)
+                .size(metrics::text::DISPLAY)
                 .font(Font::MONOSPACE)
                 .color(palette.accent)
         )
         .padding(Padding::from([8, 16])),
-        button(text(code.verification_uri.as_str()).size(13.0))
+        button(text(code.verification_uri.as_str()).size(metrics::text::BODY))
             .padding(Padding::from([6, 12]))
             .on_press(Message::OpenUrl(code.verification_uri.clone())),
         text("hideGit is waiting. This closes on its own once you approve it.")
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.muted),
     ]
     .spacing(10)
@@ -123,16 +124,18 @@ pub fn clone_banner<'a>(
     container(
         row![
             text(cloning.label.as_str())
-                .size(12.0)
+                .size(metrics::text::CODE)
                 .color(accent)
                 .font(Font {
                     weight: iced::font::Weight::Semibold,
                     ..Font::DEFAULT
                 }),
-            text(cloning.detail()).size(12.0).color(palette.muted),
+            text(cloning.detail())
+                .size(metrics::text::CODE)
+                .color(palette.muted),
             Space::new().width(Fill),
             button(
-                container(text("Cancel").size(12.0).color(palette.text))
+                container(text("Cancel").size(metrics::text::CODE).color(palette.text))
                     .padding(Padding::from([3, 10]))
             )
             .padding(0)
@@ -172,7 +175,7 @@ pub fn opening_banner<'a>(
         rows = rows.push(
             row![
                 text(open.phase.label())
-                    .size(12.0)
+                    .size(metrics::text::CODE)
                     .color(accent)
                     .font(Font {
                         weight: iced::font::Weight::Semibold,
@@ -187,7 +190,7 @@ pub fn opening_banner<'a>(
                         .to_string_lossy()
                         .into_owned()
                 )
-                .size(12.0)
+                .size(metrics::text::CODE)
                 .color(muted),
             ]
             .spacing(10)
@@ -214,7 +217,7 @@ fn action_sheet<'a>(sheet: &'a ActionSheet, palette: &'a Palette) -> Element<'a,
         // they clicked, and repeating "what would you like to do?" wastes the
         // one line that could name it.
         text(sheet.title.as_str())
-            .size(13.0)
+            .size(metrics::text::BODY)
             .color(palette.muted)
             .font(Font::MONOSPACE),
         Space::new().height(Length::Fixed(4.0)),
@@ -230,7 +233,7 @@ fn action_sheet<'a>(sheet: &'a ActionSheet, palette: &'a Palette) -> Element<'a,
         row![
             Space::new().width(Fill),
             button(
-                container(text("Cancel").size(13.0).color(palette.text))
+                container(text("Cancel").size(metrics::text::BODY).color(palette.text))
                     .padding(Padding::from([6, 14]))
             )
             .padding(0)
@@ -255,8 +258,13 @@ fn sheet_row<'a>(item: &'a SheetItem, highlighted: bool, palette: Palette) -> El
     button(
         container(
             row![
-                text(marker).size(12.0).color(colour).font(Font::MONOSPACE),
-                text(item.label.as_str()).size(13.0).color(colour),
+                text(marker)
+                    .size(metrics::text::CODE)
+                    .color(colour)
+                    .font(Font::MONOSPACE),
+                text(item.label.as_str())
+                    .size(metrics::text::BODY)
+                    .color(colour),
             ]
             .spacing(8)
             .align_y(Center),
@@ -287,7 +295,7 @@ fn prompt_dialog<'a>(prompt: &'a Prompt, palette: &'a Palette) -> Element<'a, Me
 
     let mut body = column![
         text(prompt.title.as_str())
-            .size(15.0)
+            .size(metrics::text::LEAD)
             .color(palette.text)
             .font(Font {
                 weight: iced::font::Weight::Semibold,
@@ -301,7 +309,7 @@ fn prompt_dialog<'a>(prompt: &'a Prompt, palette: &'a Palette) -> Element<'a, Me
             .on_input(move |value| Message::PromptChanged(index, value))
             // `Enter` accepts, the way it does in every other one-line field.
             .on_submit(Message::PromptAccepted)
-            .size(13.0)
+            .size(metrics::text::BODY)
             .padding(Padding::from([6, 8]));
 
         // Ids are what let `update` put the cursor in the first field when the
@@ -312,7 +320,9 @@ fn prompt_dialog<'a>(prompt: &'a Prompt, palette: &'a Palette) -> Element<'a, Me
 
         body = body.push(
             column![
-                text(field.label.as_str()).size(11.0).color(palette.muted),
+                text(field.label.as_str())
+                    .size(metrics::text::LABEL)
+                    .color(palette.muted),
                 input,
             ]
             .spacing(4),
@@ -324,7 +334,7 @@ fn prompt_dialog<'a>(prompt: &'a Prompt, palette: &'a Palette) -> Element<'a, Me
     let mut confirm = button(
         container(
             text(prompt.confirm_label.as_str())
-                .size(13.0)
+                .size(metrics::text::BODY)
                 .color(iced::Color::WHITE),
         )
         .padding(Padding::from([6, 14])),
@@ -339,7 +349,7 @@ fn prompt_dialog<'a>(prompt: &'a Prompt, palette: &'a Palette) -> Element<'a, Me
         row![
             Space::new().width(Fill),
             button(
-                container(text("Cancel").size(13.0).color(palette.text))
+                container(text("Cancel").size(metrics::text::BODY).color(palette.text))
                     .padding(Padding::from([6, 14]))
             )
             .padding(0)
@@ -360,14 +370,14 @@ fn dialog<'a>(confirmation: &'a Confirmation, palette: &'a Palette) -> Element<'
 
     let body = column![
         text(confirmation.title.as_str())
-            .size(15.0)
+            .size(metrics::text::LEAD)
             .color(palette.text)
             .font(Font {
                 weight: iced::font::Weight::Semibold,
                 ..Font::DEFAULT
             }),
         text(confirmation.body.as_str())
-            .size(13.0)
+            .size(metrics::text::BODY)
             .color(palette.muted),
         Space::new().height(Length::Fixed(6.0)),
         row![
@@ -375,7 +385,7 @@ fn dialog<'a>(confirmation: &'a Confirmation, palette: &'a Palette) -> Element<'
             // Cancel is first and unemphasised: the safe choice should not
             // be the one that takes aim.
             button(
-                container(text("Cancel").size(13.0).color(palette.text))
+                container(text("Cancel").size(metrics::text::BODY).color(palette.text))
                     .padding(Padding::from([6, 14]))
             )
             .padding(0)
@@ -384,7 +394,7 @@ fn dialog<'a>(confirmation: &'a Confirmation, palette: &'a Palette) -> Element<'
             button(
                 container(
                     text(confirmation.confirm_label.as_str())
-                        .size(13.0)
+                        .size(metrics::text::BODY)
                         .color(iced::Color::WHITE)
                 )
                 .padding(Padding::from([6, 14]))
@@ -463,10 +473,13 @@ fn toast_layer<'a>(toasts: &'a [Toast], palette: &'a Palette) -> Element<'a, Mes
 fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
     let mut body = column![
         row![
-            text(toast.summary.as_str()).size(13.0).color(palette.text),
+            text(toast.summary.as_str())
+                .size(metrics::text::BODY)
+                .color(palette.text),
             Space::new().width(Fill),
             button(
-                container(text("✕").size(12.0).color(palette.muted)).padding(Padding::from([0, 4]))
+                container(text("✕").size(metrics::text::CODE).color(palette.muted))
+                    .padding(Padding::from([0, 4]))
             )
             .padding(0)
             .style(move |_, status| quiet_style(palette, status))
@@ -480,7 +493,7 @@ fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
     if !toast.details.is_empty() {
         body = body.push(
             text(toast.details.as_str())
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .font(Font::MONOSPACE)
                 .color(palette.muted),
         );
@@ -493,8 +506,12 @@ fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
         row![
             Space::new().width(Fill),
             button(
-                container(text("Copy details").size(11.0).color(palette.muted))
-                    .padding(Padding::from([2, 6]))
+                container(
+                    text("Copy details")
+                        .size(metrics::text::LABEL)
+                        .color(palette.muted)
+                )
+                .padding(Padding::from([2, 6]))
             )
             .padding(0)
             .style(move |_, status| quiet_style(palette, status))

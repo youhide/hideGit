@@ -15,6 +15,7 @@ use iced::{Center, Fill, Font, Length};
 use crate::Element;
 use crate::format;
 use crate::message::RepoMessage;
+use crate::metrics;
 use crate::state::{SEARCH_FIELD_ID, Search};
 use crate::theme::Palette;
 
@@ -59,10 +60,13 @@ fn box_row<'a>(search: &'a Search, palette: &'a Palette) -> Element<'a, RepoMess
     // keystrokes, and a spinner that flashes on every letter is worse than
     // none — but a long search has to say it is still going.
     let status: Element<'_, RepoMessage> = if search.running {
-        text("searching…").size(11.0).color(palette.muted).into()
+        text("searching…")
+            .size(metrics::text::LABEL)
+            .color(palette.muted)
+            .into()
     } else if search.query.trim().is_empty() {
         text("summary, message, author or hash")
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.muted)
             .into()
     } else {
@@ -75,7 +79,7 @@ fn box_row<'a>(search: &'a Search, palette: &'a Palette) -> Element<'a, RepoMess
         } else {
             format!("{count} matches")
         })
-        .size(11.0)
+        .size(metrics::text::LABEL)
         .color(if count == 0 {
             palette.muted
         } else {
@@ -89,7 +93,7 @@ fn box_row<'a>(search: &'a Search, palette: &'a Palette) -> Element<'a, RepoMess
             text_input("Search commits", &search.query)
                 .id(SEARCH_FIELD_ID)
                 .on_input(RepoMessage::SearchChanged)
-                .size(13.0)
+                .size(metrics::text::BODY)
                 .padding([6, 8]),
             status,
         ]
@@ -109,7 +113,7 @@ fn results<'a>(search: &'a Search, palette: &'a Palette) -> Element<'a, RepoMess
         } else {
             "Nothing matched."
         };
-        return container(text(message).size(12.0).color(palette.muted))
+        return container(text(message).size(metrics::text::CODE).color(palette.muted))
             .center(Fill)
             .into();
     }
@@ -137,22 +141,24 @@ fn row_for<'a>(
 
     let body = row![
         text(commit.id.short(7))
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .font(Font::MONOSPACE)
             .color(palette.muted)
             .width(Length::Fixed(60.0)),
-        text(commit.summary.clone()).size(12.0).color(palette.text),
+        text(commit.summary.clone())
+            .size(metrics::text::CODE)
+            .color(palette.text),
         Space::new().width(Fill),
         // Why this commit is in the list.
         text(hit.field.label())
-            .size(10.0)
+            .size(metrics::text::MICRO)
             .color(palette.accent)
             .width(Length::Fixed(84.0)),
         text(format::truncate(&commit.author.name, 100.0))
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.muted),
         text(format::relative_time(commit.time))
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.muted)
             .width(Length::Fixed(56.0)),
     ]

@@ -14,10 +14,10 @@ use iced::{Center, Fill, Font, Length, Padding};
 use crate::Element;
 use crate::format;
 use crate::message::RepoMessage;
+use crate::metrics;
 use crate::state::DiffMode;
 use crate::theme::Palette;
 
-const CODE_SIZE: f32 = 12.0;
 const GUTTER_WIDTH: f32 = 44.0;
 
 fn mono() -> Font {
@@ -169,7 +169,10 @@ fn unified<'a>(
             // identifiable without relying on hue.
             let content = row![
                 numbers,
-                text(marker).size(CODE_SIZE).font(mono()).color(colour),
+                text(marker)
+                    .size(metrics::text::CODE)
+                    .font(mono())
+                    .color(colour),
                 line_text(painter.line(line.kind, line.text.as_str(), colour)),
             ]
             .spacing(6);
@@ -181,7 +184,7 @@ fn unified<'a>(
             // what lets the background stay subtle enough that the
             // added/removed reading is not traded away for the selection one.
             let bar = text(if chosen { "▌" } else { " " })
-                .size(CODE_SIZE)
+                .size(metrics::text::CODE)
                 .font(mono())
                 .color(palette.accent);
 
@@ -416,12 +419,12 @@ fn with_header<'a>(
     let surface = palette.surface;
     let mut bar = row![
         text(format!("{} {}", file.status.code(), file.path.display()))
-            .size(12.0)
+            .size(metrics::text::CODE)
             .font(mono())
             .color(palette.text),
         Space::new().width(Fill),
         text(format::diff_stat(insertions, deletions))
-            .size(12.0)
+            .size(metrics::text::CODE)
             .color(palette.muted),
     ]
     .spacing(10)
@@ -472,7 +475,7 @@ fn hunk_header<'a>(
 
     let mut bar = row![
         text(hunk.header.as_str())
-            .size(CODE_SIZE)
+            .size(metrics::text::CODE)
             .font(mono())
             .color(accent),
         Space::new().width(Fill),
@@ -518,7 +521,7 @@ fn action<'a>(label: &str, message: RepoMessage, palette: &Palette) -> Element<'
     let palette = *palette;
     let owned = label.to_owned();
 
-    button(container(text(owned).size(11.0)).padding(Padding::from([2, 8])))
+    button(container(text(owned).size(metrics::text::LABEL)).padding(Padding::from([2, 8])))
         .padding(0)
         .style(move |_, status| {
             let background = match status {
@@ -560,11 +563,11 @@ fn action<'a>(label: &str, message: RepoMessage, palette: &Palette) -> Element<'
 fn line_text<'a>(spans: Vec<iced::widget::text::Span<'a, (), Font>>) -> Element<'a, RepoMessage> {
     match <[_; 1]>::try_from(spans) {
         Ok([only]) => text(only.text)
-            .size(CODE_SIZE)
+            .size(metrics::text::CODE)
             .font(only.font.unwrap_or_else(mono))
             .color_maybe(only.color)
             .into(),
-        Err(spans) => rich_text(spans).size(CODE_SIZE).into(),
+        Err(spans) => rich_text(spans).size(metrics::text::CODE).into(),
     }
 }
 
@@ -610,7 +613,10 @@ fn code_line<'a>(
     container(
         row![
             gutter(lineno, palette),
-            text(marker).size(CODE_SIZE).font(mono()).color(colour),
+            text(marker)
+                .size(metrics::text::CODE)
+                .font(mono())
+                .color(colour),
             line_text(content),
         ]
         .spacing(6),
@@ -629,7 +635,7 @@ fn blank_line<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
         a: 0.35,
         ..palette.surface
     };
-    container(text(" ").size(CODE_SIZE).font(mono()))
+    container(text(" ").size(metrics::text::CODE).font(mono()))
         .width(Fill)
         .padding(Padding::from([1, 8]))
         .style(move |_| container::Style {
@@ -644,7 +650,7 @@ fn gutter<'a>(lineno: Option<u32>, palette: &Palette) -> Element<'a, RepoMessage
 
     container(
         text(label)
-            .size(CODE_SIZE)
+            .size(metrics::text::CODE)
             .font(mono())
             .color(palette.muted)
             .align_x(iced::alignment::Horizontal::Right)
@@ -655,11 +661,15 @@ fn gutter<'a>(lineno: Option<u32>, palette: &Palette) -> Element<'a, RepoMessage
 }
 
 fn empty<'a>(message: &str, palette: &Palette) -> Element<'a, RepoMessage> {
-    container(text(message.to_owned()).size(13.0).color(palette.muted))
-        .width(Fill)
-        .height(Fill)
-        .center(Fill)
-        .into()
+    container(
+        text(message.to_owned())
+            .size(metrics::text::BODY)
+            .color(palette.muted),
+    )
+    .width(Fill)
+    .height(Fill)
+    .center(Fill)
+    .into()
 }
 
 #[cfg(test)]

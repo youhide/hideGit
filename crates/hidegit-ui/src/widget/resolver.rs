@@ -16,12 +16,12 @@ use iced::{Center, Fill, Font, Length};
 
 use crate::Element;
 use crate::message::RepoMessage;
+use crate::metrics;
 use crate::state::Resolver;
 use crate::theme::Palette;
 
 /// Monospaced, because every pane here is source code.
 const CODE: Font = Font::MONOSPACE;
-const CODE_SIZE: f32 = 12.0;
 
 /// `conflicted_paths` is how many paths in the whole repository are still
 /// conflicted. Continuing is per operation, not per file, so this file being
@@ -39,13 +39,13 @@ pub fn view<'a>(
         return container(
             column![
                 text("Nothing to resolve in this file")
-                    .size(13.0)
+                    .size(metrics::text::BODY)
                     .color(palette.text),
                 text(
                     "It has no conflict markers — it may be binary, or already resolved by hand. \
                      Stage it to accept it as it is."
                 )
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .color(palette.muted),
             ]
             .spacing(6),
@@ -79,18 +79,18 @@ fn header<'a>(
     let remaining = resolver.remaining();
     let status = if remaining == 0 {
         text("all conflicts resolved")
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.success)
     } else {
         text(format!("{remaining} left"))
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.warning)
     };
 
     let mut stack = column![
         row![
             text(resolver.path.display().to_string())
-                .size(12.0)
+                .size(metrics::text::CODE)
                 .color(palette.text),
             Space::new().width(Fill),
             status,
@@ -110,7 +110,7 @@ fn header<'a>(
     // disagree with `git status`, with every tutorial, and with the terminal
     // the user drops to when something goes wrong.
     if let Some(note) = inversion_note(state) {
-        stack = stack.push(text(note).size(11.0).color(palette.warning));
+        stack = stack.push(text(note).size(metrics::text::LABEL).color(palette.warning));
     }
 
     container(stack).padding([6, 10]).width(Fill).into()
@@ -181,11 +181,16 @@ fn side<'a>(
     // mean *one changed line* against an unchanged file, and at pane size they
     // drown the code they are supposed to frame.
     let heading = row![
-        text(which).size(10.0).color(tint).font(Font {
-            weight: iced::font::Weight::Semibold,
-            ..Font::DEFAULT
-        }),
-        text(label.to_owned()).size(10.0).color(palette.muted),
+        text(which)
+            .size(metrics::text::MICRO)
+            .color(tint)
+            .font(Font {
+                weight: iced::font::Weight::Semibold,
+                ..Font::DEFAULT
+            }),
+        text(label.to_owned())
+            .size(metrics::text::MICRO)
+            .color(palette.muted),
     ]
     .spacing(6);
 
@@ -193,13 +198,13 @@ fn side<'a>(
         // A side with nothing in it means that side deleted the region, which
         // is an ordinary conflict and not a rendering failure.
         text("(deleted on this side)")
-            .size(11.0)
+            .size(metrics::text::LABEL)
             .color(palette.muted)
             .into()
     } else {
         column(lines.iter().map(|line| {
             text(line.trim_end_matches(['\r', '\n']).to_owned())
-                .size(CODE_SIZE)
+                .size(metrics::text::CODE)
                 .font(CODE)
                 .color(palette.text)
                 .into()
@@ -228,17 +233,20 @@ fn result<'a>(
 ) -> Element<'a, RepoMessage> {
     let heading = container(
         row![
-            text("RESULT").size(10.0).color(palette.muted).font(Font {
-                weight: iced::font::Weight::Semibold,
-                ..Font::DEFAULT
-            }),
+            text("RESULT")
+                .size(metrics::text::MICRO)
+                .color(palette.muted)
+                .font(Font {
+                    weight: iced::font::Weight::Semibold,
+                    ..Font::DEFAULT
+                }),
             Space::new().width(Fill),
             text(if resolver.editor.is_some() {
                 "editing"
             } else {
                 "read-only"
             })
-            .size(10.0)
+            .size(metrics::text::MICRO)
             .color(palette.muted),
         ]
         .align_y(Center)
@@ -249,7 +257,7 @@ fn result<'a>(
     let body: Element<'_, RepoMessage> = match &resolver.editor {
         Some(content) => text_editor(content)
             .font(CODE)
-            .size(CODE_SIZE)
+            .size(metrics::text::CODE)
             .height(Fill)
             .on_action(RepoMessage::ConflictEdited)
             .into(),
@@ -263,14 +271,18 @@ fn result<'a>(
                 } else {
                     "Pick a side below, or edit this pane directly."
                 };
-                container(text(message).size(11.0).color(palette.muted))
-                    .center(Fill)
-                    .into()
+                container(
+                    text(message)
+                        .size(metrics::text::LABEL)
+                        .color(palette.muted),
+                )
+                .center(Fill)
+                .into()
             } else {
                 scrollable(
                     container(column(lines.iter().map(|line| {
                         text(line.trim_end_matches(['\r', '\n']).to_owned())
-                            .size(CODE_SIZE)
+                            .size(metrics::text::CODE)
                             .font(CODE)
                             .color(palette.text)
                             .into()
@@ -300,7 +312,7 @@ fn action_bar<'a>(
 
     let preset = |label: &'a str, resolution: Resolution| {
         let is_current = *chosen == resolution;
-        button(text(label).size(11.0))
+        button(text(label).size(metrics::text::LABEL))
             .padding([4, 8])
             .style(move |_, status| preset_style(is_current, status, palette))
             .on_press(RepoMessage::ConflictResolved(at, resolution))
@@ -311,13 +323,13 @@ fn action_bar<'a>(
     container(
         row![
             text(format!("conflict {} of {count}", at + 1))
-                .size(11.0)
+                .size(metrics::text::LABEL)
                 .color(palette.muted),
             Space::new().width(Length::Fixed(12.0)),
             preset("Take ours", Resolution::Ours),
             preset("Take theirs", Resolution::Theirs),
             preset("Take both", Resolution::Both),
-            button(text(if editing { "Done editing" } else { "Edit" }).size(11.0))
+            button(text(if editing { "Done editing" } else { "Edit" }).size(metrics::text::LABEL))
                 .padding([4, 8])
                 .style(move |_, status| preset_style(editing, status, palette))
                 .on_press(RepoMessage::ConflictEditToggled),
@@ -345,7 +357,7 @@ fn step_button<'a>(
     enabled: bool,
     palette: &'a Palette,
 ) -> Element<'a, RepoMessage> {
-    let mut b = button(text(label).size(11.0))
+    let mut b = button(text(label).size(metrics::text::LABEL))
         .padding([4, 8])
         .style(move |_, status| preset_style(false, status, palette));
     if enabled {
@@ -369,7 +381,7 @@ fn footer<'a>(
         RepoState::Bisecting | RepoState::Clean => "operation",
     };
 
-    let abort = button(text(format!("Abort {verb}")).size(11.0))
+    let abort = button(text(format!("Abort {verb}")).size(metrics::text::LABEL))
         .padding([5, 10])
         .style(move |_, status| danger_style(status, palette))
         .on_press(RepoMessage::SequenceControlRequested(
@@ -379,14 +391,14 @@ fn footer<'a>(
     // Marking resolved is per file; continuing is per operation. They are
     // separate buttons because they are separate decisions, and a single
     // "Continue" that silently staged would hide the first one.
-    let mut mark = button(text("Mark resolved").size(11.0))
+    let mut mark = button(text("Mark resolved").size(metrics::text::LABEL))
         .padding([5, 10])
         .style(move |_, status| preset_style(false, status, palette));
     if resolver.is_resolved() {
         mark = mark.on_press(RepoMessage::ConflictMarkedResolved);
     }
 
-    let mut carry_on = button(text(format!("Continue {verb}")).size(11.0))
+    let mut carry_on = button(text(format!("Continue {verb}")).size(metrics::text::LABEL))
         .padding([5, 10])
         .style(move |_, status| accent_style(status, palette));
     // Continue stays disabled until nothing anywhere is conflicted. This file
@@ -419,7 +431,7 @@ fn footer<'a>(
     } else {
         text("Every conflict is resolved.".to_owned())
     }
-    .size(11.0)
+    .size(metrics::text::LABEL)
     .color(palette.muted);
 
     container(

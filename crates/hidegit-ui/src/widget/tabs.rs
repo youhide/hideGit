@@ -63,17 +63,17 @@ fn tab<'a>(
     let label = container(
         iced::widget::column![
             text(format::truncate(&repo.name(), TAB_WIDTH - 46.0))
-                .size(12.0)
+                .size(metrics::text::CODE)
                 .color(if active { palette.text } else { palette.muted }),
             text(format::truncate(&repo.head_label(), TAB_WIDTH - 46.0))
-                .size(10.0)
+                .size(metrics::text::MICRO)
                 .color(palette.muted),
         ]
         .spacing(metrics::HAIR),
     )
     .width(Length::Fixed(TAB_WIDTH - 30.0));
 
-    let close = button(text("✕").size(10.0))
+    let close = button(text("✕").size(metrics::text::MICRO))
         .padding([metrics::TIGHT, metrics::SNUG])
         .style(move |_, status| button::Style {
             background: Some(

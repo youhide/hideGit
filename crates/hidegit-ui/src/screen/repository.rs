@@ -7,6 +7,7 @@ use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
 use crate::message::{Message, RepoMessage};
+use crate::metrics;
 use crate::state::{App, OpenRepo, Pane, ROW_HEIGHT};
 use crate::theme::Palette;
 use crate::widget::{detail, graph, sidebar};
@@ -107,7 +108,7 @@ fn graph_pane<'a>(
             _ => "Loading history…".to_owned(),
         };
 
-        return container(text(message).size(13.0).color(palette.muted))
+        return container(text(message).size(metrics::text::BODY).color(palette.muted))
             .width(Fill)
             .height(Fill)
             .center(Fill)
@@ -160,12 +161,17 @@ fn toolbar<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMess
 
     container(
         row![
-            text(repo.name()).size(13.0).color(palette.text).font(Font {
-                weight: iced::font::Weight::Semibold,
-                ..Font::DEFAULT
-            }),
-            text("·").size(13.0).color(palette.muted),
-            text(repo.head_label()).size(13.0).color(palette.accent),
+            text(repo.name())
+                .size(metrics::text::BODY)
+                .color(palette.text)
+                .font(Font {
+                    weight: iced::font::Weight::Semibold,
+                    ..Font::DEFAULT
+                }),
+            text("·").size(metrics::text::BODY).color(palette.muted),
+            text(repo.head_label())
+                .size(metrics::text::BODY)
+                .color(palette.accent),
             Space::new().width(Length::Fixed(16.0)),
             // Search has a button as well as `Cmd+F`. A shortcut is how you use
             // a thing you already know is there; a control is how you find out
@@ -178,7 +184,7 @@ fn toolbar<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMess
             ),
             remote_actions(repo, palette),
             Space::new().width(Fill),
-            text(loaded).size(11.0).color(palette.muted),
+            text(loaded).size(metrics::text::LABEL).color(palette.muted),
         ]
         .spacing(10)
         .align_y(Center),
@@ -204,7 +210,10 @@ fn remote_actions<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, R
     // No remote means nothing to fetch from or push to, and a button that cannot
     // work is worse than an absent one.
     let Some(remote) = repo.default_remote() else {
-        return text("no remote").size(11.0).color(palette.muted).into();
+        return text("no remote")
+            .size(metrics::text::LABEL)
+            .color(palette.muted)
+            .into();
     };
 
     // Every action that moves refs is unavailable mid-merge, and says so rather
@@ -273,11 +282,11 @@ fn action<'a>(
     let enabled = message.is_some();
 
     let mut control = button(
-        container(text(label.to_owned()).size(12.0).color(if enabled {
-            palette.text
-        } else {
-            palette.muted
-        }))
+        container(
+            text(label.to_owned())
+                .size(metrics::text::CODE)
+                .color(if enabled { palette.text } else { palette.muted }),
+        )
         .padding(Padding::from([4, 9])),
     )
     .padding(0)
@@ -289,7 +298,7 @@ fn action<'a>(
 
     tooltip(
         control,
-        container(text(hint).size(11.0).color(palette.text))
+        container(text(hint).size(metrics::text::LABEL).color(palette.text))
             .padding(Padding::from([4, 6]))
             .style(move |_| container::Style {
                 background: Some(palette.background.into()),
@@ -373,17 +382,19 @@ fn progress_banner<'a>(
     container(
         row![
             text(pending.label.as_str())
-                .size(12.0)
+                .size(metrics::text::CODE)
                 .color(accent)
                 .font(Font {
                     weight: iced::font::Weight::Semibold,
                     ..Font::DEFAULT
                 }),
-            text(pending.detail()).size(12.0).color(palette.muted),
+            text(pending.detail())
+                .size(metrics::text::CODE)
+                .color(palette.muted),
             bar,
             Space::new().width(Fill),
             button(
-                container(text("Cancel").size(12.0).color(palette.text))
+                container(text("Cancel").size(metrics::text::CODE).color(palette.text))
                     .padding(Padding::from([3, 10]))
             )
             .padding(0)
@@ -454,11 +465,14 @@ fn operation_banner<'a>(
 
     let warning = palette.warning;
     let mut bar = row![
-        text(label).size(12.0).color(warning).font(Font {
-            weight: iced::font::Weight::Semibold,
-            ..Font::DEFAULT
-        }),
-        text(detail).size(12.0).color(palette.muted),
+        text(label)
+            .size(metrics::text::CODE)
+            .color(warning)
+            .font(Font {
+                weight: iced::font::Weight::Semibold,
+                ..Font::DEFAULT
+            }),
+        text(detail).size(metrics::text::CODE).color(palette.muted),
     ]
     .spacing(10)
     .align_y(Center);
@@ -471,27 +485,26 @@ fn operation_banner<'a>(
         let border = palette.border;
         let background = palette.background;
 
-        let mut carry_on =
-            button(text("Continue").size(11.0))
-                .padding([3, 9])
-                .style(move |_, status| button::Style {
-                    background: Some(
-                        match status {
-                            button::Status::Disabled => surface,
-                            _ => warning,
-                        }
-                        .into(),
-                    ),
-                    text_color: match status {
-                        button::Status::Disabled => muted,
-                        _ => background,
-                    },
-                    border: iced::Border {
-                        radius: 3.0.into(),
-                        ..iced::Border::default()
-                    },
-                    ..button::Style::default()
-                });
+        let mut carry_on = button(text("Continue").size(metrics::text::LABEL))
+            .padding([3, 9])
+            .style(move |_, status| button::Style {
+                background: Some(
+                    match status {
+                        button::Status::Disabled => surface,
+                        _ => warning,
+                    }
+                    .into(),
+                ),
+                text_color: match status {
+                    button::Status::Disabled => muted,
+                    _ => background,
+                },
+                border: iced::Border {
+                    radius: 3.0.into(),
+                    ..iced::Border::default()
+                },
+                ..button::Style::default()
+            });
         if conflicted == 0 {
             carry_on = carry_on.on_press(RepoMessage::SequenceControlRequested(
                 SequenceControl::Continue,
@@ -501,7 +514,7 @@ fn operation_banner<'a>(
         bar = bar.push(Space::new().width(Fill));
         bar = bar.push(carry_on);
         bar = bar.push(
-            button(text("Abort").size(11.0))
+            button(text("Abort").size(metrics::text::LABEL))
                 .padding([3, 9])
                 .style(move |_, _| button::Style {
                     background: Some(surface.into()),
