@@ -12,7 +12,11 @@ use crate::state::{DetailPane, DiffMode, FILE_FILTER_ID, OpenRepo, Selection};
 use crate::theme::Palette;
 use crate::widget::common;
 
-pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMessage> {
+pub fn view<'a>(
+    repo: &'a OpenRepo,
+    palette: &'a Palette,
+    text_catalogue: &'a crate::i18n::Catalogue,
+) -> Element<'a, RepoMessage> {
     let body: Element<'a, RepoMessage> = match &repo.detail {
         DetailPane::Empty => common::empty("Select a commit to read its message and diff", palette),
         DetailPane::Loading => common::loading("Loading…", palette),
@@ -34,6 +38,7 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
                 stash,
                 repo.blame.as_ref(),
                 palette,
+                text_catalogue,
             )
         }
         DetailPane::WorkingDirectory {
@@ -53,6 +58,8 @@ pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMes
             repo.state,
             repo.resolver.as_ref(),
             palette,
+            text_catalogue,
+            repo.head.target(),
         ),
         // The one pane whose contents did not come from the repository.
         DetailPane::PullRequest(detail) => crate::widget::pr::detail(detail, palette),
@@ -84,6 +91,7 @@ fn commit<'a>(
     stash: Option<&'a StashEntry>,
     blame: Option<&'a crate::state::BlameView>,
     palette: &'a Palette,
+    text_catalogue: &'a crate::i18n::Catalogue,
 ) -> Element<'a, RepoMessage> {
     let c = &detail.commit;
 
@@ -335,13 +343,12 @@ fn commit<'a>(
     // Said rather than left as an empty column, which reads as a commit that
     // touched nothing.
     let listing: Element<'a, RepoMessage> = if shown.is_empty() {
-        container(
-            text("No file matches that.")
-                .size(metrics::text::LABEL)
-                .color(palette.muted),
+        common::empty_offering(
+            text_catalogue.get("empty.no-file-matches"),
+            text_catalogue.get("empty.clear-filter"),
+            RepoMessage::FileFilterChanged(String::new()),
+            palette,
         )
-        .padding(10)
-        .into()
     } else {
         scrollable(files).height(Fill).into()
     };
