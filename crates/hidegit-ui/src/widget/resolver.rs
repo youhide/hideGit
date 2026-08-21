@@ -19,6 +19,7 @@ use crate::message::RepoMessage;
 use crate::metrics;
 use crate::state::Resolver;
 use crate::theme::Palette;
+use crate::widget::common;
 
 /// Monospaced, because every pane here is source code.
 const CODE: Font = Font::MONOSPACE;
@@ -159,9 +160,9 @@ fn panes<'a>(
 
     row![
         ours,
-        vertical_rule(palette),
+        common::vertical_rule(palette),
         result(resolver, region, chosen, palette),
-        vertical_rule(palette),
+        common::vertical_rule(palette),
         theirs,
     ]
     .height(Fill)
@@ -455,16 +456,6 @@ fn footer<'a>(
 /// something a person has to read.
 fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
     if count == 1 { one } else { many }
-}
-
-fn vertical_rule<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
-    let border = palette.border;
-    container(Space::new().width(Length::Fixed(1.0)).height(Fill))
-        .style(move |_| container::Style {
-            background: Some(border.into()),
-            ..container::Style::default()
-        })
-        .into()
 }
 
 fn preset_style(active: bool, status: button::Status, palette: &Palette) -> button::Style {

@@ -17,16 +17,17 @@ use crate::Element;
 use crate::message::{AlertToggle, Message, QuietBound};
 use crate::state::App;
 use crate::theme::Palette;
+use crate::widget::common;
 
 pub fn view<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     let panel = container(
         column![
             header(app, palette),
-            divider(palette),
+            common::divider(palette),
             container(scrollable(body(app, palette)).height(Fill))
                 .height(Fill)
                 .padding([10, 16]),
-            divider(palette),
+            common::divider(palette),
             footer(app, palette),
         ]
         .height(Fill),
@@ -372,15 +373,4 @@ fn footer<'a>(app: &'a App, palette: &'a Palette) -> Element<'a, Message> {
     .padding([8, 16])
     .width(Fill)
     .into()
-}
-
-fn divider<'a>(palette: &Palette) -> Element<'a, Message> {
-    let border = palette.border;
-    container(Space::new().height(Length::Fixed(1.0)))
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(border.into()),
-            ..container::Style::default()
-        })
-        .into()
 }

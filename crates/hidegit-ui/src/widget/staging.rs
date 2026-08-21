@@ -21,6 +21,7 @@ use crate::message::RepoMessage;
 use crate::metrics;
 use crate::state::{COMPOSER_FIELD_IDS, DiffMode, Draft, Resolver, Section, StagingRow};
 use crate::theme::Palette;
+use crate::widget::common;
 use crate::widget::diff;
 use crate::widget::sidebar::{heading, item_style};
 
@@ -45,7 +46,7 @@ pub fn view<'a>(
     if status.is_clean() && !draft.amend {
         return column![
             container(clean(palette)).height(Fill),
-            horizontal_rule(palette.border),
+            common::divider(palette),
             container(composer(status, draft, state, palette)).width(Length::Fixed(LIST_WIDTH)),
         ]
         .into();
@@ -98,11 +99,11 @@ pub fn view<'a>(
         column![
             mouse_area(container(scrollable(list).height(Fill)).width(Length::Fixed(LIST_WIDTH)))
                 .on_press(RepoMessage::EditingChanged(false)),
-            horizontal_rule(palette.border),
+            common::divider(palette),
             composer(status, draft, state, palette),
         ]
         .width(Length::Fixed(LIST_WIDTH)),
-        vertical_rule(palette.border),
+        common::vertical_rule(palette),
         mouse_area(
             container(pane(
                 staged,
@@ -410,17 +411,6 @@ fn placeholder<'a>(message: &'a str, palette: &Palette) -> Element<'a, RepoMessa
         .into()
 }
 
-fn vertical_rule<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
-    container(Space::new())
-        .width(Length::Fixed(1.0))
-        .height(Fill)
-        .style(move |_| container::Style {
-            background: Some(colour.into()),
-            ..container::Style::default()
-        })
-        .into()
-}
-
 /// The commit message editor, and the button that acts on it.
 ///
 /// Sits under the file lists rather than in the diff pane, because it is about
@@ -586,15 +576,4 @@ fn commit_style(palette: Palette, status: button::Status) -> button::Style {
         },
         ..button::Style::default()
     }
-}
-
-fn horizontal_rule<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
-    container(Space::new())
-        .width(Fill)
-        .height(Length::Fixed(1.0))
-        .style(move |_| container::Style {
-            background: Some(colour.into()),
-            ..container::Style::default()
-        })
-        .into()
 }

@@ -739,6 +739,16 @@ Eight steps — `NONE HAIR TIGHT SNUG BASE ROOMY WIDE LOOSE`, 0 to 16 — and th
 decision about how much room a repository name needs, and it belongs beside the tab as a named local
 constant. Only the numbers a reader compares without meaning to are shared.
 
+**A rule between two things belongs to nobody.** `widget/common.rs` owns the horizontal and vertical
+hairlines. Before it there were twelve: nine horizontal under three different names, three vertical,
+six of them identical character for character. They could not simply be shared because they
+disagreed about their argument — seven took `&Palette`, five took a colour the caller had already
+pulled out of one — and because some returned `Element<Message>` and some `Element<RepoMessage>`.
+The second is not a real obstacle: a rule emits nothing, so it is generic over the message type. The
+first was, and the answer is that a rule is always `palette.border`, which takes the decision away
+from the call site rather than passing it a colour to get wrong. A test reads every file under
+`widget/` and `screen/` and fails if one draws its own rule again.
+
 **A migration guard is what keeps it true.** `metrics.rs` carries the list of files already on the
 scale, and a test reads each one and fails if a raw number has come back on a line that sets
 padding, spacing or a radius. A file joins that list in the change that converts it and cannot

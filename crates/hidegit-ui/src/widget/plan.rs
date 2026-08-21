@@ -19,6 +19,7 @@ use crate::Element;
 use crate::message::{Message, RepoMessage};
 use crate::state::RebaseEditor;
 use crate::theme::Palette;
+use crate::widget::common;
 
 /// The verbs, in the order the todo list documents them.
 ///
@@ -69,11 +70,11 @@ pub fn view<'a>(
         container(
             column![
                 header(editor, palette),
-                divider(palette),
+                common::divider(palette),
                 container(scrollable(steps(editor, palette)).height(Fill))
                     .height(Fill)
                     .padding([4, 0]),
-                divider(palette),
+                common::divider(palette),
                 footer(editor, palette),
             ]
             .height(Fill),
@@ -317,17 +318,6 @@ fn footer<'a>(editor: &'a RebaseEditor, palette: &'a Palette) -> Element<'a, Rep
 
 fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
     if count == 1 { one } else { many }
-}
-
-fn divider<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
-    let border = palette.border;
-    container(Space::new().height(Length::Fixed(1.0)))
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(border.into()),
-            ..container::Style::default()
-        })
-        .into()
 }
 
 fn row_style(selected: bool, status: button::Status, palette: &Palette) -> button::Style {
