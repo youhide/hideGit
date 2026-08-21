@@ -932,6 +932,15 @@ on screen and taken nowhere. Copying does not dismiss the toast.
 PRs → connect GitHub, or "you have no open pull requests"; clean working directory → the last
 commit.
 
+They are drawn by `widget/common::empty`, which replaced three helpers rendering the same centred
+muted line three ways. **Most of them do not carry an action yet** — the welcome screen and the PR
+panel do, and the panes that say "Select a file to see its changes" or "Nothing to commit" only
+describe the absence. That gap is real and named here rather than left to be discovered.
+
+**A pane that is still reading is not an empty pane.** `common::loading` draws the same picture and
+is deliberately a different function: an empty state is getting a next action and "Loading…" has
+none to offer. Two of the seven call sites were this state wearing the other one's name.
+
 **Drag and drop** on the graph performs merge and rebase. Drag a branch badge onto another and the
 action sheet opens naming both branches on every entry; nothing runs until one is chosen. The
 discoverability of the gesture is the point, but not at the cost of an unintended rebase.

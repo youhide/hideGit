@@ -14,8 +14,8 @@ use crate::widget::common;
 
 pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMessage> {
     let body: Element<'a, RepoMessage> = match &repo.detail {
-        DetailPane::Empty => placeholder("Select a commit to read its message and diff", palette),
-        DetailPane::Loading => placeholder("Loading…", palette),
+        DetailPane::Empty => common::empty("Select a commit to read its message and diff", palette),
+        DetailPane::Loading => common::loading("Loading…", palette),
         DetailPane::Failed(error) => failure(error, palette),
         DetailPane::Commit { detail, diff, file } => {
             // A stash *is* a commit, which is what lets it reuse all of this — but
@@ -410,18 +410,6 @@ fn commit<'a>(
         ]
         .height(Fill),
     ]
-    .into()
-}
-
-fn placeholder<'a>(message: &str, palette: &Palette) -> Element<'a, RepoMessage> {
-    container(
-        text(message.to_owned())
-            .size(metrics::text::BODY)
-            .color(palette.muted),
-    )
-    .width(Fill)
-    .height(Fill)
-    .center(Fill)
     .into()
 }
 

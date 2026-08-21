@@ -17,6 +17,7 @@ use crate::message::RepoMessage;
 use crate::metrics;
 use crate::state::DiffMode;
 use crate::theme::Palette;
+use crate::widget::common;
 
 const GUTTER_WIDTH: f32 = 44.0;
 
@@ -103,16 +104,16 @@ pub fn view<'a>(
     staging: Option<Staging<'a>>,
 ) -> Element<'a, RepoMessage> {
     let Some(file) = diff.files.get(file) else {
-        return empty("Select a file to see its changes", palette);
+        return common::empty("Select a file to see its changes", palette);
     };
 
     match &file.content {
-        FileDiffContent::Binary => empty(
-            &format!("{} is binary — no text to show", file.path.display()),
+        FileDiffContent::Binary => common::empty(
+            format!("{} is binary — no text to show", file.path.display()),
             palette,
         ),
-        FileDiffContent::TooLarge { bytes } => empty(
-            &format!(
+        FileDiffContent::TooLarge { bytes } => common::empty(
+            format!(
                 "{} is {} — too large to diff without stalling",
                 file.path.display(),
                 format::bytes(*bytes)
@@ -122,8 +123,8 @@ pub fn view<'a>(
         // The size, not the pointer. Three lines of `oid sha256:…` are what
         // Git stores, not what changed — and "4.2 MB → 5.1 MB" is the most a
         // diff can honestly say about a file whose content it does not have.
-        FileDiffContent::Lfs { old, new, fetched } => empty(
-            &format!(
+        FileDiffContent::Lfs { old, new, fetched } => common::empty(
+            format!(
                 "{} is stored with Git LFS — {}{}",
                 file.path.display(),
                 lfs_summary(old.as_ref(), new.as_ref()),
@@ -132,7 +133,7 @@ pub fn view<'a>(
             palette,
         ),
         FileDiffContent::Text { hunks } if hunks.is_empty() => {
-            empty("No textual changes — the file's mode changed", palette)
+            common::empty("No textual changes — the file's mode changed", palette)
         }
         FileDiffContent::Text { hunks } => match mode {
             DiffMode::Unified => unified(file, hunks, palette, staging),
@@ -657,18 +658,6 @@ fn gutter<'a>(lineno: Option<u32>, palette: &Palette) -> Element<'a, RepoMessage
             .width(Fill),
     )
     .width(Length::Fixed(GUTTER_WIDTH))
-    .into()
-}
-
-fn empty<'a>(message: &str, palette: &Palette) -> Element<'a, RepoMessage> {
-    container(
-        text(message.to_owned())
-            .size(metrics::text::BODY)
-            .color(palette.muted),
-    )
-    .width(Fill)
-    .height(Fill)
-    .center(Fill)
     .into()
 }
 
