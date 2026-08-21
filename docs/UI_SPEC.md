@@ -15,6 +15,7 @@ Layout sketches are structural, not visual design.
 - [Conflict resolver](#conflict-resolver)
 - [PR panel](#pr-panel)
 - [Keyboard shortcuts](#keyboard-shortcuts)
+- [Layout scale](#layout-scale)
 - [Theming](#theming)
 - [Interaction rules](#interaction-rules)
 
@@ -720,6 +721,32 @@ on the key alone, so `Cmd+↑` moved the selection and `Cmd+Tab` cycled panes �
 something else entirely. And a panel that owns the keyboard only owned the unmodified half of it, so
 `Cmd+Esc` closed the search and `Cmd+Enter` jumped to a commit from inside it. All of them are now
 guarded; a panel that owns the keyboard owns all of it.
+
+## Layout scale
+
+Space between things, and corner radii, come from a named scale in
+`crates/hidegit-ui/src/metrics.rs` rather than from whatever suited the call site.
+
+Before it existed there were **25 distinct `Padding` pairs** across 68 sites, twelve `spacing`
+values and six radii — with `[3,6]`, `[3,8]`, `[3,10]` and `[3,12]` all in use at once. Values
+chosen one at a time drift, and nothing noticed: spacing was the crate's largest blind spot, the one
+place where any number could change and every test would still pass.
+
+Eight steps — `NONE HAIR TIGHT SNUG BASE ROOMY WIDE LOOSE`, 0 to 16 — and three radii: a control is
+`SMALL`, a panel `MEDIUM`, a dialog `LARGE`.
+
+**The scale governs space between things, not a component's own dimensions.** `TAB_WIDTH` is a
+decision about how much room a repository name needs, and it belongs beside the tab as a named local
+constant. Only the numbers a reader compares without meaning to are shared.
+
+**A migration guard is what keeps it true.** `metrics.rs` carries the list of files already on the
+scale, and a test reads each one and fails if a raw number has come back on a line that sets
+padding, spacing or a radius. A file joins that list in the change that converts it and cannot
+regress afterwards. This is the same shape as the bidirectional shortcut-reference test and
+`xtask bench-check`: an assertion about the source, for an invariant no ordinary test can reach.
+
+Type sizes are not on a scale yet. Six file-local constants currently duplicate each other —
+`ITEM_SIZE = 13.0` appears three times — and that is its own step.
 
 ## Theming
 

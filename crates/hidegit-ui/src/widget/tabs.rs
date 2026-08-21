@@ -14,6 +14,7 @@ use iced::{Center, Fill, Length};
 use crate::Element;
 use crate::format;
 use crate::message::Message;
+use crate::metrics;
 use crate::state::OpenRepo;
 use crate::theme::Palette;
 
@@ -36,7 +37,7 @@ pub fn view<'a>(
         .enumerate()
         .map(|(index, repo)| tab(repo, index, active == Some(index), palette))
         .collect::<Vec<_>>())
-    .spacing(1)
+    .spacing(metrics::HAIR)
     .align_y(Center);
 
     Some(
@@ -68,12 +69,12 @@ fn tab<'a>(
                 .size(10.0)
                 .color(palette.muted),
         ]
-        .spacing(1),
+        .spacing(metrics::HAIR),
     )
     .width(Length::Fixed(TAB_WIDTH - 30.0));
 
     let close = button(text("✕").size(10.0))
-        .padding([2, 5])
+        .padding([metrics::TIGHT, metrics::SNUG])
         .style(move |_, status| button::Style {
             background: Some(
                 match status {
@@ -87,7 +88,7 @@ fn tab<'a>(
                 _ => palette.muted,
             },
             border: iced::Border {
-                radius: 3.0.into(),
+                radius: metrics::radius::SMALL.into(),
                 ..iced::Border::default()
             },
             ..button::Style::default()
@@ -95,8 +96,8 @@ fn tab<'a>(
         .on_press(Message::CloseRepository(index));
 
     // The whole tab is the switch; the ✕ sits inside it as its own button.
-    let body = button(container(label).padding([5, 8]))
-        .padding(0)
+    let body = button(container(label).padding([metrics::SNUG, metrics::ROOMY]))
+        .padding(metrics::NONE)
         .style(move |_, status| button::Style {
             background: Some(
                 match (active, status) {
@@ -132,7 +133,8 @@ fn tab<'a>(
                     iced::Color::TRANSPARENT
                 },
                 width: 1.0,
-                radius: iced::border::top_left(4).top_right(4),
+                radius: iced::border::top_left(metrics::radius::SMALL)
+                    .top_right(metrics::radius::SMALL),
             },
             ..container::Style::default()
         })

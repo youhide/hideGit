@@ -13,6 +13,7 @@ pub mod highlight;
 pub mod i18n;
 pub mod keymap;
 pub mod message;
+pub mod metrics;
 pub mod state;
 pub mod theme;
 pub mod watcher;
