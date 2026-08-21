@@ -47,9 +47,15 @@ impl ObjectId {
             return None;
         }
         let mut buf = [0u8; 32];
-        for (i, pair) in hex.as_bytes().chunks_exact(2).enumerate() {
-            let s = std::str::from_utf8(pair).ok()?;
-            buf[i] = u8::from_str_radix(s, 16).ok()?;
+        // Byte pairs, rather than string slices through `from_str_radix`.
+        // Reading the digits directly removes the UTF-8 question entirely: any
+        // byte of a multi-byte character is above 0x7f and is simply not a hex
+        // digit, so it is refused here without a boundary check.
+        let mut bytes = hex.bytes();
+        for slot in buf.iter_mut().take(hex.len() / 2) {
+            let high = hex_digit(bytes.next()?)?;
+            let low = hex_digit(bytes.next()?)?;
+            *slot = high * 16 + low;
         }
         Some(Self {
             bytes: buf,
@@ -90,6 +96,18 @@ impl fmt::Display for ObjectId {
 impl fmt::Debug for ObjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ObjectId({})", self.short(8))
+    }
+}
+
+/// The value of one hex digit, upper or lower case.
+///
+/// `None` for anything else, which is what refuses a malformed id.
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -786,6 +804,22 @@ mod tests {
         assert!(ObjectId::from_hex("a3f9c21").is_none());
         assert!(ObjectId::from_hex(&"z".repeat(40)).is_none());
         assert!(ObjectId::from_bytes(&[0u8; 16]).is_none());
+    }
+
+    #[test]
+    fn a_hex_id_is_read_the_same_in_either_case() {
+        // `from_str_radix` accepted both and the digits are now read by hand,
+        // so the case-insensitivity is this crate's to keep rather than the
+        // standard library's to provide.
+        let lower = ObjectId::from_hex("abcdef0123456789abcdef0123456789abcdef01");
+        let upper = ObjectId::from_hex("ABCDEF0123456789ABCDEF0123456789ABCDEF01");
+
+        assert_eq!(lower, upper, "Git writes lowercase, people paste either");
+        assert_eq!(
+            lower.expect("valid hex").to_hex(),
+            "abcdef0123456789abcdef0123456789abcdef01",
+            "and it comes back lowercase, the way Git spells it"
+        );
     }
 
     #[test]
