@@ -17,6 +17,7 @@ use crate::Element;
 use crate::message::{Message, RepoMessage};
 use crate::state::{COMMAND_FIELD_ID, CommandPalette};
 use crate::theme::Palette;
+use crate::widget::common;
 
 /// One entry.
 ///
@@ -211,7 +212,7 @@ pub fn view<'a>(
                     .padding(8)
             )
             .padding([8, 10]),
-            divider(palette),
+            common::divider(palette),
             container(results(&matches, state.selected, keymap, palette)).height(Fill),
         ]
         .height(Fill),
@@ -299,15 +300,4 @@ fn results<'a>(
     }
 
     scrollable(list).height(Fill).into()
-}
-
-fn divider<'a>(palette: &Palette) -> Element<'a, Message> {
-    let border = palette.border;
-    container(Space::new().height(Length::Fixed(1.0)))
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(border.into()),
-            ..container::Style::default()
-        })
-        .into()
 }

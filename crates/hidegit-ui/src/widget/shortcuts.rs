@@ -16,6 +16,7 @@ use iced::{Center, Fill, Font, Length};
 use crate::Element;
 use crate::message::Message;
 use crate::theme::Palette;
+use crate::widget::common;
 
 /// Where a binding applies.
 ///
@@ -244,11 +245,11 @@ pub fn view<'a>(keymap: &'a crate::keymap::Keymap, palette: &'a Palette) -> Elem
     let panel = container(
         column![
             header(palette),
-            divider(palette),
+            common::divider(palette),
             container(scrollable(body(keymap, palette)).height(Fill))
                 .height(Fill)
                 .padding([10, 16]),
-            divider(palette),
+            common::divider(palette),
             footer(palette),
         ]
         .height(Fill),
@@ -364,15 +365,4 @@ fn footer<'a>(palette: &'a Palette) -> Element<'a, Message> {
     .padding([8, 16])
     .width(Fill)
     .into()
-}
-
-fn divider<'a>(palette: &Palette) -> Element<'a, Message> {
-    let border = palette.border;
-    container(Space::new().height(Length::Fixed(1.0)))
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(border.into()),
-            ..container::Style::default()
-        })
-        .into()
 }

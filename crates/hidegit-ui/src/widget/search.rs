@@ -18,12 +18,13 @@ use crate::message::RepoMessage;
 use crate::metrics;
 use crate::state::{SEARCH_FIELD_ID, Search};
 use crate::theme::Palette;
+use crate::widget::common;
 
 pub fn view<'a>(search: &'a Search, palette: &'a Palette) -> Element<'a, RepoMessage> {
     let panel = container(
         column![
             box_row(search, palette),
-            divider(palette),
+            common::divider(palette),
             container(results(search, palette)).height(Fill),
         ]
         .height(Fill),
@@ -175,16 +176,5 @@ fn row_for<'a>(
             ..button::Style::default()
         })
         .on_press(RepoMessage::SearchAccepted(commit.id))
-        .into()
-}
-
-fn divider<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
-    let border = palette.border;
-    container(Space::new().height(Length::Fixed(1.0)))
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(border.into()),
-            ..container::Style::default()
-        })
         .into()
 }

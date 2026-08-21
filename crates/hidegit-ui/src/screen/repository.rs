@@ -10,6 +10,7 @@ use crate::message::{Message, RepoMessage};
 use crate::metrics;
 use crate::state::{App, OpenRepo, Pane, ROW_HEIGHT};
 use crate::theme::Palette;
+use crate::widget::common;
 use crate::widget::{detail, graph, sidebar};
 
 /// The main window.
@@ -25,7 +26,6 @@ pub fn view<'a>(
     palette: &'a Palette,
     cache: &'a iced::widget::canvas::Cache,
 ) -> Element<'a, Message> {
-    let border = palette.border;
     let repo_message = move |m: RepoMessage| Message::Repo(index, m);
 
     let mut stack = column![toolbar(repo, palette).map(repo_message)];
@@ -45,7 +45,7 @@ pub fn view<'a>(
         );
     }
 
-    stack = stack.push(divider(border).map(repo_message));
+    stack = stack.push(common::divider(palette).map(repo_message));
     // Which pane the keyboard is pointed at, said out loud. `Tab` cycles all
     // three; before this only the graph showed it, through the tint on its
     // selected row, so two of the three positions looked identical.
@@ -62,7 +62,7 @@ pub fn view<'a>(
     stack = stack.push(
         row![
             ring(Pane::Sidebar, sidebar::view(app, repo, index, palette)),
-            vertical_rule(border).map(repo_message),
+            common::vertical_rule(palette).map(repo_message),
             column![
                 // The portion goes on this container rather than inside
                 // `graph_pane`, because `ring` wraps its child in a container
@@ -77,7 +77,7 @@ pub fn view<'a>(
                 ))
                 .height(Length::FillPortion(6))
                 .width(Fill),
-                divider(border).map(repo_message),
+                common::divider(palette).map(repo_message),
                 container(ring(
                     Pane::Detail,
                     detail::view(repo, palette).map(repo_message)
@@ -537,26 +537,6 @@ fn operation_banner<'a>(
         .padding(Padding::from([6, 14]))
         .style(move |_| container::Style {
             background: Some(iced::Color { a: 0.15, ..warning }.into()),
-            ..container::Style::default()
-        })
-        .into()
-}
-
-fn divider<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
-    container(Space::new().height(1))
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(colour.into()),
-            ..container::Style::default()
-        })
-        .into()
-}
-
-fn vertical_rule<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
-    container(Space::new().width(1))
-        .height(Fill)
-        .style(move |_| container::Style {
-            background: Some(colour.into()),
             ..container::Style::default()
         })
         .into()

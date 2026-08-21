@@ -17,6 +17,7 @@ use crate::message::RepoMessage;
 use crate::metrics;
 use crate::state::BlameView;
 use crate::theme::Palette;
+use crate::widget::common;
 
 /// Wide enough for a short hash, a name and a relative date without wrapping.
 const GUTTER_WIDTH: f32 = 250.0;
@@ -92,7 +93,7 @@ pub fn view<'a>(blame: &'a BlameView, palette: &'a Palette) -> Element<'a, RepoM
 
     column![
         header(blame, palette),
-        divider(palette),
+        common::divider(palette),
         container(scrollable(rows).height(Fill)).height(Fill),
     ]
     .height(Fill)
@@ -174,17 +175,6 @@ fn header<'a>(blame: &'a BlameView, palette: &'a Palette) -> Element<'a, RepoMes
     .padding([6, 10])
     .width(Fill)
     .into()
-}
-
-fn divider<'a>(palette: &Palette) -> Element<'a, RepoMessage> {
-    let border = palette.border;
-    container(Space::new().height(Length::Fixed(1.0)))
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(border.into()),
-            ..container::Style::default()
-        })
-        .into()
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ use crate::message::{RepoMessage, UiError};
 use crate::metrics;
 use crate::state::{DetailPane, DiffMode, FILE_FILTER_ID, OpenRepo, Selection};
 use crate::theme::Palette;
+use crate::widget::common;
 
 pub fn view<'a>(repo: &'a OpenRepo, palette: &'a Palette) -> Element<'a, RepoMessage> {
     let body: Element<'a, RepoMessage> = match &repo.detail {
@@ -381,7 +382,7 @@ fn commit<'a>(
         container(column![header, Space::new().height(6), stats].spacing(2))
             .width(Fill)
             .padding(Padding::from([10, 14])),
-        divider(border),
+        common::divider(palette),
         row![
             file_list,
             container(Space::new().width(1))
@@ -410,16 +411,6 @@ fn commit<'a>(
         .height(Fill),
     ]
     .into()
-}
-
-fn divider<'a>(colour: iced::Color) -> Element<'a, RepoMessage> {
-    container(Space::new().height(1))
-        .width(Fill)
-        .style(move |_| container::Style {
-            background: Some(colour.into()),
-            ..container::Style::default()
-        })
-        .into()
 }
 
 fn placeholder<'a>(message: &str, palette: &Palette) -> Element<'a, RepoMessage> {
