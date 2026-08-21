@@ -261,7 +261,7 @@ jobs:
           |---|---|
           | macOS 11+ (Intel and Apple Silicon) | `hidegit-*-macos-universal.zip` |
           | Windows 10+ | `hidegit-*-windows-x86_64.zip` |
-          | Linux (glibc 2.35+) | `hidegit-*-linux-x86_64.tar.gz` |
+          | Linux (glibc 2.35+) | `hideGit-*-x86_64.AppImage`, or `hidegit-*-linux-x86_64.tar.gz` |
 
           ### These builds are not signed with a developer certificate
 
@@ -277,8 +277,9 @@ jobs:
           **Windows** — unzip and run `hidegit.exe`. SmartScreen shows "Windows
           protected your PC"; choose **More info** → **Run anyway**.
 
-          **Linux** — unpack and run `./hidegit`, or install the binary along with
-          its launcher entry and icons:
+          **Linux** — `chmod +x` the AppImage and run it; there is nothing to
+          unpack and nothing to install. Or take the tarball, run `./hidegit`, and
+          install the binary along with its launcher entry and icons:
 
           ```sh
           PREFIX=~/.local ./install.sh

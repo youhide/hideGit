@@ -2967,7 +2967,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hidegit"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "directories",
  "embed-resource",
@@ -2989,7 +2989,7 @@ dependencies = [
 
 [[package]]
 name = "hidegit-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "criterion",
  "gix",
@@ -3003,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "hidegit-forge"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "hidegit-core",
@@ -3023,7 +3023,7 @@ dependencies = [
 
 [[package]]
 name = "hidegit-ui"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "hidegit-core",
  "hidegit-forge",
@@ -7980,7 +7980,7 @@ checksum = "3ae8337f8a065cfc972643663ea4279e04e7256de865aa66fe25cec5fb912d3f"
 
 [[package]]
 name = "xtask"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "icns",
  "ico",
