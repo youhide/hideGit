@@ -279,7 +279,7 @@ fn footer<'a>(editor: &'a RebaseEditor, palette: &'a Palette) -> Element<'a, Rep
 
     let mut start = button(text("Start rebase").size(11.0))
         .padding([5, 12])
-        .style(move |_, status| accent_style(status, palette));
+        .style(move |_, status| common::button::primary(*palette, status));
     if blocked.is_none() {
         start = start.on_press(RepoMessage::PlanStarted);
     }
@@ -374,27 +374,6 @@ fn verb_style(
             color: palette.border,
             width: 1.0,
             radius: 3.0.into(),
-        },
-        ..button::Style::default()
-    }
-}
-
-fn accent_style(status: button::Status, palette: &Palette) -> button::Style {
-    button::Style {
-        background: Some(
-            match status {
-                button::Status::Disabled => palette.border,
-                _ => palette.accent,
-            }
-            .into(),
-        ),
-        text_color: match status {
-            button::Status::Disabled => palette.muted,
-            _ => palette.background,
-        },
-        border: iced::Border {
-            radius: 3.0.into(),
-            ..iced::Border::default()
         },
         ..button::Style::default()
     }

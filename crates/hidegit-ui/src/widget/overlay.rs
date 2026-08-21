@@ -19,6 +19,7 @@ use crate::message::Message;
 use crate::metrics;
 use crate::state::{ActionSheet, Confirmation, PROMPT_FIELD_IDS, Prompt, SheetItem, Toast};
 use crate::theme::Palette;
+use crate::widget::common;
 use hidegit_forge::DeviceCode;
 
 /// Everything that can sit above the screen, in the order it stacks.
@@ -139,7 +140,7 @@ pub fn clone_banner<'a>(
                     .padding(Padding::from([3, 10]))
             )
             .padding(0)
-            .style(move |_, status| quiet_style(palette, status))
+            .style(move |_, status| common::button::quiet(palette, status))
             .on_press(Message::CloneCancelled),
         ]
         .spacing(10)
@@ -237,7 +238,7 @@ fn action_sheet<'a>(sheet: &'a ActionSheet, palette: &'a Palette) -> Element<'a,
                     .padding(Padding::from([6, 14]))
             )
             .padding(0)
-            .style(move |_, status| quiet_style(palette, status))
+            .style(move |_, status| common::button::quiet(palette, status))
             .on_press(Message::SheetDismissed),
         ]
         .align_y(Center),
@@ -277,7 +278,7 @@ fn sheet_row<'a>(item: &'a SheetItem, highlighted: bool, palette: Palette) -> El
     // The keyboard highlight has to be visible, or arrow-key navigation moves
     // something nobody can see.
     .style(move |_, status| {
-        let mut style = quiet_style(palette, status);
+        let mut style = common::button::quiet(palette, status);
         if highlighted && matches!(status, button::Status::Active) {
             style.background = Some(palette.selection.into());
         }
@@ -332,15 +333,11 @@ fn prompt_dialog<'a>(prompt: &'a Prompt, palette: &'a Palette) -> Element<'a, Me
     // Why the button is unavailable is stated rather than left to be guessed,
     // the same way the commit composer does it.
     let mut confirm = button(
-        container(
-            text(prompt.confirm_label.as_str())
-                .size(metrics::text::BODY)
-                .color(iced::Color::WHITE),
-        )
-        .padding(Padding::from([6, 14])),
+        container(text(prompt.confirm_label.as_str()).size(metrics::text::BODY))
+            .padding(Padding::from([6, 14])),
     )
     .padding(0)
-    .style(move |_, status| accent_style(palette, status));
+    .style(move |_, status| common::button::primary(palette, status));
     if prompt.is_ready() {
         confirm = confirm.on_press(Message::PromptAccepted);
     }
@@ -353,7 +350,7 @@ fn prompt_dialog<'a>(prompt: &'a Prompt, palette: &'a Palette) -> Element<'a, Me
                     .padding(Padding::from([6, 14]))
             )
             .padding(0)
-            .style(move |_, status| quiet_style(palette, status))
+            .style(move |_, status| common::button::quiet(palette, status))
             .on_press(Message::PromptDismissed),
             confirm,
         ]
@@ -389,18 +386,14 @@ fn dialog<'a>(confirmation: &'a Confirmation, palette: &'a Palette) -> Element<'
                     .padding(Padding::from([6, 14]))
             )
             .padding(0)
-            .style(move |_, status| quiet_style(palette, status))
+            .style(move |_, status| common::button::quiet(palette, status))
             .on_press(Message::ConfirmationDismissed),
             button(
-                container(
-                    text(confirmation.confirm_label.as_str())
-                        .size(metrics::text::BODY)
-                        .color(iced::Color::WHITE)
-                )
-                .padding(Padding::from([6, 14]))
+                container(text(confirmation.confirm_label.as_str()).size(metrics::text::BODY))
+                    .padding(Padding::from([6, 14]))
             )
             .padding(0)
-            .style(move |_, status| danger_style(palette, status))
+            .style(move |_, status| common::button::danger(palette, status))
             .on_press(Message::ConfirmationAccepted),
         ]
         .spacing(8)
@@ -476,7 +469,7 @@ fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
                     .padding(Padding::from([0, 4]))
             )
             .padding(0)
-            .style(move |_, status| quiet_style(palette, status))
+            .style(move |_, status| common::button::quiet(palette, status))
             .on_press(Message::ToastDismissed(toast.id)),
         ]
         .spacing(12)
@@ -508,7 +501,7 @@ fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
                 .padding(Padding::from([2, 6]))
             )
             .padding(0)
-            .style(move |_, status| quiet_style(palette, status))
+            .style(move |_, status| common::button::quiet(palette, status))
             .on_press(Message::ToastCopied(toast.id)),
         ]
         .align_y(Center),
@@ -527,80 +520,4 @@ fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
             ..container::Style::default()
         })
         .into()
-}
-
-fn quiet_style(palette: Palette, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => Some(
-            iced::Color {
-                a: 0.10,
-                ..palette.text
-            }
-            .into(),
-        ),
-        _ => None,
-    };
-
-    button::Style {
-        background,
-        text_color: palette.text,
-        border: iced::Border {
-            radius: 6.0.into(),
-            ..iced::Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-/// The primary button of a modal that is *not* destructive.
-///
-/// Distinct from [`danger_style`] on purpose: `UI_SPEC.md` requires destructive
-/// actions to be distinguishable, which only works if creating a branch does not
-/// wear the same red as discarding one.
-fn accent_style(palette: Palette, status: button::Status) -> button::Style {
-    let base = palette.accent;
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => iced::Color {
-            a: crate::theme::HOVERED,
-            ..base
-        },
-        // A disabled primary says "not yet", not "gone": it stays in place,
-        // dimmed, so the shape of the dialog does not shift as the user types.
-        button::Status::Disabled => iced::Color {
-            a: crate::theme::DISABLED,
-            ..base
-        },
-        button::Status::Active => base,
-    };
-
-    button::Style {
-        background: Some(background.into()),
-        text_color: iced::Color::WHITE,
-        border: iced::Border {
-            radius: 6.0.into(),
-            ..iced::Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-fn danger_style(palette: Palette, status: button::Status) -> button::Style {
-    let base = palette.danger;
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => iced::Color {
-            a: crate::theme::HOVERED,
-            ..base
-        },
-        _ => base,
-    };
-
-    button::Style {
-        background: Some(background.into()),
-        text_color: iced::Color::WHITE,
-        border: iced::Border {
-            radius: 6.0.into(),
-            ..iced::Border::default()
-        },
-        ..button::Style::default()
-    }
 }

@@ -12,6 +12,7 @@ use crate::Element;
 use crate::message::Message;
 use crate::state::{Prompt, PromptField, PromptKind};
 use crate::theme::Palette;
+use crate::widget::common;
 
 pub fn view<'a>(recents: &'a [std::path::PathBuf], palette: &'a Palette) -> Element<'a, Message> {
     let palette_copy = *palette;
@@ -30,13 +31,13 @@ pub fn view<'a>(recents: &'a [std::path::PathBuf], palette: &'a Palette) -> Elem
 
     let open =
         button(container(text("Open a repository…").size(14.0)).padding(Padding::from([10, 20])))
-            .style(move |_, status| primary_style(palette_copy, status))
+            .style(move |_, status| common::button::primary(palette_copy, status))
             .on_press(Message::OpenDialogRequested);
 
     // Cloning is the other way to arrive at a repository, and it is secondary
     // because most sessions start from one that already exists on disk.
     let clone = button(container(text("Clone…").size(14.0)).padding(Padding::from([10, 20])))
-        .style(move |_, status| secondary_style(palette_copy, status))
+        .style(move |_, status| common::button::quiet(palette_copy, status))
         .on_press(Message::PromptRequested(Box::new(Prompt {
             kind: PromptKind::Clone,
             title: "Clone a repository".to_owned(),
@@ -129,50 +130,4 @@ fn recent_row<'a>(path: &Path, palette: Palette) -> Element<'a, Message> {
     })
     .on_press(Message::OpenRepository(target))
     .into()
-}
-
-/// The secondary action next to the primary one: outlined rather than filled, so
-/// there is one obvious thing to click and one alternative.
-fn secondary_style(palette: Palette, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => Some(
-            iced::Color {
-                a: 0.10,
-                ..palette.text
-            }
-            .into(),
-        ),
-        _ => None,
-    };
-
-    button::Style {
-        background,
-        text_color: palette.text,
-        border: iced::Border {
-            color: palette.border,
-            width: 1.0,
-            radius: 6.0.into(),
-        },
-        ..button::Style::default()
-    }
-}
-
-fn primary_style(palette: Palette, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => iced::Color {
-            a: 0.9,
-            ..palette.accent
-        },
-        _ => palette.accent,
-    };
-
-    button::Style {
-        background: Some(background.into()),
-        text_color: iced::Color::WHITE,
-        border: iced::Border {
-            radius: 6.0.into(),
-            ..iced::Border::default()
-        },
-        ..button::Style::default()
-    }
 }

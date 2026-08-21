@@ -492,7 +492,7 @@ impl Theme {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The smallest theme worth writing, and the reason every key is optional.
@@ -655,12 +655,12 @@ mod tests {
     /// Every constraint runs over both, because light was added to a suite that
     /// only tested dark — and a light theme whose contrast nobody checked is
     /// exactly the washed-out inversion the spec says not to ship.
-    fn palettes() -> [(&'static str, Palette); 2] {
+    pub(crate) fn palettes() -> [(&'static str, Palette); 2] {
         [("dark", Palette::DARK), ("light", Palette::LIGHT)]
     }
 
     /// Relative luminance, per WCAG 2.1.
-    fn luminance(c: Color) -> f32 {
+    pub(crate) fn luminance(c: Color) -> f32 {
         let channel = |v: f32| {
             if v <= 0.03928 {
                 v / 12.92
@@ -671,7 +671,7 @@ mod tests {
         0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
     }
 
-    fn contrast(a: Color, b: Color) -> f32 {
+    pub(crate) fn contrast(a: Color, b: Color) -> f32 {
         let (a, b) = (luminance(a), luminance(b));
         let (light, dark) = if a > b { (a, b) } else { (b, a) };
         (light + 0.05) / (dark + 0.05)
