@@ -729,3 +729,43 @@ fn a_detached_worktree_uses_gits_own_words_for_it() {
 
     shows(&app, "detached at aaaaaaa");
 }
+
+/// The height of the simulator's default viewport, which `render` uses.
+const VIEWPORT_HEIGHT: f32 = 768.0;
+
+#[test]
+fn the_graph_gets_most_of_the_window() {
+    // `UI_SPEC.md`'s first principle is that the graph is the application —
+    // "centre of window, most pixels" — and `screen::repository` asks for that
+    // with `FillPortion(6)` against the detail's `FillPortion(4)`.
+    //
+    // It did not get it. The graph's portion sat *inside* the focus ring, and
+    // `ring` wraps its child in a container with no height, which in iced is
+    // `Shrink`; a `FillPortion` inside one never reaches the column that is
+    // meant to divide the space. The detail's portion was on the outside, so
+    // it was the only child the column could see asking for a share, and it
+    // took everything left over: the graph rendered at 20% of the window.
+    //
+    // This is a layout assertion because nothing else could catch that. Every
+    // text assertion still passed while the primary surface was a fifth of the
+    // size it claims.
+    let app = app_with(3);
+    let mut ui = render(&app);
+
+    let placeholder = ui
+        .find("Select a commit to read its message and diff")
+        .expect("the detail pane is on screen");
+
+    // The detail pane is the lower 40% and centres its placeholder, so the
+    // midpoint of that text lands around 80% down the window. Measuring the
+    // text is what makes this possible at all: the graph is a canvas and
+    // carries no text to find.
+    let bounds = iced_test::selector::Bounded::bounds(&placeholder);
+    let middle = bounds.y + bounds.height / 2.0;
+
+    assert!(
+        middle > VIEWPORT_HEIGHT * 0.7,
+        "the detail pane's midpoint is {middle} of {VIEWPORT_HEIGHT}, so it is \
+         taking the space the graph asked for"
+    );
+}

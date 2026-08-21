@@ -63,10 +63,19 @@ pub fn view<'a>(
             ring(Pane::Sidebar, sidebar::view(app, repo, index, palette)),
             vertical_rule(border).map(repo_message),
             column![
-                ring(
+                // The portion goes on this container rather than inside
+                // `graph_pane`, because `ring` wraps its child in a container
+                // of its own and a container with no height is `Shrink` — a
+                // `FillPortion` inside one never reaches the column that is
+                // meant to divide the space. The detail below already had it
+                // on the outside; this is the same shape, and the asymmetry is
+                // what made the graph 20% of the window instead of 60%.
+                container(ring(
                     Pane::Graph,
                     graph_pane(repo, palette, cache).map(repo_message)
-                ),
+                ))
+                .height(Length::FillPortion(6))
+                .width(Fill),
                 divider(border).map(repo_message),
                 container(ring(
                     Pane::Detail,
@@ -100,7 +109,7 @@ fn graph_pane<'a>(
 
         return container(text(message).size(13.0).color(palette.muted))
             .width(Fill)
-            .height(Length::FillPortion(6))
+            .height(Fill)
             .center(Fill)
             .into();
     }
@@ -128,7 +137,7 @@ fn graph_pane<'a>(
 
     container(canvas)
         .width(Fill)
-        .height(Length::FillPortion(6))
+        .height(Fill)
         .style(move |_| container::Style {
             background: Some(background.into()),
             ..container::Style::default()
