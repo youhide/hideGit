@@ -769,3 +769,94 @@ fn the_graph_gets_most_of_the_window() {
          taking the space the graph asked for"
     );
 }
+
+/// A repository whose working directory has nothing in it.
+fn app_clean() -> Hidegit {
+    let mut app = app_with(3);
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::Selected(Selection::WorkingDirectory),
+    ));
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::StatusLoaded(Box::new(Ok(StatusLoad {
+            status: WorktreeStatus::default(),
+            staged: Diff::default(),
+            unstaged: Diff::default(),
+        }))),
+    ));
+    app
+}
+
+#[test]
+fn a_clean_working_directory_offers_the_commit_it_matches() {
+    // `UI_SPEC.md` asks an empty state to carry the next action. This one used
+    // to say "the working directory matches the last commit" and leave you to
+    // find that commit yourself, which is a description standing in for an
+    // action.
+    let app = app_clean();
+
+    shows(
+        &app,
+        "Nothing to commit — the working directory matches the last commit.",
+    );
+    shows(&app, "Show the last commit");
+}
+
+#[test]
+fn offering_the_last_commit_actually_selects_it() {
+    // The button has to reach the commit, not merely name it.
+    let app = app_clean();
+    let head = app.app.repos[0]
+        .head
+        .target()
+        .expect("the fixture has commits");
+
+    let mut ui = render(&app);
+    ui.click("Show the last commit")
+        .expect("the button is there");
+
+    let sent: Vec<Message> = ui.into_messages().collect();
+    assert!(
+        sent.iter().any(|message| matches!(
+            message,
+            Message::Repo(0, RepoMessage::Selected(Selection::Commit(id))) if *id == head
+        )),
+        "got {sent:?}"
+    );
+}
+
+#[test]
+fn an_unborn_branch_has_no_commit_to_offer() {
+    // Nothing to show, so nothing is offered — a button that selected a commit
+    // that does not exist would be worse than no button.
+    let mut app = app_clean();
+    {
+        let repo = app.app.repos.get_mut(0).expect("one repository");
+        repo.head = Head::Unborn {
+            name: RefName {
+                kind: RefKind::LocalBranch,
+                full: "refs/heads/main".to_owned(),
+                short: "main".to_owned(),
+            },
+        };
+    }
+
+    let mut ui = render(&app);
+    assert!(
+        ui.find("Show the last commit").is_err(),
+        "an unborn branch has no last commit"
+    );
+}
+
+#[test]
+fn a_filter_that_matches_nothing_offers_to_clear_itself() {
+    let mut app = app_showing_a_commit();
+
+    let _ = app.update(Message::Repo(
+        0,
+        RepoMessage::FileFilterChanged("zzz".to_owned()),
+    ));
+
+    shows(&app, "Clear the filter");
+}

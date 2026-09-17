@@ -64,6 +64,38 @@ pub fn empty<'a, M: 'a>(message: impl text::IntoFragment<'a>, palette: &Palette)
     centred(message, palette)
 }
 
+/// An empty state that carries the next action, which `UI_SPEC.md` asks all of
+/// them to.
+///
+/// The action is a button rather than a sentence telling you where to click.
+/// "The working directory matches the last commit" is a description; a button
+/// that shows you that commit is the thing the description was standing in for.
+pub fn empty_offering<'a, M: Clone + 'a>(
+    message: impl text::IntoFragment<'a>,
+    label: impl text::IntoFragment<'a>,
+    action: M,
+    palette: &Palette,
+) -> Element<'a, M> {
+    let muted = palette.muted;
+    let palette = *palette;
+
+    container(
+        iced::widget::column![
+            text(message).size(metrics::text::BODY).color(muted),
+            iced::widget::button(text(label).size(metrics::text::BODY))
+                .padding(iced::Padding::from([metrics::SNUG, metrics::WIDE]))
+                .style(move |_, status| button::quiet(palette, status))
+                .on_press(action),
+        ]
+        .spacing(metrics::WIDE)
+        .align_x(iced::Center),
+    )
+    .width(Fill)
+    .height(Fill)
+    .center(Fill)
+    .into()
+}
+
 /// What a pane shows while it is still reading.
 ///
 /// The same picture as [`empty`] and deliberately not the same function. A pane

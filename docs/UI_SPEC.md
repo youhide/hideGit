@@ -932,10 +932,18 @@ on screen and taken nowhere. Copying does not dismiss the toast.
 PRs → connect GitHub, or "you have no open pull requests"; clean working directory → the last
 commit.
 
-They are drawn by `widget/common::empty`, which replaced three helpers rendering the same centred
-muted line three ways. **Most of them do not carry an action yet** — the welcome screen and the PR
-panel do, and the panes that say "Select a file to see its changes" or "Nothing to commit" only
-describe the absence. That gap is real and named here rather than left to be discovered.
+They are drawn by `widget/common::empty`, or by `empty_offering` when there is an action to carry.
+A clean working directory offers the commit it matches; a file filter that matches nothing offers to
+clear itself. The action is a button rather than a sentence telling you where to click — "the
+working directory matches the last commit" was a description standing in for something nobody could
+do from there.
+
+**An action is offered only when it exists.** An unborn branch has no last commit, so that state
+keeps the sentence and no button: one that selected a commit which is not there would be worse than
+none.
+
+The panes that say "Select a file to see its changes" are left as they are. Their next action is
+selecting a row in the list beside them, and a button repeating that would be chrome.
 
 **A pane that is still reading is not an empty pane.** `common::loading` draws the same picture and
 is deliberately a different function: an empty state is getting a next action and "Loading…" has
