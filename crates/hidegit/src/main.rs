@@ -6,6 +6,7 @@
 
 mod config;
 mod crash;
+mod menu;
 
 use std::path::PathBuf;
 
@@ -76,6 +77,12 @@ struct Shell {
     announced_update: Option<String>,
     /// When the update check last ran.
     last_update_check: Option<i64>,
+    /// The native menu bar, once the window exists to hang it from.
+    ///
+    /// Held because dropping it takes the menu off the screen, and because its
+    /// items are what get greyed out as what hideGit can do changes.
+    #[cfg(target_os = "macos")]
+    menu: Option<menu::Bar>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +94,18 @@ enum ShellMessage {
     Moved(iced::Point),
     /// The periodic write of anything that has been collected since the last.
     Flush,
+    /// The window exists, which is what makes it safe to build a menu: a menu
+    /// bar is attached to `NSApp`, and `NSApp` is the event loop's.
+    ///
+    /// macOS only, along with everything else about the menu — there is nothing
+    /// to build on the platforms that do not get one, so there is nothing to
+    /// wait for either.
+    #[cfg(target_os = "macos")]
+    WindowOpened,
+    /// A menu item was chosen, by the id it carries — which is the id the
+    /// command palette and `[shortcuts]` already use.
+    #[cfg(target_os = "macos")]
+    MenuChosen(String),
     CloseRequested,
 }
 
@@ -386,6 +405,8 @@ fn boot(
             // The one just announced, or the one from before if there was
             // nothing new to say.
             announced_panic: unannounced_panic.or(announced_panic),
+            #[cfg(target_os = "macos")]
+            menu: None,
         },
         Task::batch([task.map(ShellMessage::Ui), check]),
     )
@@ -462,6 +483,16 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             if touched_recents || touched_panes {
                 persist(shell);
             }
+
+            // After every message rather than after a list of the ones that
+            // could matter: it is a handful of boolean writes against items
+            // already in memory, and a list of "what might have changed this"
+            // goes stale the first time a command is added.
+            #[cfg(target_os = "macos")]
+            if let Some(menu) = &shell.menu {
+                menu.sync(shell.ui.app.active);
+            }
+
             task
         }
 
@@ -510,6 +541,36 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                 persist(shell);
             }
             Task::none()
+        }
+
+        #[cfg(target_os = "macos")]
+        ShellMessage::WindowOpened => {
+            // Built here rather than at boot: a menu bar is attached to
+            // `NSApp`, which the event loop owns and which does not exist until
+            // it has opened something. `update` runs on the main thread, which
+            // is the other half of what attaching one requires.
+            #[cfg(target_os = "macos")]
+            {
+                let keymap = std::sync::Arc::clone(&shell.ui.app.keymap);
+                match menu::Bar::install(&keymap, shell.ui.app.active) {
+                    Ok(bar) => shell.menu = Some(bar),
+                    // Never fatal. Losing the menu bar costs discoverability;
+                    // refusing to run costs everything.
+                    Err(error) => tracing::warn!(%error, "the menu bar was not built"),
+                }
+            }
+            Task::none()
+        }
+
+        #[cfg(target_os = "macos")]
+        ShellMessage::MenuChosen(id) => {
+            // The menu carries command ids, not actions, so what a menu item
+            // does is whatever the command palette would have done — including
+            // nothing, for a repository command with no repository open.
+            match menu::message(&id, shell.ui.app.active) {
+                Some(message) => update(shell, ShellMessage::Ui(message)),
+                None => Task::none(),
+            }
         }
 
         ShellMessage::CloseRequested => {
@@ -580,7 +641,37 @@ fn subscription(shell: &Shell) -> Subscription<ShellMessage> {
         // difference between one file write and one per frame of a drag.
         iced::time::every(FLUSH_INTERVAL).map(|_| ShellMessage::Flush),
         window::close_requests().map(|_| ShellMessage::CloseRequested),
+        #[cfg(target_os = "macos")]
+        window::open_events().map(|_| ShellMessage::WindowOpened),
+        #[cfg(target_os = "macos")]
+        menu_events(),
     ])
+}
+
+/// Menu clicks, forwarded from muda's own channel.
+///
+/// That channel is not a future, so one thread parks on it for the life of the
+/// process and forwards what arrives. A timer polling it would be the
+/// alternative, and a menu that answers in under a frame is worth more than a
+/// wake-up every thirty milliseconds is worth avoiding — but neither is needed:
+/// this wakes only when somebody chooses something.
+#[cfg(target_os = "macos")]
+fn menu_events() -> Subscription<ShellMessage> {
+    use iced::futures::StreamExt;
+
+    Subscription::run(|| {
+        let (sender, receiver) = iced::futures::channel::mpsc::unbounded();
+
+        std::thread::spawn(move || {
+            while let Ok(event) = muda::MenuEvent::receiver().recv() {
+                if sender.unbounded_send(event.id.0).is_err() {
+                    break;
+                }
+            }
+        });
+
+        receiver.map(ShellMessage::MenuChosen)
+    })
 }
 
 enum Arguments {
@@ -669,6 +760,8 @@ mod tests {
             announced_panic: None,
             announced_update: None,
             last_update_check: None,
+            #[cfg(target_os = "macos")]
+            menu: None,
         }
     }
 
