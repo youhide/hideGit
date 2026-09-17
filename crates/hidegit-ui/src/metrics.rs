@@ -126,7 +126,7 @@ pub mod text {
 /// pretending otherwise would mean converting everything about a file at once
 /// or nothing at all.
 #[cfg(test)]
-const ON_THE_LAYOUT_SCALE: &[&str] = &["widget/tabs.rs"];
+const ON_THE_LAYOUT_SCALE: &[&str] = &["widget/split.rs", "widget/tabs.rs"];
 
 /// Files whose every type size comes from [`text`].
 #[cfg(test)]
@@ -139,6 +139,7 @@ const ON_THE_TYPE_SCALE: &[&str] = &[
     "widget/resolver.rs",
     "widget/search.rs",
     "widget/sidebar.rs",
+    "widget/split.rs",
     "widget/staging.rs",
     "widget/tabs.rs",
 ];

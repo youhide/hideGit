@@ -10,7 +10,8 @@
 //! behind it — the change it destroys was never committed anywhere.
 
 use iced::widget::{
-    Space, button, column, container, mouse_area, row, scrollable, text, text_input, tooltip,
+    Space, button, column, container, mouse_area, responsive, row, scrollable, text, text_input,
+    tooltip,
 };
 use iced::{Center, Fill, Font, Length, Padding};
 
@@ -24,8 +25,6 @@ use crate::theme::Palette;
 use crate::widget::common;
 use crate::widget::diff;
 use crate::widget::sidebar::{heading, item_style};
-
-const LIST_WIDTH: f32 = 280.0;
 
 #[allow(clippy::too_many_arguments)]
 pub fn view<'a>(
@@ -42,6 +41,7 @@ pub fn view<'a>(
     palette: &'a Palette,
     text_catalogue: &'a crate::i18n::Catalogue,
     head: Option<hidegit_core::model::ObjectId>,
+    layout: &'a crate::layout::Layout,
 ) -> Element<'a, RepoMessage> {
     // Even a clean tree gets the composer: amending the last commit is a real
     // thing to want, and it needs nothing staged.
@@ -49,11 +49,68 @@ pub fn view<'a>(
         return column![
             container(clean(palette, text_catalogue, head)).height(Fill),
             common::divider(palette),
-            container(composer(status, draft, state, palette)).width(Length::Fixed(LIST_WIDTH)),
+            container(composer(status, draft, state, palette)).width(Length::Fixed(layout.files())),
         ]
         .into();
     }
 
+    // Measured, because the divider between the list and the diff has to know
+    // how much space it is dividing before it can refuse to give away all of
+    // it. `responsive` is the only thing that knows; the cost is that the two
+    // sides are built inside the closure rather than before it, which is why
+    // the list is its own function.
+    responsive(move |size| {
+        row![
+            column![
+                mouse_area(
+                    container(scrollable(files(status, selected, palette)).height(Fill))
+                        .width(Length::Fixed(layout.files()))
+                )
+                .on_press(RepoMessage::EditingChanged(false)),
+                common::divider(palette),
+                composer(status, draft, state, palette),
+            ]
+            .width(Length::Fixed(layout.files())),
+            crate::widget::split::vertical(
+                crate::layout::Split::Files,
+                size.width,
+                layout.dragging(crate::layout::Split::Files),
+                palette
+            )
+            .map(RepoMessage::Layout),
+            mouse_area(
+                container(pane(
+                    staged,
+                    unstaged,
+                    selected,
+                    lines,
+                    focused_hunk,
+                    mode,
+                    state,
+                    resolver,
+                    status.conflicted.len(),
+                    palette,
+                ))
+                .width(Fill),
+            )
+            .on_press(RepoMessage::EditingChanged(false)),
+        ]
+        .height(Fill)
+        .into()
+    })
+    .into()
+}
+
+/// The four lists, in the order the working directory is read in.
+///
+/// Its own function rather than a local, because the row it sits in is built
+/// inside a `responsive` closure — which may run more than once per frame, and
+/// therefore cannot consume anything.
+fn files<'a>(
+    status: &'a WorktreeStatus,
+    selected: Option<StagingRow>,
+    palette: &'a Palette,
+) -> Element<'a, RepoMessage> {
     let mut list = column![].spacing(0);
 
     // Conflicts first: nothing else in the working directory matters until
@@ -97,34 +154,7 @@ pub fn view<'a>(
         }
     }
 
-    row![
-        column![
-            mouse_area(container(scrollable(list).height(Fill)).width(Length::Fixed(LIST_WIDTH)))
-                .on_press(RepoMessage::EditingChanged(false)),
-            common::divider(palette),
-            composer(status, draft, state, palette),
-        ]
-        .width(Length::Fixed(LIST_WIDTH)),
-        common::vertical_rule(palette),
-        mouse_area(
-            container(pane(
-                staged,
-                unstaged,
-                selected,
-                lines,
-                focused_hunk,
-                mode,
-                state,
-                resolver,
-                status.conflicted.len(),
-                palette,
-            ))
-            .width(Fill),
-        )
-        .on_press(RepoMessage::EditingChanged(false)),
-    ]
-    .height(Fill)
-    .into()
+    list.into()
 }
 
 /// The diff for whichever row is open.

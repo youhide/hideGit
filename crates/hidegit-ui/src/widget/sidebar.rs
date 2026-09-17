@@ -156,7 +156,9 @@ pub fn view<'a>(
 
     let palette = *palette;
     container(scrollable(sections).height(Fill))
-        .width(Length::Fixed(230.0))
+        // Whatever the divider beside it was last dragged to, rather than the
+        // 230 pixels this was born with.
+        .width(Length::Fixed(app.layout.sidebar()))
         .height(Fill)
         .style(move |_| container::Style {
             background: Some(palette.surface.into()),

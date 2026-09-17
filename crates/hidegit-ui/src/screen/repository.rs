@@ -6,12 +6,13 @@ use iced::widget::{Space, button, column, container, responsive, row, text, tool
 use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
+use crate::layout::Split;
 use crate::message::{Message, RepoMessage};
 use crate::metrics;
 use crate::state::{App, OpenRepo, Pane, ROW_HEIGHT};
 use crate::theme::Palette;
 use crate::widget::common;
-use crate::widget::{detail, graph, sidebar};
+use crate::widget::{detail, graph, sidebar, split};
 
 /// The main window.
 ///
@@ -49,7 +50,7 @@ pub fn view<'a>(
     // Which pane the keyboard is pointed at, said out loud. `Tab` cycles all
     // three; before this only the graph showed it, through the tint on its
     // selected row, so two of the three positions looked identical.
-    let ring = |pane: Pane, element: Element<'a, Message>| -> Element<'a, Message> {
+    let ring = move |pane: Pane, element: Element<'a, Message>| -> Element<'a, Message> {
         let border = crate::theme::focus_ring(repo.focus == pane, palette);
         container(element)
             .style(move |_| container::Style {
@@ -59,10 +60,27 @@ pub fn view<'a>(
             .into()
     };
 
-    stack = stack.push(
+    // `responsive` because both dividers need a measurement no `view` is
+    // otherwise given: the height of the column decides what a pixel of
+    // pointer travel is worth as a fraction, and the width of the window
+    // decides how wide the sidebar is allowed to get. The layout pass knows
+    // both; nothing else does.
+    stack = stack.push(responsive(move |size| {
+        let layout = &app.layout;
+        // Portions rather than a fixed height, so the split survives a window
+        // resize as the proportion it was dragged to. A thousandth is finer
+        // than a pixel on any monitor this will run on.
+        let detail = (layout.detail() * 1000.0) as u16;
+
         row![
             ring(Pane::Sidebar, sidebar::view(app, repo, index, palette)),
-            common::vertical_rule(palette).map(repo_message),
+            split::vertical(
+                Split::Sidebar,
+                size.width,
+                layout.dragging(Split::Sidebar),
+                palette
+            )
+            .map(Message::Layout),
             column![
                 // The portion goes on this container rather than inside
                 // `graph_pane`, because `ring` wraps its child in a container
@@ -75,21 +93,28 @@ pub fn view<'a>(
                     Pane::Graph,
                     graph_pane(repo, palette, cache).map(repo_message)
                 ))
-                .height(Length::FillPortion(6))
+                .height(Length::FillPortion(1000 - detail))
                 .width(Fill),
-                common::divider(palette).map(repo_message),
+                split::horizontal(
+                    Split::Detail,
+                    size.height,
+                    layout.dragging(Split::Detail),
+                    palette
+                )
+                .map(Message::Layout),
                 container(ring(
                     Pane::Detail,
-                    detail::view(repo, palette, &app.text).map(repo_message)
+                    detail::view(repo, palette, &app.text, layout).map(repo_message)
                 ))
-                .height(Length::FillPortion(4))
+                .height(Length::FillPortion(detail))
                 .width(Fill),
             ]
             .height(Fill)
             .width(Fill),
         ]
-        .height(Fill),
-    );
+        .height(Fill)
+        .into()
+    }));
 
     stack.into()
 }

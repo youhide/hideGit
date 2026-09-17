@@ -156,6 +156,56 @@ pub struct State {
     /// filename is enough: they are named by the moment they happened, so a
     /// newer one is a different one.
     pub announced_panic: Option<String>,
+    /// Where the window's dividers were left.
+    pub panes: Panes,
+}
+
+/// Where the dividers between the panes were left.
+///
+/// State rather than settings: it is changed by dragging a divider, not by the
+/// settings panel, and nobody is expected to open this file to choose a number
+/// of pixels. It is written for the same reason the window's size is — having
+/// to redo the same three drags on every start is the kind of small friction
+/// that makes an application feel unfinished.
+///
+/// The interface owns what these mean and what range each may take, so the
+/// defaults are its defaults, and a value read from here goes back through its
+/// clamp before it is used.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Panes {
+    /// The sidebar's width, in pixels.
+    pub sidebar: f32,
+    /// The detail pane's share of the height it splits with the graph.
+    pub detail: f32,
+    /// The file list's width inside the working directory, in pixels.
+    pub files: f32,
+}
+
+impl Default for Panes {
+    fn default() -> Self {
+        Self {
+            sidebar: hidegit_ui::layout::Layout::SIDEBAR,
+            detail: hidegit_ui::layout::Layout::DETAIL,
+            files: hidegit_ui::layout::Layout::FILES,
+        }
+    }
+}
+
+impl From<hidegit_ui::layout::Layout> for Panes {
+    fn from(layout: hidegit_ui::layout::Layout) -> Self {
+        Self {
+            sidebar: layout.sidebar(),
+            detail: layout.detail(),
+            files: layout.files(),
+        }
+    }
+}
+
+impl From<Panes> for hidegit_ui::layout::Layout {
+    fn from(panes: Panes) -> Self {
+        Self::restore(panes.sidebar, panes.detail, panes.files)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,6 +456,11 @@ mod tests {
             announced_panic: None,
             announced_update: None,
             last_update_check: None,
+            panes: Panes {
+                sidebar: 310.0,
+                detail: 0.55,
+                files: 240.0,
+            },
         };
         save(&path, &state);
 
@@ -413,6 +468,26 @@ mod tests {
         assert_eq!(read.window.width, 1200.0);
         assert_eq!(read.recents.len(), 1);
         assert_eq!(read.recents[0].path, PathBuf::from("/src/hideGit"));
+        assert_eq!(
+            read.panes.sidebar, 310.0,
+            "a dragged divider survives a restart"
+        );
+        assert_eq!(read.panes.detail, 0.55);
+    }
+
+    #[test]
+    fn a_state_file_from_before_the_dividers_existed_still_loads() {
+        // `deny_unknown_fields` cuts both ways: a *missing* table has to be
+        // fine, or the first run after an upgrade loses the whole session —
+        // recents, window position and all — over a section nobody wrote yet.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        std::fs::write(&path, "[window]\nwidth = 1200.0\nheight = 800.0\n").unwrap();
+
+        let read: State = load(&path);
+
+        assert_eq!(read.window.width, 1200.0);
+        assert_eq!(read.panes.sidebar, hidegit_ui::layout::Layout::SIDEBAR);
     }
 
     #[test]
