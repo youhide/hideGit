@@ -389,6 +389,15 @@ Everything between "works" and "someone who does not write Rust can install it".
   are left is written to `state.toml` with the window's own geometry, and clamped on the way back in.
   Double-clicking a divider restores it, which is why this needs no settings entry — before it, three
   numbers chosen against a window nobody had seen decided how much of a commit message you could read
+- **A native menu bar.** **Landed, on macOS.** What was up there before was winit's fallback — one
+  menu with About, Services, Hide and Quit, every item naming the executable rather than the
+  application, and no File or Edit at all, so no Copy or Paste in a menu and no way to discover
+  `Cmd+O` except by already knowing it. It is built from the command palette's own table, so an
+  item's title, action and shortcut cannot disagree with the palette's, and the shortcut it shows is
+  the one the user remapped it to rather than the one it ships with. **Windows and Linux keep no
+  menu bar**: attaching one needs a native window handle iced 0.14 does not expose, and on Linux a
+  GTK window hideGit does not have. Nothing lives only in the menu, which is what makes its absence
+  survivable — see [ADR-0009](./adr/0009-native-menu-bar.md)
 - Settings UI covering everything currently in TOML. **Partly landed**: theme and every alert switch
   are on a `Cmd+,` panel, applied as they are changed and written back to `config.toml` **in place** —
   the file keeps its comments, its key order and any key hideGit does not own, because it is

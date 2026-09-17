@@ -14,6 +14,7 @@ Layout sketches are structural, not visual design.
 - [Diff view](#diff-view)
 - [Conflict resolver](#conflict-resolver)
 - [PR panel](#pr-panel)
+- [Menu bar](#menu-bar)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Layout scale](#layout-scale)
 - [Theming](#theming)
@@ -629,6 +630,40 @@ plus review threads, so a *reply inside an existing review thread* does not prod
 Catching those would mean reading every thread on every pull request on every poll, which is the
 N+1 that [ADR-0006](./adr/0006-poll-pull-requests-over-graphql.md) exists to avoid. A new comment
 and a new review thread both do notify.
+
+## Menu bar
+
+**macOS only, and said plainly rather than left to be discovered.** Windows and Linux keep no menu
+bar: attaching one needs a native window handle iced 0.14 does not hand out, and neither platform
+expects an application to own the screen's menu bar the way macOS does. See
+[ADR-0009](./adr/0009-native-menu-bar.md).
+
+```
+hideGit   File   Edit   View   Repository   Pull Requests   Window   Help
+```
+
+**Every entry is a command id from the same table the command palette reads.** An item's title, the
+message it sends and the shortcut beside it come from `widget::palette::COMMANDS`, so a menu item
+that disagreed with the palette would have to disagree with itself. Adding a command to that table
+does not add it to a menu — that is a deliberate choice about where it belongs, and a test holds
+that every id a menu names exists.
+
+**The shortcut shown is the user's own.** `[shortcuts]` in `config.toml` moves a command, and a menu
+accelerator is taken by the operating system before the window ever sees the key — so a menu showing
+the default chord of a moved command would resurrect the binding they replaced, not merely describe
+it wrongly.
+
+**An entry is greyed out exactly when its command has nothing to do.** Push with no repository open
+is the case that matters, and it is the same rule that decides whether the palette's own entry does
+anything: the item cannot be enabled and inert.
+
+**Cut, Copy, Paste, Undo, Minimise and Quit are the platform's own items**, not hideGit messages
+wearing their names. Editing belongs to the operating system's machinery, and reimplementing it
+would get its behaviour subtly wrong in every text field at once.
+
+**Nothing lives only in the menu.** Every command in the bar is still reachable by chord, from the
+command palette, or from a control on screen. That is what makes the menu safe to have on one
+platform and absent on two.
 
 ## Keyboard shortcuts
 

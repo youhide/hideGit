@@ -65,7 +65,7 @@ Dependencies point downward only. `hidegit-core` depends on neither `iced` nor `
 | `hidegit-core` | Git domain types, `GitBackend` and its hybrid implementation, commit graph layout, diff model | `iced`, `hidegit-forge`, any HTTP client |
 | `hidegit-forge` | `Forge` trait, GitHub implementation, OAuth device flow, token storage, PR polling | `iced` |
 | `hidegit-ui` | Screens, widgets, theme, the commit-graph canvas, keyboard handling | — |
-| `hidegit` | Binary: CLI arguments, config loading, logging/tracing setup, window bootstrap | — |
+| `hidegit` | Binary: CLI arguments, config loading, logging/tracing setup, window bootstrap, the native menu bar | — |
 
 The rule about `hidegit-core` is the one that will be under pressure. When a graph layout function
 "just needs a colour" or a diff "just needs to know the viewport width", the answer is to return
@@ -92,6 +92,7 @@ data and let `hidegit-ui` decide, not to reach upward.
 | `notify-rust` | 4 | Native desktop notifications | M4 |
 | `open` | 5 | Handing a URL to the platform's browser | M4 |
 | `syntect` | via `iced/highlighter` | Syntax highlighting in the diff | M6 |
+| `muda` | 0.20 | The native menu bar — **macOS only**, and with `default-features = false`, whose defaults are gtk3 and libxdo | M6 |
 
 Versions are pinned in the workspace `Cargo.toml` and inherited by every crate, so a bump happens
 in one place. Crates whose milestone has not arrived carry no version here — recording a number

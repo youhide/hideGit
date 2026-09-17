@@ -42,3 +42,10 @@ tempfile = "3"
 
 [lints]
 workspace = true
+
+# The native menu bar. macOS only for now — see ADR-0009. `default-features`
+# off because the defaults are gtk3 and libxdo, which are how muda draws a menu
+# on Linux and are forty packages hideGit would carry in its lockfile for a
+# platform it does not use them on.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.20", default-features = false }
