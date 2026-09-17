@@ -194,7 +194,8 @@ worktree cannot be checked out in another, so the row is the answer to a checkou
 refused. The right-hand column carries that branch — or Git's own `detached at <hash>` — except when
 the worktree is locked or its directory is gone, which are states to act on and take the column
 instead. Both reasons are in the tooltip along with the full path; the row shows the directory name,
-because a path does not fit in 230px and its useful end is the last component.
+because a path does not fit in a sidebar that is 230px by default and its useful end is
+the last component.
 
 A worktree whose directory is gone is **listed, not hidden**. It still holds its branch until
 somebody runs `git worktree prune`, so hiding it would leave the refusal it causes with no visible
@@ -278,6 +279,28 @@ is a pointer at another repository's, and clicking one has nothing to show in th
 submodule it left exactly as it found it, so "the operation succeeded" is not the same claim as "the
 submodule is now current". The second one is what the user is owed, and a toast says so by name when
 it is not true.
+
+**Every divider between the panes is draggable.** Three of them: the sidebar against everything
+right of it, the graph against the detail pane below it, and — inside the working directory — the
+file list against the diff. A divider is a one-pixel rule with a seven-pixel grab area around it, it
+shows the platform's resize cursor, and it turns the accent colour while it is being held.
+Double-clicking one puts it back where it shipped, which is why resizing needs no settings entry:
+the control that moved it is the control that undoes it.
+
+**Two of them are pixels and one is a fraction, on purpose.** The sidebar and the file list hold
+names, and a name does not get longer because the window did, so they keep the width they were
+given. The graph and the detail pane are two halves of one view, so they hold a *ratio* — a taller
+window keeps the graph the subject and the commit under it the footnote, at whatever proportion the
+last drag chose. Defaults are 230px, 60/40, and 280px.
+
+Nothing can be dragged out of existence: the sidebar and the file list stop at a minimum and at half
+the space they divide, and the graph and detail pane each keep at least 15% of the column. A pane
+with no height has no divider left to drag it back with.
+
+**Where they end up is written to `state.toml`, not to `config.toml`.** It is state, like the
+window's own size — changed by dragging rather than by the settings panel, written when the drag
+ends rather than during it, and clamped again on the way back in so a hand-edited file cannot open
+hideGit with a sidebar wider than the window.
 
 **Graph** — the centre. Virtualised: only visible rows are laid out and drawn. Refs are rendered as
 badges on their commits. Selecting a row updates the detail pane. Full rendering rules in

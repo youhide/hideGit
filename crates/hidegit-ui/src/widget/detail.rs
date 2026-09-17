@@ -16,6 +16,7 @@ pub fn view<'a>(
     repo: &'a OpenRepo,
     palette: &'a Palette,
     text_catalogue: &'a crate::i18n::Catalogue,
+    layout: &'a crate::layout::Layout,
 ) -> Element<'a, RepoMessage> {
     let body: Element<'a, RepoMessage> = match &repo.detail {
         DetailPane::Empty => common::empty("Select a commit to read its message and diff", palette),
@@ -60,6 +61,7 @@ pub fn view<'a>(
             palette,
             text_catalogue,
             repo.head.target(),
+            layout,
         ),
         // The one pane whose contents did not come from the repository.
         DetailPane::PullRequest(detail) => crate::widget::pr::detail(detail, palette),

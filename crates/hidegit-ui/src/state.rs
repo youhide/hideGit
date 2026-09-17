@@ -1332,6 +1332,12 @@ pub struct App {
     pub focused: bool,
     /// Which alerts to send, and when not to.
     pub alerts: AlertPrefs,
+    /// How the window's panes are divided, and the drag that is changing it.
+    ///
+    /// On `App` rather than on `OpenRepo` because it is a property of the
+    /// window: dragging the sidebar wider with one repository in front and
+    /// finding it narrow again in the next tab would read as a bug.
+    pub layout: crate::layout::Layout,
     /// Write a report to disk when hideGit panics.
     ///
     /// Held here for the same reason as the geometry switch: the panel shows it,
@@ -1377,6 +1383,7 @@ impl Default for App {
             // than on demand.
             focused: true,
             alerts: AlertPrefs::default(),
+            layout: crate::layout::Layout::default(),
             remember_geometry: true,
             panic_reports: false,
             check_for_updates: true,

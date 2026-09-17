@@ -12,6 +12,7 @@ pub mod format;
 pub mod highlight;
 pub mod i18n;
 pub mod keymap;
+pub mod layout;
 pub mod message;
 pub mod metrics;
 pub mod state;
@@ -38,6 +39,7 @@ pub mod widget {
     pub mod settings;
     pub mod shortcuts;
     pub mod sidebar;
+    pub mod split;
     pub mod staging;
     pub mod tabs;
 }

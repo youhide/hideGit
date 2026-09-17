@@ -10,6 +10,7 @@ mod crash;
 use std::path::PathBuf;
 
 use hidegit_core::{GitError, MINIMUM_GIT_VERSION, git_preflight};
+use hidegit_ui::message::{LayoutMessage, RepoMessage};
 use hidegit_ui::{Hidegit, Message};
 use iced::{Size, Subscription, Task, window};
 
@@ -153,6 +154,7 @@ fn main() -> iced::Result {
         unannounced_panic: unannounced,
         announced_update: state.announced_update,
         last_update_check: state.last_update_check,
+        panes: state.panes,
     };
 
     // `mut` is only used on Linux; see the cfg block below.
@@ -255,6 +257,8 @@ struct Session {
     unannounced_panic: Option<String>,
     announced_update: Option<String>,
     last_update_check: Option<i64>,
+    /// Where the dividers between the panes were left.
+    panes: config::Panes,
 }
 
 fn boot(
@@ -270,6 +274,7 @@ fn boot(
         unannounced_panic,
         announced_update,
         last_update_check,
+        panes,
     } = session;
 
     // Off disk once, here, rather than every time the panel is opened: a theme
@@ -320,6 +325,9 @@ fn boot(
     // Set here rather than passed through `Hidegit::new`: the interface only
     // shows this one, and the shell is what acts on it.
     ui.app.remember_geometry = config.window.remember_geometry;
+    // Clamped on the way in by `Layout::restore`, so a hand-edited file cannot
+    // open hideGit with a sidebar wider than the window.
+    ui.app.layout = panes.into();
     ui.app.panic_reports = config.diagnostics.panic_reports;
     ui.app.check_for_updates = config.diagnostics.check_for_updates;
 
@@ -407,6 +415,17 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             // handler — Cmd+Q on macOS closes the window without ever emitting
             // `CloseRequested`, and a kill or a panic reaches nothing at all.
             let touched_recents = matches!(message, Message::RepositoryOpened(_));
+            // Written when a drag ends rather than while it runs: the same
+            // reason the window's own geometry is not written per frame, and
+            // here it is one file write instead of one per pointer movement.
+            let touched_panes = matches!(
+                message,
+                Message::Layout(LayoutMessage::Released | LayoutMessage::Reset(_))
+                    | Message::Repo(
+                        _,
+                        RepoMessage::Layout(LayoutMessage::Released | LayoutMessage::Reset(_))
+                    )
+            );
             let task = shell.ui.update(message).map(ShellMessage::Ui);
             if touched_settings {
                 shell.config.theme.name = shell.ui.app.theme.name.clone();
@@ -440,7 +459,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
                 };
             }
 
-            if touched_recents {
+            if touched_recents || touched_panes {
                 persist(shell);
             }
             task
@@ -531,6 +550,7 @@ fn persist(shell: &mut Shell) {
             .map(|path| RecentRepository { path: path.clone() })
             .collect(),
         announced_panic: shell.announced_panic.clone(),
+        panes: shell.ui.app.layout.into(),
         announced_update: shell.announced_update.clone(),
         last_update_check: shell.last_update_check,
     };

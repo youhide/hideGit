@@ -382,6 +382,13 @@ Everything between "works" and "someone who does not write Rust can install it".
   can already see. Opening a repository that is already open switches to its tab rather than opening
   a second copy — two tabs on one repository would each hold their own idea of its state. Closing
   lands on the neighbour rather than the last tab
+- **Resizable panes.** **Landed.** Every divider in the main window is draggable: the sidebar, the
+  graph against the detail pane, and the file list against the diff. Two of the three are pixels and
+  one is a fraction, because a list of names does not need more room on a wider window while the
+  graph and the commit under it are two halves of one view and should keep their ratio. Where they
+  are left is written to `state.toml` with the window's own geometry, and clamped on the way back in.
+  Double-clicking a divider restores it, which is why this needs no settings entry — before it, three
+  numbers chosen against a window nobody had seen decided how much of a commit message you could read
 - Settings UI covering everything currently in TOML. **Partly landed**: theme and every alert switch
   are on a `Cmd+,` panel, applied as they are changed and written back to `config.toml` **in place** —
   the file keeps its comments, its key order and any key hideGit does not own, because it is

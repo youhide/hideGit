@@ -28,8 +28,8 @@ use iced::{Element as IcedElement, Subscription, Task, keyboard};
 use hidegit_forge::{NewPullRequest, WebTarget};
 
 use crate::message::{
-    CommitLoad, Message, OpenedRepository, OperationOutcome, Page, PrsLoad, Refreshed, RepoMessage,
-    StatusLoad, UiError,
+    CommitLoad, LayoutMessage, Message, OpenedRepository, OperationOutcome, Page, PrsLoad,
+    Refreshed, RepoMessage, StatusLoad, UiError,
 };
 use crate::state::{
     ActionSheet, App, Confirmation, DetailPane, Draft, GraphView, OpenRepo, Operation, PAGE_SIZE,
@@ -493,6 +493,8 @@ impl Hidegit {
                 self.app.panic_reports = !self.app.panic_reports;
                 Task::none()
             }
+
+            Message::Layout(message) => self.update_layout(message),
 
             Message::RememberGeometryToggled => {
                 // Nothing in this crate acts on it; the shell reads it back out
@@ -1350,13 +1352,43 @@ impl Hidegit {
         Task::batch(indices.into_iter().map(|index| self.poll_task(index)))
     }
 
+    /// A drag on a pane divider, wherever it was raised from.
+    ///
+    /// The arithmetic is [`crate::layout::Layout`]'s; what happens here is the
+    /// mapping from four messages onto four of its methods. Nothing is loaded,
+    /// nothing is written, and nothing is redrawn that iced would not redraw
+    /// anyway — a divider drag is the cheapest message in the application, and
+    /// during a drag it arrives on every frame.
+    fn update_layout(&mut self, message: LayoutMessage) -> Task<Message> {
+        match message {
+            LayoutMessage::Grabbed(split, extent) => self.app.layout.grab(split, extent),
+            LayoutMessage::Dragged(x, y) => self.app.layout.drag_to(x, y),
+            LayoutMessage::Released => self.app.layout.release(),
+            LayoutMessage::Reset(split) => self.app.layout.reset(split),
+        }
+
+        Task::none()
+    }
+
     fn update_repo(&mut self, index: usize, message: RepoMessage) -> Task<Message> {
+        // Answered before the repository is even looked up: a divider inside
+        // the working directory addresses the window's layout, not this
+        // repository, and it only arrives here because the view it was dragged
+        // in speaks `RepoMessage`.
+        if let RepoMessage::Layout(message) = message {
+            return self.update_layout(message);
+        }
+
         let Some(repo) = self.app.repos.get_mut(index) else {
             return Task::none();
         };
         let cache = self.caches.entry(index).or_default();
 
         match message {
+            // Answered above, before `repo` was borrowed. The arm is here
+            // because the match has to be exhaustive, not because it can run.
+            RepoMessage::Layout(_) => Task::none(),
+
             RepoMessage::Selected(selection) => {
                 repo.selection = Some(selection.clone());
                 // A filter written against the last commit's files would hide
@@ -3569,7 +3601,36 @@ impl Hidegit {
             _ => None,
         });
 
-        Subscription::batch([keys, focus].into_iter().chain(watches).chain(polls))
+        // Where the pointer is, but only while a divider is being dragged.
+        //
+        // A press on a divider says that it happened, not where: `mouse_area`
+        // reports the press and the window reports the position, and this is
+        // what joins them. It is switched off the rest of the time on purpose —
+        // a message per pointer movement for the whole session, to serve a drag
+        // nobody is doing, is the most expensive subscription in the
+        // application and the easiest one to avoid.
+        let pointer = if self.app.layout.is_dragging() {
+            iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(
+                    Message::Layout(LayoutMessage::Dragged(position.x, position.y)),
+                ),
+                // Released anywhere, including outside the window: a drag that
+                // only ended when the pointer came back would keep following it.
+                iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                    iced::mouse::Button::Left,
+                )) => Some(Message::Layout(LayoutMessage::Released)),
+                _ => None,
+            })
+        } else {
+            Subscription::none()
+        };
+
+        Subscription::batch(
+            [keys, focus, pointer]
+                .into_iter()
+                .chain(watches)
+                .chain(polls),
+        )
     }
 
     /// Which modal, if any, currently owns the keyboard.
@@ -4719,6 +4780,103 @@ mod tests {
             .iter()
             .map(|s| s.commit.summary.clone())
             .collect()
+    }
+
+    // ---- dividers ----
+
+    /// Presses a divider, moves the pointer twice — the first movement is the
+    /// anchor — and lets go, the way the window delivers a drag.
+    fn drag_divider(app: &mut Hidegit, split: crate::layout::Split, extent: f32, by: (f32, f32)) {
+        let _ = app.update(Message::Layout(LayoutMessage::Grabbed(split, extent)));
+        let _ = app.update(Message::Layout(LayoutMessage::Dragged(500.0, 500.0)));
+        let _ = app.update(Message::Layout(LayoutMessage::Dragged(
+            500.0 + by.0,
+            500.0 + by.1,
+        )));
+        let _ = app.update(Message::Layout(LayoutMessage::Released));
+    }
+
+    #[test]
+    fn dragging_the_sidebar_divider_resizes_the_sidebar() {
+        let mut app = app_with(3);
+
+        drag_divider(&mut app, crate::layout::Split::Sidebar, 1440.0, (60.0, 0.0));
+
+        assert_eq!(
+            app.app.layout.sidebar(),
+            crate::layout::Layout::SIDEBAR + 60.0
+        );
+    }
+
+    #[test]
+    fn a_divider_dragged_inside_the_working_directory_resizes_the_same_layout() {
+        // It arrives as a `RepoMessage` only because the staging view speaks
+        // one. If this ever stopped reaching the application's layout, the
+        // file list would resize and forget by the next render.
+        let mut app = app_with(3);
+
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Layout(LayoutMessage::Grabbed(crate::layout::Split::Files, 1000.0)),
+        ));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Layout(LayoutMessage::Dragged(400.0, 300.0)),
+        ));
+        let _ = app.update(Message::Repo(
+            0,
+            RepoMessage::Layout(LayoutMessage::Dragged(440.0, 300.0)),
+        ));
+
+        assert_eq!(app.app.layout.files(), crate::layout::Layout::FILES + 40.0);
+    }
+
+    #[test]
+    fn a_divider_addresses_the_window_rather_than_the_repository_it_was_dragged_in() {
+        // Two tabs, a drag in the second: the sidebar is the window's, so
+        // switching back must not switch the width back with it.
+        let mut app = app_with_tabs(2);
+
+        drag_divider(&mut app, crate::layout::Split::Sidebar, 1440.0, (40.0, 0.0));
+        let dragged = app.app.layout.sidebar();
+        let _ = app.update(Message::OpenRepository(PathBuf::from("/fake/repo-0")));
+
+        assert_eq!(app.app.layout.sidebar(), dragged);
+    }
+
+    #[test]
+    fn the_pointer_is_only_followed_while_a_divider_is_held() {
+        // What decides whether the subscription that reports every pointer
+        // movement exists at all.
+        let mut app = app_with(3);
+        assert!(!app.app.layout.is_dragging());
+
+        let _ = app.update(Message::Layout(LayoutMessage::Grabbed(
+            crate::layout::Split::Detail,
+            900.0,
+        )));
+        assert!(app.app.layout.is_dragging());
+
+        let _ = app.update(Message::Layout(LayoutMessage::Released));
+        assert!(!app.app.layout.is_dragging());
+    }
+
+    #[test]
+    fn double_clicking_a_divider_puts_it_back() {
+        let mut app = app_with(3);
+        drag_divider(
+            &mut app,
+            crate::layout::Split::Sidebar,
+            1440.0,
+            (120.0, 0.0),
+        );
+        assert_ne!(app.app.layout.sidebar(), crate::layout::Layout::SIDEBAR);
+
+        let _ = app.update(Message::Layout(LayoutMessage::Reset(
+            crate::layout::Split::Sidebar,
+        )));
+
+        assert_eq!(app.app.layout.sidebar(), crate::layout::Layout::SIDEBAR);
     }
 
     #[test]

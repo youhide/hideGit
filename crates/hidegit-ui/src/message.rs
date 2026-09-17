@@ -224,6 +224,25 @@ pub struct Page {
     pub more: bool,
 }
 
+/// What a drag on a pane divider does, from press to release.
+///
+/// Its own enum rather than four variants on [`Message`], because the same four
+/// are needed on [`RepoMessage`] too and writing them twice is how the two
+/// copies end up meaning different things.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayoutMessage {
+    /// A divider was pressed, carrying the size of the space it divides — which
+    /// only the view that laid it out can know.
+    Grabbed(crate::layout::Split, f32),
+    /// The pointer moved, in window coordinates. Delivered by a subscription
+    /// that is only alive while a drag is in progress.
+    Dragged(f32, f32),
+    /// The pointer was released, wherever it happened to be.
+    Released,
+    /// A divider was double-clicked: put it back where it shipped.
+    Reset(crate::layout::Split),
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// `Cmd+O`: ask for a repository with the platform's own picker.
@@ -327,6 +346,15 @@ pub enum Message {
     RememberGeometryToggled,
     RepositoryMuteToggled(String),
 
+    /// A divider between two panes was grabbed, dragged or released.
+    ///
+    /// Reached from two places, because the dividers are in two places: the
+    /// main window emits this, and the one inside the working directory arrives
+    /// as [`RepoMessage::Layout`] and is forwarded here. The layout belongs to
+    /// the application rather than to a repository — the sidebar is the same
+    /// width whichever tab is in front — so both end up in the same handler.
+    Layout(LayoutMessage),
+
     // ---- the forge ----
     /// The client exists, and a stored session was restored if there was one.
     ///
@@ -371,6 +399,12 @@ pub enum Message {
 #[derive(Debug, Clone)]
 pub enum RepoMessage {
     // ---- user intent ----
+    /// A divider inside the working directory was dragged.
+    ///
+    /// Forwarded to [`Message::Layout`] unchanged. The staging view speaks
+    /// `RepoMessage` all the way down, so a divider placed in it cannot emit a
+    /// top-level message without every view above it changing its type.
+    Layout(LayoutMessage),
     Selected(Selection),
     /// A wheel or trackpad scroll, in pixels. Positive scrolls toward older
     /// history.
