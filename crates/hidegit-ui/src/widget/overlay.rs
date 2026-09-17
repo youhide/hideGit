@@ -11,7 +11,7 @@
 //! done to one item, and a **prompt** is a modal that collects text before
 //! acting. Both are centred cards over the same scrim as the confirmation.
 
-use iced::widget::{Space, button, column, container, row, stack, text, text_input};
+use iced::widget::{Space, button, column, container, row, scrollable, stack, text, text_input};
 use iced::{Center, Fill, Font, Length, Padding};
 
 use crate::Element;
@@ -457,6 +457,12 @@ fn toast_layer<'a>(toasts: &'a [Toast], palette: &'a Palette) -> Element<'a, Mes
         .into()
 }
 
+/// How tall a toast's details may grow before they scroll instead.
+///
+/// Twelve lines or so: enough for a push refusal in full, short of a toast that
+/// covers the window it is reporting on.
+const DETAILS_HEIGHT: f32 = 180.0;
+
 fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
     let mut body = column![
         row![
@@ -478,11 +484,21 @@ fn one_toast<'a>(toast: &'a Toast, palette: Palette) -> Element<'a, Message> {
     .spacing(6);
 
     if !toast.details.is_empty() {
+        // Capped and scrolled. A toast is bottom-aligned, so a `git` stderr of
+        // thirty lines grew *upwards* — past the top of the window, taking the
+        // summary and the dismiss button with it, on exactly the failures
+        // worth reading.
         body = body.push(
-            text(toast.details.as_str())
-                .size(metrics::text::LABEL)
-                .font(Font::MONOSPACE)
-                .color(palette.muted),
+            container(
+                scrollable(
+                    text(toast.details.as_str())
+                        .size(metrics::text::LABEL)
+                        .font(Font::MONOSPACE)
+                        .color(palette.muted),
+                )
+                .height(Length::Shrink),
+            )
+            .max_height(DETAILS_HEIGHT),
         );
     }
 

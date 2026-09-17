@@ -944,6 +944,15 @@ honestly if the repository was left mid-operation — including a stale `index.l
 reported rather than silently removed. See
 [ADR-0005](./adr/0005-progress-and-cancellation.md).
 
+**Anything whose length nobody chose scrolls, and is capped before it does.** Three things vary
+without limit: a commit message, Git's stderr in a failed pane, and Git's stderr in a toast. Each
+used to be drawn at whatever height it asked for and then clipped — no scrollbar, no wheel, and no
+way to read the end of it short of resizing the window. A commit message takes at most 240px of the
+detail pane before it scrolls, so a long one cannot push the diff off the bottom on its way to being
+readable; a toast's details take at most 180px, because a toast is bottom-aligned and thirty lines of
+stderr grew *upwards*, carrying its own dismiss and copy controls out of the window on exactly the
+failures worth reading.
+
 **Errors.** Recoverable errors appear inline where the action was attempted, with the action that
 fixes them. Unexpected errors become a toast with a **Copy details** action containing the argument
 vector and Git's own stderr — or, for a forge failure, the provider's own message. Git's error
