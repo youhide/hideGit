@@ -27,6 +27,13 @@
 //! Neither platform *expects* an application to own the screen's menu bar the
 //! way macOS does, so the cost of going without is much lower there. See
 //! [ADR-0009](../../../docs/adr/0009-native-menu-bar.md).
+//!
+//! The table below and the three functions that read it are portable, and their
+//! tests run on every platform CI covers — an id that stopped naming a command
+//! is worth catching on all three. Only macOS builds a menu out of them, so
+//! there they are dead code by construction rather than by mistake, which is
+//! what the `allow` says.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
 use hidegit_ui::Message;
 use hidegit_ui::widget::palette::COMMANDS;

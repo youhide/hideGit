@@ -94,11 +94,17 @@ enum ShellMessage {
     Moved(iced::Point),
     /// The periodic write of anything that has been collected since the last.
     Flush,
-    /// The window exists, which on macOS is what makes it safe to build a menu:
-    /// a menu bar is attached to `NSApp`, and `NSApp` is the event loop's.
+    /// The window exists, which is what makes it safe to build a menu: a menu
+    /// bar is attached to `NSApp`, and `NSApp` is the event loop's.
+    ///
+    /// macOS only, along with everything else about the menu — there is nothing
+    /// to build on the platforms that do not get one, so there is nothing to
+    /// wait for either.
+    #[cfg(target_os = "macos")]
     WindowOpened,
     /// A menu item was chosen, by the id it carries — which is the id the
     /// command palette and `[shortcuts]` already use.
+    #[cfg(target_os = "macos")]
     MenuChosen(String),
     CloseRequested,
 }
@@ -537,6 +543,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             Task::none()
         }
 
+        #[cfg(target_os = "macos")]
         ShellMessage::WindowOpened => {
             // Built here rather than at boot: a menu bar is attached to
             // `NSApp`, which the event loop owns and which does not exist until
@@ -555,6 +562,7 @@ fn update(shell: &mut Shell, message: ShellMessage) -> Task<ShellMessage> {
             Task::none()
         }
 
+        #[cfg(target_os = "macos")]
         ShellMessage::MenuChosen(id) => {
             // The menu carries command ids, not actions, so what a menu item
             // does is whatever the command palette would have done — including
@@ -633,6 +641,7 @@ fn subscription(shell: &Shell) -> Subscription<ShellMessage> {
         // difference between one file write and one per frame of a drag.
         iced::time::every(FLUSH_INTERVAL).map(|_| ShellMessage::Flush),
         window::close_requests().map(|_| ShellMessage::CloseRequested),
+        #[cfg(target_os = "macos")]
         window::open_events().map(|_| ShellMessage::WindowOpened),
         #[cfg(target_os = "macos")]
         menu_events(),
