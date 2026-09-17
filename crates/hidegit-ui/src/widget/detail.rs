@@ -12,6 +12,13 @@ use crate::state::{DetailPane, DiffMode, FILE_FILTER_ID, OpenRepo, Selection};
 use crate::theme::Palette;
 use crate::widget::common;
 
+/// How much of the detail pane a commit message may take before it scrolls.
+///
+/// A number rather than a share of the pane: a one-line commit should not
+/// reserve a third of the screen on the chance that the next one is long, and
+/// what is under this is where the reading actually happens.
+const MESSAGE_HEIGHT: f32 = 240.0;
+
 pub fn view<'a>(
     repo: &'a OpenRepo,
     palette: &'a Palette,
@@ -388,9 +395,18 @@ fn commit<'a>(
     .color(palette.muted);
 
     column![
-        container(column![header, Space::new().height(6), stats].spacing(2))
-            .width(Fill)
-            .padding(Padding::from([10, 14])),
+        // Scrolled, and capped, because the commit message is the one part of
+        // this pane whose length nobody chose. A body of four paragraphs used
+        // to be drawn to whatever height it wanted and then clipped — no
+        // scrollbar, no wheel, and no way to read the end of it except to make
+        // the window bigger. Capped as well as scrolled, so a long message
+        // cannot push the diff off the bottom on its way to being readable.
+        container(scrollable(
+            column![header, Space::new().height(6), stats].spacing(2)
+        ))
+        .width(Fill)
+        .max_height(MESSAGE_HEIGHT)
+        .padding(Padding::from([10, 14])),
         common::divider(palette),
         row![
             file_list,
@@ -430,10 +446,17 @@ fn failure<'a>(error: &UiError, palette: &Palette) -> Element<'a, RepoMessage> {
             text(error.summary.clone())
                 .size(metrics::text::BODY)
                 .color(palette.danger),
-            text(error.details.clone())
-                .size(metrics::text::LABEL)
-                .font(Font::MONOSPACE)
-                .color(palette.muted),
+            // Git's own words, at Git's own length: a failed merge prints the
+            // conflicted paths, and a rejected push prints a paragraph. The
+            // pane showed as many lines as fitted and silently dropped the
+            // rest, which for an error message is the half that says what to
+            // do about it.
+            scrollable(
+                text(error.details.clone())
+                    .size(metrics::text::LABEL)
+                    .font(Font::MONOSPACE)
+                    .color(palette.muted)
+            ),
         ]
         .spacing(8)
         .max_width(600),

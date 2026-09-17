@@ -295,6 +295,71 @@ fn app_showing_a_diff(name: &str) -> Hidegit {
 }
 
 #[test]
+fn a_commit_message_of_any_length_leaves_the_diff_on_screen() {
+    // The message is the one part of this pane whose length nobody chose. It
+    // is scrolled and capped: before the cap, a body like this one was drawn
+    // at whatever height it wanted, and the files and the diff underneath it
+    // went off the bottom of the window.
+    let mut app = app_showing_a_diff("src/main.rs");
+    {
+        let repo = app.app.repos.get_mut(0).unwrap();
+        if let crate::state::DetailPane::Commit { detail, .. } = &mut repo.detail {
+            detail.commit.body = Some(
+                (1..=60)
+                    .map(|n| format!("paragraph {n} of a release note nobody will read"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            );
+        }
+    }
+
+    // Visible, not merely present: a widget pushed off the bottom of the
+    // window is still in the tree, so `shows` would pass against exactly the
+    // bug this is about. The hunk header rather than a line of code — a
+    // highlighted line reaches the tree as rich text, which this harness
+    // cannot see inside of.
+    let mut ui = render(&app);
+    let diff = ui.find("@@ -1 +1 @@").expect("the diff is in the tree");
+
+    assert!(
+        diff.visible_bounds().is_some(),
+        "a long commit message pushed the diff out of the window"
+    );
+}
+
+#[test]
+fn a_toast_with_a_long_stderr_keeps_its_summary_on_screen() {
+    // A toast is bottom-aligned, so its details grow upwards: before they were
+    // capped, a `git` stderr of thirty lines carried the summary — and the
+    // dismiss button — off the top of the window, on exactly the failures
+    // somebody needs to read.
+    let mut app = app_with(2);
+    app.app.toast(&crate::message::UiError {
+        summary: "The push was rejected".to_owned(),
+        details: (1..=40)
+            .map(|n| format!(" ! [rejected] branch-{n} -> branch-{n} (fetch first)"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    });
+
+    // Laid out in a window somebody might actually have, rather than the
+    // harness's roomy default: the bug is about a toast outgrowing its window,
+    // so the window has to be a size a toast can outgrow.
+    let view = app.view();
+    let mut ui: iced_test::Simulator<'_, Message> = iced_test::Simulator::with_size(
+        iced_test::core::Settings::default(),
+        iced::Size::new(1000.0, 500.0),
+        view,
+    );
+    let dismiss = ui.find("Copy details").expect("the toast is in the tree");
+
+    assert!(
+        dismiss.visible_bounds().is_some(),
+        "the details pushed the toast's own controls out of the window"
+    );
+}
+
+#[test]
 fn an_open_in_flight_says_which_repository_and_which_step() {
     // Two of them open at once from the command line, so the name is on the
     // line: "Counting commits…" twice says nothing about which.
